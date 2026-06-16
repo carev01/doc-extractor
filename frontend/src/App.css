@@ -1,0 +1,389 @@
+/* DocExtractor UI Styles */
+
+:root {
+  --bg: #1a1a2e;
+  --bg-card: #16213e;
+  --bg-input: #0f3460;
+  --text: #e0e0e0;
+  --text-muted: #8899aa;
+  --accent: #e94560;
+  --accent-hover: #ff6b81;
+  --green: #30a030;
+  --yellow: #f0a030;
+  --red: #d03030;
+  --border: #2a2a4a;
+  --radius: 8px;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.app {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.app-header {
+  margin-bottom: 24px;
+}
+
+.app-header h1 {
+  font-size: 1.8rem;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.breadcrumb button {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.95rem;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+}
+
+.breadcrumb button:hover {
+  color: var(--text);
+  background: var(--bg-card);
+}
+
+.breadcrumb button.active {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.breadcrumb .sep {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.app-main {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 24px;
+  border: 1px solid var(--border);
+}
+
+h2 {
+  font-size: 1.3rem;
+  margin-bottom: 16px;
+  color: var(--text);
+}
+
+h3 {
+  font-size: 1.05rem;
+  margin: 16px 0 8px;
+  color: var(--text-muted);
+}
+
+/* Forms */
+.add-form {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.add-form input {
+  flex: 1;
+  min-width: 150px;
+  padding: 8px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.add-form input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.add-form input::placeholder {
+  color: var(--text-muted);
+}
+
+/* Buttons */
+button {
+  cursor: pointer;
+  font-size: 0.9rem;
+  border-radius: var(--radius);
+  border: none;
+  padding: 8px 16px;
+  transition: background 0.2s;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: white;
+  font-weight: 600;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary-sm {
+  background: var(--accent);
+  color: white;
+  padding: 4px 12px;
+  font-size: 0.8rem;
+}
+
+.btn-primary-sm:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.btn-primary-sm:disabled {
+  opacity: 0.5;
+}
+
+.btn-danger-sm {
+  background: transparent;
+  color: var(--red);
+  padding: 2px 8px;
+  font-size: 1.1rem;
+  font-weight: bold;
+}
+
+.btn-danger-sm:hover {
+  background: var(--red);
+  color: white;
+}
+
+.btn-link {
+  background: none;
+  color: var(--accent);
+  padding: 4px 8px;
+  font-size: 0.85rem;
+  text-decoration: underline;
+}
+
+.btn-link:hover {
+  color: var(--accent-hover);
+}
+
+/* Item lists */
+.item-list {
+  list-style: none;
+}
+
+.item-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.item-list li:hover {
+  background: rgba(233, 69, 96, 0.08);
+}
+
+.item-list li.selected {
+  background: rgba(233, 69, 96, 0.15);
+  border-left: 3px solid var(--accent);
+}
+
+.item-list li.empty {
+  color: var(--text-muted);
+  cursor: default;
+  font-style: italic;
+}
+
+.item-info {
+  flex: 1;
+}
+
+.item-info strong {
+  display: block;
+}
+
+.item-info .sub {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  display: block;
+  word-break: break-all;
+}
+
+.item-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.item-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: white;
+  text-transform: uppercase;
+}
+
+/* Export panel */
+.export-mode {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.export-mode label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.toc-selector {
+  margin-bottom: 16px;
+}
+
+.toc-tree {
+  max-height: 300px;
+  overflow-y: auto;
+  margin-top: 8px;
+  padding: 8px;
+  background: var(--bg-input);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+.toc-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.toc-article {
+  color: var(--text);
+}
+
+.toc-section {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.topic-search input {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 0.9rem;
+  margin-bottom: 16px;
+}
+
+.topic-search input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.split-options {
+  margin-bottom: 16px;
+}
+
+.split-options select,
+.split-options input {
+  padding: 8px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 0.9rem;
+  margin-top: 4px;
+}
+
+.split-options select {
+  margin-right: 8px;
+}
+
+.split-options input {
+  width: 120px;
+}
+
+.export-result {
+  margin-top: 20px;
+  padding: 16px;
+  background: rgba(48, 160, 48, 0.1);
+  border: 1px solid var(--green);
+  border-radius: var(--radius);
+}
+
+.export-result h3 {
+  color: var(--green);
+  margin-top: 0;
+}
+
+.export-result ul {
+  list-style: none;
+  margin-top: 8px;
+}
+
+.export-result li {
+  padding: 4px 0;
+}
+
+.export-result a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.export-result a:hover {
+  text-decoration: underline;
+}
+
+/* Error */
+.error {
+  background: rgba(208, 48, 48, 0.15);
+  border: 1px solid var(--red);
+  color: var(--red);
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+  font-size: 0.9rem;
+}
+
+.hint {
+  color: var(--text-muted);
+  font-style: italic;
+}

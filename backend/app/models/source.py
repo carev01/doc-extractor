@@ -1,0 +1,56 @@
+"""DocumentationSource model — a specific doc site to extract."""
+
+import uuid
+from datetime import datetime
+from enum import Enum
+
+from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, String, func
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.database import Base
+
+
+class SourceStatus(str, Enum):
+    PENDING = "pending"
+    EXTRACTING = "extracting"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class DocumentationSource(Base):
+    __tablename__ = "documentation_sources"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    vendor_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("vendors.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(512), nullable=False)
+    base_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    status: Mapped[SourceStatus] = mapped_column(
+        SAEnum(SourceStatus), default=SourceStatus.PENDING, nullable=False
+    )
+    last_extracted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    error_message: Mapped[str | None] = mapped_column(String(4096), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    # Relationships
+    vendor: Mapped["Vendor"] = relationship("Vendor", back_populates="sources")
+    extraction_runs: Mapped[list["ExtractionRun"]] = relationship(
+        "ExtractionRun", back_populates="source", cascade="all, delete-orphan"
+    )
+    articles: Mapped[list["Article"]] = relationship(
+        "Article", back_populates="source", cascade="all, delete-orphan"
+    )
+    toc_entries: Mapped[list["TOCEntry"]] = relationship(
+        "TOCEntry", back_populates="source", cascade="all, delete-orphan"
+    )
