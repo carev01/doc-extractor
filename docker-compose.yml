@@ -1,0 +1,47 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: docextractor
+      POSTGRES_USER: docextractor
+      POSTGRES_PASSWORD: docextractor_dev
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U docextractor"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      DOCEXTRACTOR_DATABASE_URL: postgresql+asyncpg://docextractor:docextractor_dev@postgres:5432/docextractor
+      DOCEXTRACTOR_DATABASE_URL_SYNC: postgresql+psycopg2://docextractor:docextractor_dev@postgres:5432/docextractor
+      DOCEXTRACTOR_FIRECRAWL_API_URL: http://firecrawl.k3s.home.lan
+    volumes:
+      - exports_data:/app/exports
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      # VITE_API_BASE_URL is intentionally empty: the frontend uses relative
+      # /api/ paths and nginx proxies them to the backend container.
+      args:
+        VITE_API_BASE_URL: ""
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  exports_data:
