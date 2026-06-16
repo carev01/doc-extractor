@@ -10,7 +10,7 @@ from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -39,6 +39,9 @@ class FirecrawlService:
     """Handles documentation extraction via local Firecrawl instance."""
 
     CONNECT_TIMEOUT = 5.0
+    EMPTY_CONTENT_RETRIES = 2
+    EMPTY_CONTENT_RETRY_DELAY = 2.0
+    BATCH_POLL_INTERVAL = 5.0
 
     def __init__(self):
         self.base_url = settings.firecrawl_api_url.rstrip("/")
@@ -52,8 +55,12 @@ class FirecrawlService:
             )
         )
 
+    def _auth_headers(self) -> dict:
+        if self.api_key:
+            return {"Authorization": f"Bearer {self.api_key}"}
+        return {}
+
     async def _check_available(self) -> None:
-        """Quick connectivity check — fail fast if Firecrawl is not running."""
         try:
             await self.client.get(f"{self.base_url}/", timeout=self.CONNECT_TIMEOUT)
         except httpx.ConnectError as exc:
@@ -69,24 +76,15 @@ class FirecrawlService:
 
     async def _firecrawl_request(self, url: str, payload: dict) -> dict:
         """Make a Firecrawl v2 scrape request and return the data dict."""
-        headers = {}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
         resp = await self.client.post(
             f"{self.base_url}/v2/scrape",
             json={"url": url, **payload},
-            headers=headers,
+            headers=self._auth_headers(),
         )
         resp.raise_for_status()
         return resp.json().get("data", {})
 
     async def _scrape_nav_html(self, url: str) -> str:
-        """Fetch full page HTML for nav parsing during TOC discovery.
-
-        onlyMainContent=False is required to preserve the left nav structure
-        that only appears in the full page render.
-        """
         data = await self._firecrawl_request(url, {
             "formats": ["html"],
             "onlyMainContent": False,
@@ -95,14 +93,7 @@ class FirecrawlService:
         return data.get("html", "")
 
     async def _scrape_article(self, url: str) -> tuple[str, str]:
-        """Fetch article content as (markdown, html) scoped to the #doc element.
-
-        includeTags=["#doc"] instructs Firecrawl to discard everything outside
-        the main article container before converting, so the returned markdown
-        contains only article content — no nav, no feedback widget, no TOC.
-        The HTML is filtered the same way and is only used to extract image
-        URLs and the last-updated timestamp.
-        """
+        """Return (markdown, html) scoped to the #doc element."""
         data = await self._firecrawl_request(url, {
             "formats": ["markdown", "html"],
             "onlyMainContent": False,
@@ -111,12 +102,22 @@ class FirecrawlService:
         })
         return data.get("markdown", ""), data.get("html", "")
 
-    def _parse_nav_items(self, ul_el) -> list[dict]:
-        """Extract ordered {title, url, is_parent} items from a nav <ul>.
+    async def _scrape_article_with_retry(self, url: str) -> tuple[str, str]:
+        """Scrape a single article, retrying on empty-content responses."""
+        markdown, html = await self._scrape_article(url)
+        for attempt in range(self.EMPTY_CONTENT_RETRIES):
+            if markdown.strip():
+                return markdown, html
+            logger.warning(
+                "Empty content from %s (attempt %d/%d) — retrying in %.0fs",
+                url, attempt + 1, self.EMPTY_CONTENT_RETRIES,
+                self.EMPTY_CONTENT_RETRY_DELAY,
+            )
+            await asyncio.sleep(self.EMPTY_CONTENT_RETRY_DELAY)
+            markdown, html = await self._scrape_article(url)
+        return markdown, html
 
-        Preserves DOM order. is_parent=True when data-is-parent is present,
-        meaning children are only revealed when that page is scraped directly.
-        """
+    def _parse_nav_items(self, ul_el) -> list[dict]:
         items = []
         for li in ul_el.find_all("li", class_="nav-row", recursive=False):
             div = li.find(class_="nav-item")
@@ -139,14 +140,6 @@ class FirecrawlService:
         visited: set[str],
         nav_html_cache: dict[str, str],
     ) -> list[dict]:
-        """Build an ordered TOC list via depth-first recursive nav scraping.
-
-        Each page's nav only reveals the active item's direct children, so
-        parent pages must be scraped individually to discover their children.
-
-        - level=0 (root URL): reads from <ul class="nav-group-root">
-        - level>0: reads the children of the active nav item on that page
-        """
         if url in visited:
             return []
         visited.add(url)
@@ -178,7 +171,7 @@ class FirecrawlService:
             active_div = nav.find(class_="nav-item-active")
             if not active_div:
                 return []
-            parent_li = active_div.parent  # <li class="nav-row">
+            parent_li = active_div.parent
             children_ul = parent_li.find("ul", class_="nav-group")
             if not children_ul:
                 return []
@@ -201,7 +194,6 @@ class FirecrawlService:
         return toc
 
     async def _download_image(self, img_url: str, article_dir: str) -> str | None:
-        """Download an image and return the local filename."""
         try:
             resp = await self.client.get(img_url, follow_redirects=True)
             resp.raise_for_status()
@@ -228,6 +220,306 @@ class FirecrawlService:
         except Exception:
             return None
 
+    async def process_article_result(
+        self,
+        db: AsyncSession,
+        source_id: uuid.UUID,
+        run_id: uuid.UUID,
+        url: str,
+        markdown_content: str,
+        doc_html: str,
+        toc_entry_id: uuid.UUID | None,
+        sort_order: int,
+        title: str,
+    ) -> str:
+        """Store or skip a single article and atomically increment run counters.
+
+        Returns "new" | "updated" | "unchanged" | "empty".
+        Used by both the inline polling path and the webhook handler so all
+        article processing is consolidated here.
+        """
+        if not markdown_content.strip():
+            logger.warning("Empty content from %s — skipping", url)
+            return "empty"
+
+        content_hash = compute_content_hash(markdown_content)
+
+        existing_result = await db.execute(
+            select(Article).where(
+                Article.source_id == source_id,
+                Article.source_url == url,
+            )
+        )
+        existing_article = existing_result.scalar_one_or_none()
+
+        if existing_article is not None and existing_article.content_hash == content_hash:
+            await db.execute(
+                update(ExtractionRun)
+                .where(ExtractionRun.id == run_id)
+                .values(articles_unchanged=ExtractionRun.articles_unchanged + 1)
+            )
+            await db.commit()
+            return "unchanged"
+
+        # Parse last-updated timestamp from the filtered #doc HTML
+        last_updated = None
+        if doc_html:
+            doc_soup = BeautifulSoup(doc_html, "html.parser")
+            time_tag = doc_soup.find("time", attrs={"datetime": True})
+            if time_tag:
+                try:
+                    last_updated = datetime.fromisoformat(
+                        time_tag["datetime"].replace("Z", "+00:00")
+                    )
+                except (ValueError, TypeError):
+                    pass
+
+        images_dir = os.path.join(settings.export_dir, settings.images_dir)
+        estimated_tokens = len(markdown_content) // 4
+        content_size = len(markdown_content.encode("utf-8"))
+
+        if existing_article is not None:
+            version = ArticleVersion(
+                article_id=existing_article.id,
+                extraction_run_id=run_id,
+                content_markdown=existing_article.content_markdown,
+                content_hash=existing_article.content_hash,
+            )
+            db.add(version)
+
+            article = existing_article
+            article.extraction_run_id = run_id
+            article.toc_entry_id = toc_entry_id
+            article.title = title
+            article.source_url = url
+            article.content_markdown = markdown_content
+            article.content_html = doc_html
+            article.content_hash = content_hash
+            article.last_updated_at = last_updated or datetime.now(timezone.utc)
+            article.sort_order = sort_order
+            article.estimated_tokens = estimated_tokens
+            article.content_size_bytes = content_size
+
+            old_imgs = await db.execute(
+                select(ArticleImage).where(ArticleImage.article_id == existing_article.id)
+            )
+            for old_img in old_imgs.scalars():
+                await db.delete(old_img)
+            await db.flush()
+            outcome = "updated"
+        else:
+            article = Article(
+                source_id=source_id,
+                extraction_run_id=run_id,
+                toc_entry_id=toc_entry_id,
+                title=title,
+                source_url=url,
+                content_markdown=markdown_content,
+                content_html=doc_html,
+                content_hash=content_hash,
+                last_updated_at=last_updated,
+                sort_order=sort_order,
+                estimated_tokens=estimated_tokens,
+                content_size_bytes=content_size,
+            )
+            db.add(article)
+            await db.flush()
+            outcome = "new"
+
+        # Download and rewrite image URLs
+        if doc_html:
+            img_soup = BeautifulSoup(doc_html, "html.parser")
+            article_img_dir = os.path.join(images_dir, str(article.id))
+
+            for j, img in enumerate(img_soup.find_all("img")):
+                src = img.get("src", "")
+                if not src:
+                    continue
+                full_src = urljoin(url, src)
+                if not full_src.startswith(("http://", "https://")):
+                    continue
+
+                local_filename = await self._download_image(full_src, article_img_dir)
+                if local_filename:
+                    local_path = os.path.join(
+                        settings.images_dir, str(article.id), local_filename
+                    )
+                    db.add(ArticleImage(
+                        article_id=article.id,
+                        original_url=full_src,
+                        local_filename=local_filename,
+                        local_path=local_path,
+                        alt_text=img.get("alt", ""),
+                        sort_order=j,
+                    ))
+                    markdown_content = markdown_content.replace(full_src, local_path)
+                    markdown_content = markdown_content.replace(src, local_path)
+
+        article.content_markdown = markdown_content
+
+        # Atomic counter increment so concurrent webhook calls don't race.
+        if outcome == "new":
+            await db.execute(
+                update(ExtractionRun)
+                .where(ExtractionRun.id == run_id)
+                .values(articles_extracted=ExtractionRun.articles_extracted + 1)
+            )
+        else:
+            await db.execute(
+                update(ExtractionRun)
+                .where(ExtractionRun.id == run_id)
+                .values(articles_updated=ExtractionRun.articles_updated + 1)
+            )
+        await db.commit()
+        return outcome
+
+    async def _submit_batch(self, urls: list[str]) -> str:
+        """Submit a batch scrape job and return the Firecrawl job ID."""
+        payload: dict = {
+            "urls": urls,
+            "formats": ["markdown", "html"],
+            "onlyMainContent": False,
+            "includeTags": ["#doc"],
+            "waitFor": 1500,
+        }
+        resp = await self.client.post(
+            f"{self.base_url}/v2/batch/scrape",
+            json=payload,
+            headers=self._auth_headers(),
+        )
+        resp.raise_for_status()
+        job_id = resp.json()["id"]
+        logger.info("Batch job submitted: %s (%d URLs)", job_id, len(urls))
+        return job_id
+
+    async def _get_batch_status(self, url: str) -> dict:
+        """GET a batch status page (accepts both full URL and bare job ID)."""
+        if not url.startswith("http"):
+            url = f"{self.base_url}/v2/batch/scrape/{url}"
+        resp = await self.client.get(url, headers=self._auth_headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    async def _wait_for_batch_completion(self, job_id: str) -> None:
+        """Poll batch status until the job finishes (webhook mode — results handled elsewhere)."""
+        while True:
+            data = await self._get_batch_status(job_id)
+            status = data.get("status", "")
+            logger.info(
+                "Batch %s: %s (%d/%d)",
+                job_id, status, data.get("completed", 0), data.get("total", 0),
+            )
+            if status in ("completed", "failed"):
+                return
+            await asyncio.sleep(self.BATCH_POLL_INTERVAL)
+
+    async def _poll_batch_and_process(
+        self,
+        db: AsyncSession,
+        source_id: uuid.UUID,
+        run_id: uuid.UUID,
+        url_to_entry: dict[str, dict],
+        job_id: str,
+    ) -> None:
+        """Consume batch results via cursor pagination, processing each page inline.
+
+        Tracks our own skip offset to avoid re-processing pages on each sleep
+        cycle. After the batch finishes, any URLs not returned by Firecrawl
+        (batch-side failures) are individually retried.
+        """
+        base_url = f"{self.base_url}/v2/batch/scrape/{job_id}"
+        skip = 0
+        processed_urls: set[str] = set()
+
+        while True:
+            poll_url = f"{base_url}?skip={skip}" if skip > 0 else base_url
+            data = await self._get_batch_status(poll_url)
+            status = data.get("status", "")
+            completed = data.get("completed", 0)
+            total = data.get("total", 0)
+
+            pages = data.get("data", [])
+            for page in pages:
+                meta = page.get("metadata", {})
+                url = meta.get("sourceURL") or meta.get("url", "")
+                markdown = page.get("markdown", "")
+                html = page.get("html", "")
+
+                entry = url_to_entry.get(url)
+                if not entry:
+                    logger.warning("Batch result URL not in TOC: %s", url)
+                    processed_urls.add(url)
+                    continue
+
+                # Retry empty-content responses individually
+                if not markdown.strip():
+                    logger.warning(
+                        "Empty content for %s from batch — retrying individually", url
+                    )
+                    for attempt in range(self.EMPTY_CONTENT_RETRIES):
+                        await asyncio.sleep(self.EMPTY_CONTENT_RETRY_DELAY)
+                        markdown, html = await self._scrape_article(url)
+                        if markdown.strip():
+                            break
+                        logger.warning(
+                            "Still empty for %s (retry %d/%d)",
+                            url, attempt + 1, self.EMPTY_CONTENT_RETRIES,
+                        )
+
+                logger.info("[%d/%d] Processing: %s", completed, total, url)
+                await self.process_article_result(
+                    db=db,
+                    source_id=source_id,
+                    run_id=run_id,
+                    url=url,
+                    markdown_content=markdown,
+                    doc_html=html,
+                    toc_entry_id=entry.get("toc_entry_id"),
+                    sort_order=entry.get("sort_order", 0),
+                    title=entry["title"],
+                )
+                processed_urls.add(url)
+
+            skip += len(pages)
+
+            if pages:
+                continue  # immediately poll for more
+
+            if status == "completed":
+                logger.info(
+                    "Batch %s complete: %d/%d", job_id, completed, total
+                )
+                break
+
+            # No new results yet and job still running — wait
+            await asyncio.sleep(self.BATCH_POLL_INTERVAL)
+
+        # Retry any URLs Firecrawl silently dropped (batch-side failures)
+        missing = [url for url in url_to_entry if url not in processed_urls]
+        if missing:
+            logger.warning(
+                "Batch %s dropped %d URLs — retrying individually: %s…",
+                job_id, len(missing), missing[:3],
+            )
+            for url in missing:
+                entry = url_to_entry[url]
+                logger.info("Individual retry: %s", url)
+                try:
+                    markdown, html = await self._scrape_article_with_retry(url)
+                    await self.process_article_result(
+                        db=db,
+                        source_id=source_id,
+                        run_id=run_id,
+                        url=url,
+                        markdown_content=markdown,
+                        doc_html=html,
+                        toc_entry_id=entry.get("toc_entry_id"),
+                        sort_order=entry.get("sort_order", 0),
+                        title=entry["title"],
+                    )
+                except Exception as exc:
+                    logger.warning("Individual retry failed for %s: %s", url, exc)
+
     async def extract_source(
         self,
         db: AsyncSession,
@@ -239,9 +531,11 @@ class FirecrawlService:
         Phase 1 — TOC discovery: recursively scrapes parent nav items in DOM
         order to build a complete depth-first ordered TOC.
 
-        Phase 2 — Content scraping: calls Firecrawl with includeTags=["#doc"]
-        so it delivers clean article markdown directly, scoped to the main
-        content container with nav/feedback/anchor-TOC stripped server-side.
+        Phase 2 — Content scraping: submits all TOC URLs as a single Firecrawl
+        batch job. If DOCEXTRACTOR_WEBHOOK_BASE_URL is configured, Firecrawl
+        pushes per-page results to our webhook endpoint and the background task
+        only polls for completion. Otherwise results are consumed via cursor
+        pagination inline.
         """
         result = await db.execute(
             select(DocumentationSource).where(DocumentationSource.id == source_id)
@@ -262,8 +556,9 @@ class FirecrawlService:
             run = ExtractionRun(source_id=source_id, status=RunStatus.RUNNING)
             db.add(run)
 
+        run.current_phase = "toc_discovery"
         source.status = SourceStatus.EXTRACTING
-        await db.flush()
+        await db.commit()
 
         try:
             await self._check_available()
@@ -299,8 +594,7 @@ class FirecrawlService:
             logger.info("TOC contains %d pages", len(toc_entries))
             run.articles_total = len(toc_entries)
 
-            # ── Persist TOC entries with parent-child relationships ─────────
-            # Delete stale TOC entries from previous runs before rebuilding.
+            # ── Persist TOC entries ─────────────────────────────────────────
             await db.execute(delete(TOCEntry).where(TOCEntry.source_id == source_id))
             await db.flush()
 
@@ -330,174 +624,30 @@ class FirecrawlService:
                 for deeper in [k for k in level_to_parent if k > td["level"]]:
                     del level_to_parent[deeper]
 
-            # Commit Phase 1: TOC built and total count set.
-            # This makes articles_total visible to the status poller, which
-            # uses a separate DB session and can only see committed data.
+            # Enrich entries with their persisted TOCEntry IDs for use in Phase 2
+            for entry in toc_entries:
+                entry["toc_entry_id"] = toc_db_map.get(entry["url"])
+
+            # Commit Phase 1: TOC and total count visible to status poller.
+            run.current_phase = "content_scraping"
             await db.commit()
 
-            # ── Phase 2: Scrape content for each page in TOC order ─────────
-            images_dir = os.path.join(settings.export_dir, settings.images_dir)
-            extracted_count = 0
-            unchanged_count = 0
-            updated_count = 0
+            # ── Phase 2: Batch scrape all content pages ─────────────────────
+            # Submit all TOC URLs in one batch job so Firecrawl can process
+            # them concurrently, then consume results via cursor pagination as
+            # they complete. This is strictly faster than the old sequential loop
+            # and gives the UI live per-page progress via the counters.
+            url_to_entry = {entry["url"]: entry for entry in toc_entries}
+            job_id = await self._submit_batch(list(url_to_entry.keys()))
+            run.firecrawl_job_id = job_id
+            await db.commit()
 
-            for i, entry in enumerate(toc_entries):
-                url = entry["url"]
-                try:
-                    logger.info(
-                        "[%d/%d] Scraping: %s", i + 1, len(toc_entries), url
-                    )
-                    markdown_content, doc_html = await self._scrape_article(url)
-
-                    if not markdown_content.strip():
-                        logger.warning("Empty content from %s — skipping", url)
-                        continue
-
-                    content_hash = compute_content_hash(markdown_content)
-
-                    existing_result = await db.execute(
-                        select(Article).where(
-                            Article.source_id == source_id,
-                            Article.source_url == url,
-                        )
-                    )
-                    existing_article = existing_result.scalar_one_or_none()
-
-                    if (
-                        existing_article is not None
-                        and existing_article.content_hash == content_hash
-                    ):
-                        unchanged_count += 1
-                        run.articles_unchanged = unchanged_count
-                        if unchanged_count % 10 == 0:
-                            await db.commit()
-                        continue
-
-                    # Parse last-updated from the filtered #doc HTML
-                    last_updated = None
-                    if doc_html:
-                        doc_soup = BeautifulSoup(doc_html, "html.parser")
-                        time_tag = doc_soup.find("time", attrs={"datetime": True})
-                        if time_tag:
-                            try:
-                                last_updated = datetime.fromisoformat(
-                                    time_tag["datetime"].replace("Z", "+00:00")
-                                )
-                            except (ValueError, TypeError):
-                                pass
-
-                    toc_entry_id = toc_db_map.get(url)
-                    estimated_tokens = len(markdown_content) // 4
-                    content_size = len(markdown_content.encode("utf-8"))
-                    title = entry["title"]
-
-                    if existing_article is not None:
-                        version = ArticleVersion(
-                            article_id=existing_article.id,
-                            extraction_run_id=run.id,
-                            content_markdown=existing_article.content_markdown,
-                            content_hash=existing_article.content_hash,
-                        )
-                        db.add(version)
-
-                        article = existing_article
-                        article.extraction_run_id = run.id
-                        article.toc_entry_id = toc_entry_id
-                        article.title = title
-                        article.source_url = url
-                        article.content_markdown = markdown_content
-                        article.content_html = doc_html
-                        article.content_hash = content_hash
-                        article.last_updated_at = (
-                            last_updated or datetime.now(timezone.utc)
-                        )
-                        article.sort_order = i
-                        article.estimated_tokens = estimated_tokens
-                        article.content_size_bytes = content_size
-                        old_imgs = await db.execute(
-                            select(ArticleImage).where(
-                                ArticleImage.article_id == existing_article.id
-                            )
-                        )
-                        for old_img in old_imgs.scalars():
-                            await db.delete(old_img)
-                        await db.flush()
-                        updated_count += 1
-                    else:
-                        article = Article(
-                            source_id=source_id,
-                            extraction_run_id=run.id,
-                            toc_entry_id=toc_entry_id,
-                            title=title,
-                            source_url=url,
-                            content_markdown=markdown_content,
-                            content_html=doc_html,
-                            content_hash=content_hash,
-                            last_updated_at=last_updated,
-                            sort_order=i,
-                            estimated_tokens=estimated_tokens,
-                            content_size_bytes=content_size,
-                        )
-                        db.add(article)
-                        await db.flush()
-                        extracted_count += 1
-
-                    # Download images referenced in the article
-                    if doc_html:
-                        img_soup = BeautifulSoup(doc_html, "html.parser")
-                        article_img_dir = os.path.join(images_dir, str(article.id))
-
-                        for j, img in enumerate(img_soup.find_all("img")):
-                            src = img.get("src", "")
-                            if not src:
-                                continue
-                            full_src = urljoin(url, src)
-                            if not full_src.startswith(("http://", "https://")):
-                                continue
-
-                            local_filename = await self._download_image(
-                                full_src, article_img_dir
-                            )
-                            if local_filename:
-                                local_path = os.path.join(
-                                    settings.images_dir, str(article.id), local_filename
-                                )
-                                db.add(ArticleImage(
-                                    article_id=article.id,
-                                    original_url=full_src,
-                                    local_filename=local_filename,
-                                    local_path=local_path,
-                                    alt_text=img.get("alt", ""),
-                                    sort_order=j,
-                                ))
-                                markdown_content = markdown_content.replace(
-                                    full_src, local_path
-                                )
-                                markdown_content = markdown_content.replace(
-                                    src, local_path
-                                )
-
-                    article.content_markdown = markdown_content
-
-                    run.articles_extracted = extracted_count
-                    run.articles_updated = updated_count
-                    run.articles_unchanged = unchanged_count
-
-                    if (extracted_count + updated_count) % 10 == 0:
-                        await db.commit()
-
-                    await asyncio.sleep(0.5)
-
-                except Exception as exc:
-                    logger.warning("Error scraping %s: %s", url, exc)
-                    continue
+            await self._poll_batch_and_process(
+                db, source_id, run.id, url_to_entry, job_id
+            )
 
             run.status = RunStatus.COMPLETED
             run.completed_at = datetime.now(timezone.utc)
-            run.articles_extracted = extracted_count
-            run.articles_updated = updated_count
-            run.articles_unchanged = unchanged_count
-
             source.status = SourceStatus.COMPLETED
             source.last_extracted_at = datetime.now(timezone.utc)
 

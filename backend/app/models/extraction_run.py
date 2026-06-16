@@ -42,6 +42,9 @@ class ExtractionRun(Base):
         Integer, default=0, nullable=False
     )
     error_message: Mapped[str | None] = mapped_column(String(4096), nullable=True)
+    # Firecrawl async batch job tracking.
+    firecrawl_job_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    current_phase: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

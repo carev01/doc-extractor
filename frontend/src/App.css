@@ -372,6 +372,95 @@ button {
   text-decoration: underline;
 }
 
+/* Run progress */
+.run-progress {
+  margin-top: 6px;
+}
+
+.run-phase {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--yellow);
+  margin-bottom: 4px;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--yellow);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+/* Indeterminate animation for TOC discovery phase */
+@keyframes indeterminate {
+  0%   { transform: translateX(-100%); width: 40%; }
+  100% { transform: translateX(300%);  width: 40%; }
+}
+
+.progress-bar.indeterminate {
+  position: relative;
+}
+
+.progress-bar.indeterminate::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 40%;
+  background: var(--yellow);
+  border-radius: 2px;
+  animation: indeterminate 1.4s ease-in-out infinite;
+}
+
+.run-counts {
+  display: block;
+  font-size: 0.75rem;
+}
+
+.run-history {
+  margin-top: 4px;
+}
+
+.run-history-list {
+  list-style: none;
+  margin-top: 4px;
+  padding-left: 8px;
+}
+
+.run-history-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  border: none;
+  cursor: default;
+}
+
+.run-history-list li:hover {
+  background: none;
+}
+
+.link-btn {
+  background: none;
+  color: var(--text-muted);
+  padding: 2px 4px;
+  font-size: 0.78rem;
+}
+
+.link-btn:hover {
+  color: var(--text);
+}
+
 /* Error */
 .error {
   background: rgba(208, 48, 48, 0.15);

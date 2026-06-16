@@ -228,12 +228,42 @@ function SourceItem({
 
   const renderRunResult = (run: ExtractionRun) => {
     if (run.status === "running") {
+      const processed =
+        (run.articles_extracted ?? 0) +
+        (run.articles_updated ?? 0) +
+        (run.articles_unchanged ?? 0);
+      const total = run.articles_total ?? 0;
+      const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
+
+      if (run.current_phase === "toc_discovery") {
+        return (
+          <div className="run-progress">
+            <span className="run-phase">Discovering table of contents…</span>
+            <div className="progress-bar indeterminate" />
+          </div>
+        );
+      }
+
       return (
-        <span className="sub run-progress">
-          Extracting… {run.articles_extracted} / {run.articles_total} articles
-        </span>
+        <div className="run-progress">
+          <span className="run-phase">
+            Scraping content
+            {total > 0 ? ` — ${processed} / ${total} pages (${pct}%)` : "…"}
+          </span>
+          {total > 0 && (
+            <div className="progress-bar">
+              <div className="progress-fill" style={{ width: `${pct}%` }} />
+            </div>
+          )}
+          <span className="run-counts sub">
+            {run.articles_extracted ?? 0} new ·{" "}
+            {run.articles_updated ?? 0} updated ·{" "}
+            {run.articles_unchanged ?? 0} unchanged
+          </span>
+        </div>
       );
     }
+
     if (run.status === "failed") {
       return (
         <span className="sub run-failed">
@@ -241,6 +271,7 @@ function SourceItem({
         </span>
       );
     }
+
     // completed
     const parts = [`${run.articles_extracted} new`];
     if (typeof run.articles_updated === "number")

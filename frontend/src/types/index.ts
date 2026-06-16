@@ -83,6 +83,8 @@ export interface ExtractionRun {
   id: string;
   source_id: string;
   status: "running" | "completed" | "failed";
+  current_phase: "toc_discovery" | "content_scraping" | null;
+  firecrawl_job_id: string | null;
   articles_extracted: number;
   articles_total: number;
   articles_updated?: number;

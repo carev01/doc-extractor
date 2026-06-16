@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     # Firecrawl — required; set DOCEXTRACTOR_FIRECRAWL_API_URL
     firecrawl_api_url: str
     firecrawl_api_key: str = ""
+    # Base URL Firecrawl can call back for webhook events (e.g. http://172.16.255.190:8000).
+    # Leave empty to disable webhooks and use cursor polling for progress instead.
+    webhook_base_url: str = ""
 
     # CORS — comma-separated or JSON list via DOCEXTRACTOR_CORS_ORIGINS
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
