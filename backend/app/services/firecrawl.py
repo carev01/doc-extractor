@@ -6,12 +6,10 @@ import logging
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
-from markdownify import markdownify as md
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -69,35 +67,55 @@ class FirecrawlService:
                 f"{self.CONNECT_TIMEOUT}s. Original error: {exc}"
             ) from exc
 
-    async def _scrape_html(self, url: str) -> str:
-        """Scrape a URL via Firecrawl and return the full page HTML.
-
-        Uses waitFor=3000 to ensure JS-rendered SPAs fully populate the nav.
-        onlyMainContent=False is required to get the left nav structure.
-        """
+    async def _firecrawl_request(self, url: str, payload: dict) -> dict:
+        """Make a Firecrawl v2 scrape request and return the data dict."""
         headers = {}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
         resp = await self.client.post(
-            f"{self.base_url}/v1/scrape",
-            json={
-                "url": url,
-                "formats": ["html"],
-                "onlyMainContent": False,
-                "waitFor": 3000,
-            },
+            f"{self.base_url}/v2/scrape",
+            json={"url": url, **payload},
             headers=headers,
         )
         resp.raise_for_status()
-        return resp.json().get("data", {}).get("html", "")
+        return resp.json().get("data", {})
 
-    def _parse_nav_items(self, ul_el: Any) -> list[dict]:
-        """Extract ordered nav items from a <ul> element.
+    async def _scrape_nav_html(self, url: str) -> str:
+        """Fetch full page HTML for nav parsing during TOC discovery.
 
-        Returns list of {title, url, is_parent} dicts, preserving DOM order.
-        is_parent is True when the item has data-is-parent attribute, meaning
-        it has children that are only revealed when that page is scraped.
+        onlyMainContent=False is required to preserve the left nav structure
+        that only appears in the full page render.
+        """
+        data = await self._firecrawl_request(url, {
+            "formats": ["html"],
+            "onlyMainContent": False,
+            "waitFor": 3000,
+        })
+        return data.get("html", "")
+
+    async def _scrape_article(self, url: str) -> tuple[str, str]:
+        """Fetch article content as (markdown, html) scoped to the #doc element.
+
+        includeTags=["#doc"] instructs Firecrawl to discard everything outside
+        the main article container before converting, so the returned markdown
+        contains only article content — no nav, no feedback widget, no TOC.
+        The HTML is filtered the same way and is only used to extract image
+        URLs and the last-updated timestamp.
+        """
+        data = await self._firecrawl_request(url, {
+            "formats": ["markdown", "html"],
+            "onlyMainContent": False,
+            "includeTags": ["#doc"],
+            "waitFor": 3000,
+        })
+        return data.get("markdown", ""), data.get("html", "")
+
+    def _parse_nav_items(self, ul_el) -> list[dict]:
+        """Extract ordered {title, url, is_parent} items from a nav <ul>.
+
+        Preserves DOM order. is_parent=True when data-is-parent is present,
+        meaning children are only revealed when that page is scraped directly.
         """
         items = []
         for li in ul_el.find_all("li", class_="nav-row", recursive=False):
@@ -119,7 +137,7 @@ class FirecrawlService:
         url: str,
         level: int,
         visited: set[str],
-        html_cache: dict[str, str],
+        nav_html_cache: dict[str, str],
     ) -> list[dict]:
         """Build an ordered TOC list via depth-first recursive nav scraping.
 
@@ -127,23 +145,20 @@ class FirecrawlService:
         parent pages must be scraped individually to discover their children.
 
         - level=0 (root URL): reads from <ul class="nav-group-root">
-        - level>0 (any page): reads the children of the active <div> in the nav
-
-        Scraped HTML is stored in html_cache so content extraction later
-        reuses it without a second round-trip per page.
+        - level>0: reads the children of the active nav item on that page
         """
         if url in visited:
             return []
         visited.add(url)
 
-        if url not in html_cache:
+        if url not in nav_html_cache:
             try:
-                html_cache[url] = await self._scrape_html(url)
+                nav_html_cache[url] = await self._scrape_nav_html(url)
             except Exception as exc:
                 logger.warning("TOC scrape failed for %s: %s", url, exc)
                 return []
 
-        html = html_cache[url]
+        html = nav_html_cache[url]
         if not html:
             return []
 
@@ -153,7 +168,6 @@ class FirecrawlService:
             return []
 
         if level == 0:
-            # Root page: top-level items live in the root nav list.
             root_ul = nav.find("ul", class_="nav-group-root")
             if not root_ul:
                 root_ul = nav.find("ul", class_="nav-group")
@@ -161,15 +175,12 @@ class FirecrawlService:
                 return []
             items = self._parse_nav_items(root_ul)
         else:
-            # Any other page: the active item's <li> contains a child <ul>
-            # with that item's direct children (revealed only when active).
             active_div = nav.find(class_="nav-item-active")
             if not active_div:
                 return []
             parent_li = active_div.parent  # <li class="nav-row">
             children_ul = parent_li.find("ul", class_="nav-group")
             if not children_ul:
-                # Active item has no children despite data-is-parent — skip.
                 return []
             items = self._parse_nav_items(children_ul)
 
@@ -183,62 +194,11 @@ class FirecrawlService:
             })
             if item["is_parent"]:
                 children = await self._build_toc_recursive(
-                    item["url"], level + 1, visited, html_cache
+                    item["url"], level + 1, visited, nav_html_cache
                 )
                 toc.extend(children)
 
         return toc
-
-    def _extract_article_content(self, html: str) -> tuple[str, str]:
-        """Extract clean article content from full page HTML.
-
-        Removes right-side anchor nav (#toc), feedback widget (#quick-feedback),
-        and right panel (#right-panel) before extracting content from #doc.
-
-        Returns: (markdown, clean_html)
-        """
-        soup = BeautifulSoup(html, "html.parser")
-
-        for eid in ("toc", "quick-feedback", "right-panel"):
-            el = soup.find(id=eid)
-            if el:
-                el.decompose()
-
-        doc_el = soup.find(id="doc")
-        if not doc_el:
-            doc_el = soup.find("article") or soup.find("main")
-        if not doc_el:
-            doc_el = soup.body
-        if not doc_el:
-            return "", ""
-
-        clean_html = str(doc_el)
-        markdown = md(clean_html, heading_style="ATX", strip=["script", "style"])
-        return markdown.strip(), clean_html
-
-    def _extract_last_updated(self, soup: BeautifulSoup) -> datetime | None:
-        """Parse last-updated timestamp from the page HTML."""
-        el = soup.find(id="last-updated")
-        if el:
-            time_tag = el.find("time")
-            if time_tag and time_tag.get("datetime"):
-                try:
-                    return datetime.fromisoformat(
-                        time_tag["datetime"].replace("Z", "+00:00")
-                    )
-                except (ValueError, TypeError):
-                    pass
-
-        time_tag = soup.find("time", attrs={"datetime": True})
-        if time_tag:
-            try:
-                return datetime.fromisoformat(
-                    time_tag["datetime"].replace("Z", "+00:00")
-                )
-            except (ValueError, TypeError):
-                pass
-
-        return None
 
     async def _download_image(self, img_url: str, article_dir: str) -> str | None:
         """Download an image and return the local filename."""
@@ -277,11 +237,11 @@ class FirecrawlService:
         """Execute a full extraction for a documentation source.
 
         Phase 1 — TOC discovery: recursively scrapes parent nav items in DOM
-        order to build a complete depth-first ordered TOC without relying on
-        URL structure or alphabetical sorting.
+        order to build a complete depth-first ordered TOC.
 
-        Phase 2 — Content scraping: processes each page in TOC order, reusing
-        HTML cached during Phase 1 for parent pages, scraping leaf pages fresh.
+        Phase 2 — Content scraping: calls Firecrawl with includeTags=["#doc"]
+        so it delivers clean article markdown directly, scoped to the main
+        content container with nav/feedback/anchor-TOC stripped server-side.
         """
         result = await db.execute(
             select(DocumentationSource).where(DocumentationSource.id == source_id)
@@ -310,11 +270,12 @@ class FirecrawlService:
 
             # ── Phase 1: Build ordered TOC via recursive nav scraping ──────
             logger.info("Discovering TOC for %s", source.base_url)
-            html_cache: dict[str, str] = {}
+            nav_html_cache: dict[str, str] = {}
             visited: set[str] = set()
 
             toc_entries = await self._build_toc_recursive(
-                source.base_url, level=0, visited=visited, html_cache=html_cache
+                source.base_url, level=0, visited=visited,
+                nav_html_cache=nav_html_cache,
             )
 
             if not toc_entries:
@@ -339,10 +300,7 @@ class FirecrawlService:
             run.articles_total = len(toc_entries)
 
             # ── Persist TOC entries with parent-child relationships ─────────
-            # level_to_parent tracks the most-recently-seen entry id at each
-            # depth level. When we move back up (level decreases), deeper
-            # entries are cleared so siblings share the correct parent.
-            toc_db_map: dict[str, uuid.UUID] = {}  # url → TOCEntry.id
+            toc_db_map: dict[str, uuid.UUID] = {}
             level_to_parent: dict[int, uuid.UUID] = {}
 
             for td in toc_entries:
@@ -365,8 +323,6 @@ class FirecrawlService:
 
                 toc_db_map[td["url"]] = toc_entry.id
                 level_to_parent[td["level"]] = toc_entry.id
-                # Clear any entries deeper than the current level (we've
-                # finished that sub-tree and are starting a new branch).
                 for deeper in [k for k in level_to_parent if k > td["level"]]:
                     del level_to_parent[deeper]
 
@@ -381,20 +337,12 @@ class FirecrawlService:
             for i, entry in enumerate(toc_entries):
                 url = entry["url"]
                 try:
-                    # Reuse HTML cached during TOC discovery if available.
-                    if url in html_cache:
-                        html = html_cache[url]
-                    else:
-                        html = await self._scrape_html(url)
-                        html_cache[url] = html
-
-                    if not html:
-                        continue
-
-                    markdown_content, clean_html = self._extract_article_content(html)
+                    # Firecrawl returns clean markdown scoped to #doc — no
+                    # BeautifulSoup/markdownify conversion needed on our side.
+                    markdown_content, doc_html = await self._scrape_article(url)
 
                     if not markdown_content.strip():
-                        logger.debug("No content extracted from %s — skipping", url)
+                        logger.debug("No content from %s — skipping", url)
                         continue
 
                     content_hash = compute_content_hash(markdown_content)
@@ -415,8 +363,19 @@ class FirecrawlService:
                         run.articles_unchanged = unchanged_count
                         continue
 
-                    soup = BeautifulSoup(html, "html.parser")
-                    last_updated = self._extract_last_updated(soup)
+                    # Parse last-updated from the filtered #doc HTML
+                    last_updated = None
+                    if doc_html:
+                        doc_soup = BeautifulSoup(doc_html, "html.parser")
+                        time_tag = doc_soup.find("time", attrs={"datetime": True})
+                        if time_tag:
+                            try:
+                                last_updated = datetime.fromisoformat(
+                                    time_tag["datetime"].replace("Z", "+00:00")
+                                )
+                            except (ValueError, TypeError):
+                                pass
+
                     toc_entry_id = toc_db_map.get(url)
                     estimated_tokens = len(markdown_content) // 4
                     content_size = len(markdown_content.encode("utf-8"))
@@ -437,7 +396,7 @@ class FirecrawlService:
                         article.title = title
                         article.source_url = url
                         article.content_markdown = markdown_content
-                        article.content_html = clean_html
+                        article.content_html = doc_html
                         article.content_hash = content_hash
                         article.last_updated_at = (
                             last_updated or datetime.now(timezone.utc)
@@ -457,7 +416,7 @@ class FirecrawlService:
                             title=title,
                             source_url=url,
                             content_markdown=markdown_content,
-                            content_html=clean_html,
+                            content_html=doc_html,
                             content_hash=content_hash,
                             last_updated_at=last_updated,
                             sort_order=i,
@@ -469,8 +428,8 @@ class FirecrawlService:
                         extracted_count += 1
 
                     # Download images referenced in the article
-                    if clean_html:
-                        img_soup = BeautifulSoup(clean_html, "html.parser")
+                    if doc_html:
+                        img_soup = BeautifulSoup(doc_html, "html.parser")
                         article_img_dir = os.path.join(images_dir, str(article.id))
 
                         for j, img in enumerate(img_soup.find_all("img")):
@@ -503,8 +462,6 @@ class FirecrawlService:
                                     src, local_path
                                 )
 
-                    # content_hash stays on raw markdown; update final markdown
-                    # with rewritten image paths.
                     article.content_markdown = markdown_content
 
                     run.articles_extracted = extracted_count

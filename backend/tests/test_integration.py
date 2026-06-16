@@ -371,13 +371,14 @@ def test_toc_tree_structure(db_session):
 # ── Firecrawl Service Tests ──
 
 def test_firecrawl_service_available():
-    from app.services.firecrawl import firecrawl_service, FirecrawlService
+    from app.services.firecrawl import firecrawl_service
     assert firecrawl_service is not None
     assert hasattr(firecrawl_service, "extract_source")
-    assert hasattr(firecrawl_service, "_scrape_html")
+    assert hasattr(firecrawl_service, "_firecrawl_request")
+    assert hasattr(firecrawl_service, "_scrape_nav_html")
+    assert hasattr(firecrawl_service, "_scrape_article")
     assert hasattr(firecrawl_service, "_build_toc_recursive")
     assert hasattr(firecrawl_service, "_parse_nav_items")
-    assert hasattr(firecrawl_service, "_extract_article_content")
     assert hasattr(firecrawl_service, "_download_image")
 
 
@@ -410,31 +411,6 @@ def test_nav_item_parsing():
     assert items[0]["is_parent"] is True
     assert items[1]["title"] == "Page B"
     assert items[1]["is_parent"] is False
-
-
-def test_extract_article_content_removes_chrome():
-    """_extract_article_content strips #toc, #quick-feedback, #right-panel."""
-    from app.services.firecrawl import firecrawl_service
-
-    html = """
-    <html><body>
-      <div id="nav"><ul><li>nav stuff</li></ul></div>
-      <div id="toc"><p>Page contents</p></div>
-      <div id="right-panel"><p>Right panel</p></div>
-      <div id="doc">
-        <h1>Article Title</h1>
-        <p>Article content here.</p>
-      </div>
-      <div id="quick-feedback"><p>Was this helpful?</p></div>
-    </body></html>
-    """
-    markdown, clean_html = firecrawl_service._extract_article_content(html)
-
-    assert "Article Title" in markdown
-    assert "Article content here" in markdown
-    assert "Page contents" not in markdown
-    assert "Right panel" not in markdown
-    assert "Was this helpful" not in markdown
 
 
 if __name__ == "__main__":
