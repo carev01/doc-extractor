@@ -3,6 +3,11 @@
 import logging
 from contextlib import asynccontextmanager
 
+# Ensure app loggers (e.g. app.services.firecrawl) are visible at INFO level.
+# Uvicorn only configures its own loggers by default; without this the root
+# logger stays at WARNING and extraction progress is silently dropped.
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 

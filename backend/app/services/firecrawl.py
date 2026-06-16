@@ -10,7 +10,7 @@ from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -90,7 +90,7 @@ class FirecrawlService:
         data = await self._firecrawl_request(url, {
             "formats": ["html"],
             "onlyMainContent": False,
-            "waitFor": 3000,
+            "waitFor": 1500,
         })
         return data.get("html", "")
 
@@ -107,7 +107,7 @@ class FirecrawlService:
             "formats": ["markdown", "html"],
             "onlyMainContent": False,
             "includeTags": ["#doc"],
-            "waitFor": 3000,
+            "waitFor": 1500,
         })
         return data.get("markdown", ""), data.get("html", "")
 
@@ -300,6 +300,10 @@ class FirecrawlService:
             run.articles_total = len(toc_entries)
 
             # ── Persist TOC entries with parent-child relationships ─────────
+            # Delete stale TOC entries from previous runs before rebuilding.
+            await db.execute(delete(TOCEntry).where(TOCEntry.source_id == source_id))
+            await db.flush()
+
             toc_db_map: dict[str, uuid.UUID] = {}
             level_to_parent: dict[int, uuid.UUID] = {}
 
@@ -326,7 +330,10 @@ class FirecrawlService:
                 for deeper in [k for k in level_to_parent if k > td["level"]]:
                     del level_to_parent[deeper]
 
-            await db.flush()
+            # Commit Phase 1: TOC built and total count set.
+            # This makes articles_total visible to the status poller, which
+            # uses a separate DB session and can only see committed data.
+            await db.commit()
 
             # ── Phase 2: Scrape content for each page in TOC order ─────────
             images_dir = os.path.join(settings.export_dir, settings.images_dir)
@@ -337,12 +344,13 @@ class FirecrawlService:
             for i, entry in enumerate(toc_entries):
                 url = entry["url"]
                 try:
-                    # Firecrawl returns clean markdown scoped to #doc — no
-                    # BeautifulSoup/markdownify conversion needed on our side.
+                    logger.info(
+                        "[%d/%d] Scraping: %s", i + 1, len(toc_entries), url
+                    )
                     markdown_content, doc_html = await self._scrape_article(url)
 
                     if not markdown_content.strip():
-                        logger.debug("No content from %s — skipping", url)
+                        logger.warning("Empty content from %s — skipping", url)
                         continue
 
                     content_hash = compute_content_hash(markdown_content)
@@ -361,6 +369,8 @@ class FirecrawlService:
                     ):
                         unchanged_count += 1
                         run.articles_unchanged = unchanged_count
+                        if unchanged_count % 10 == 0:
+                            await db.commit()
                         continue
 
                     # Parse last-updated from the filtered #doc HTML
@@ -404,7 +414,12 @@ class FirecrawlService:
                         article.sort_order = i
                         article.estimated_tokens = estimated_tokens
                         article.content_size_bytes = content_size
-                        for old_img in list(article.images):
+                        old_imgs = await db.execute(
+                            select(ArticleImage).where(
+                                ArticleImage.article_id == existing_article.id
+                            )
+                        )
+                        for old_img in old_imgs.scalars():
                             await db.delete(old_img)
                         await db.flush()
                         updated_count += 1
@@ -469,7 +484,7 @@ class FirecrawlService:
                     run.articles_unchanged = unchanged_count
 
                     if (extracted_count + updated_count) % 10 == 0:
-                        await db.flush()
+                        await db.commit()
 
                     await asyncio.sleep(0.5)
 
