@@ -374,39 +374,67 @@ def test_firecrawl_service_available():
     from app.services.firecrawl import firecrawl_service, FirecrawlService
     assert firecrawl_service is not None
     assert hasattr(firecrawl_service, "extract_source")
-    assert hasattr(firecrawl_service, "_firecrawl_map")
-    assert hasattr(firecrawl_service, "_firecrawl_scrape")
+    assert hasattr(firecrawl_service, "_scrape_html")
+    assert hasattr(firecrawl_service, "_build_toc_recursive")
+    assert hasattr(firecrawl_service, "_parse_nav_items")
+    assert hasattr(firecrawl_service, "_extract_article_content")
     assert hasattr(firecrawl_service, "_download_image")
-    assert hasattr(firecrawl_service, "_parse_toc_from_urls")
 
 
-def test_toc_parsing():
+def test_nav_item_parsing():
+    """_parse_nav_items extracts ordered items from a nav <ul>."""
+    from bs4 import BeautifulSoup
     from app.services.firecrawl import firecrawl_service
 
-    urls = [
-        "https://docs.example.com/",
-        "https://docs.example.com/getting-started",
-        "https://docs.example.com/getting-started/installation",
-        "https://docs.example.com/getting-started/configuration",
-        "https://docs.example.com/api-reference",
-        "https://docs.example.com/api-reference/authentication",
-        "https://docs.example.com/api-reference/endpoints",
-    ]
+    html = """
+    <ul class="nav-group nav-group-root">
+      <li class="nav-row">
+        <div class="nav-item nav-doc" data-is-parent="">
+          <a href="https://docs.example.com/section-a">Section A</a>
+        </div>
+      </li>
+      <li class="nav-row">
+        <div class="nav-item nav-doc">
+          <a href="https://docs.example.com/page-b">Page B</a>
+        </div>
+      </li>
+    </ul>
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    ul = soup.find("ul")
+    items = firecrawl_service._parse_nav_items(ul)
 
-    toc = firecrawl_service._parse_toc_from_urls(urls, "https://docs.example.com")
-    assert len(toc) == 7
+    assert len(items) == 2
+    assert items[0]["title"] == "Section A"
+    assert items[0]["url"] == "https://docs.example.com/section-a"
+    assert items[0]["is_parent"] is True
+    assert items[1]["title"] == "Page B"
+    assert items[1]["is_parent"] is False
 
-    # "Getting Started" has children (installation, configuration) → non-article
-    gs = [e for e in toc if e["title"] == "Getting Started"][0]
-    assert gs["is_article"] is False
 
-    # "Installation" is a leaf → article
-    inst = [e for e in toc if e["title"] == "Installation"][0]
-    assert inst["is_article"] is True
+def test_extract_article_content_removes_chrome():
+    """_extract_article_content strips #toc, #quick-feedback, #right-panel."""
+    from app.services.firecrawl import firecrawl_service
 
-    # "API Reference" has children → non-article
-    api = [e for e in toc if e["title"] == "Api Reference"][0]
-    assert api["is_article"] is False
+    html = """
+    <html><body>
+      <div id="nav"><ul><li>nav stuff</li></ul></div>
+      <div id="toc"><p>Page contents</p></div>
+      <div id="right-panel"><p>Right panel</p></div>
+      <div id="doc">
+        <h1>Article Title</h1>
+        <p>Article content here.</p>
+      </div>
+      <div id="quick-feedback"><p>Was this helpful?</p></div>
+    </body></html>
+    """
+    markdown, clean_html = firecrawl_service._extract_article_content(html)
+
+    assert "Article Title" in markdown
+    assert "Article content here" in markdown
+    assert "Page contents" not in markdown
+    assert "Right panel" not in markdown
+    assert "Was this helpful" not in markdown
 
 
 if __name__ == "__main__":

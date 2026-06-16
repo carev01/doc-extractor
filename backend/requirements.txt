@@ -5,6 +5,7 @@ asyncpg==0.31.0
 alembic==1.18.4
 psycopg2-binary==2.9.12
 pydantic==2.13.4
+pydantic-settings==2.14.1
 httpx==0.28.1
 aiofiles==25.1.0
 markdownify==1.2.2
