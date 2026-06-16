@@ -6,7 +6,6 @@ import type {
   VendorList,
   DocumentationSource,
   SourceList,
-  Article,
   ArticleDetail,
   ArticleList,
   TOCResponse,
@@ -16,8 +15,10 @@ import type {
   ExportResponse,
 } from "../types";
 
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
+
 const api = axios.create({
-  baseURL: "http://localhost:8000/api",
+  baseURL: `${API_BASE}/api`,
   timeout: 30000,
 });
 
@@ -152,5 +153,5 @@ export async function exportMarkdown(
 }
 
 export function getDownloadUrl(exportId: string, filename: string): string {
-  return `http://localhost:8000/api/export/download/${exportId}/${filename}`;
+  return `${API_BASE}/api/export/download/${exportId}/${filename}`;
 }

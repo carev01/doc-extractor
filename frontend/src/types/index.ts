@@ -85,6 +85,8 @@ export interface ExtractionRun {
   status: "running" | "completed" | "failed";
   articles_extracted: number;
   articles_total: number;
+  articles_updated?: number;
+  articles_unchanged?: number;
   error_message: string | null;
   started_at: string | null;
   completed_at: string | null;

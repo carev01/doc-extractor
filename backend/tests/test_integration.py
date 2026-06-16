@@ -15,12 +15,13 @@ from sqlalchemy.orm import Session, sessionmaker
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from app.core.config import settings
 from app.core.database import Base
 from app.models import Vendor, DocumentationSource, Article, TOCEntry
 from app.services.exporter import ExportEngine
 
-# Synchronous test database
-TEST_DATABASE_URL_SYNC = "postgresql+psycopg2://docextractor:docextractor_dev@localhost:5432/docextractor_test"
+# Derive test DB URL from the configured sync URL — same host/credentials, different database.
+TEST_DATABASE_URL_SYNC = settings.database_url_sync.rsplit("/", 1)[0] + "/docextractor_test"
 
 sync_engine = create_engine(TEST_DATABASE_URL_SYNC, echo=False)
 SyncSession = sessionmaker(sync_engine, class_=Session, expire_on_commit=False)

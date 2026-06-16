@@ -37,6 +37,9 @@ class Article(Base):
     source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     content_markdown: Mapped[str] = mapped_column(Text, nullable=False)
     content_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # SHA-256 hex digest of content_markdown — used to detect changes
+    # between extraction runs for incremental extraction.
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Metadata
     last_updated_at: Mapped[datetime | None] = mapped_column(
@@ -66,4 +69,7 @@ class Article(Base):
     )
     images: Mapped[list["ArticleImage"]] = relationship(
         "ArticleImage", back_populates="article", cascade="all, delete-orphan"
+    )
+    versions: Mapped[list["ArticleVersion"]] = relationship(
+        "ArticleVersion", back_populates="article", cascade="all, delete-orphan"
     )

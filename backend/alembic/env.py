@@ -18,7 +18,12 @@ if config.config_file_name is not None:
 # for 'autogenerate' support
 from app.core.database import Base
 from app.models import *  # noqa: F401,F403 — ensure all models are imported
+from app.core.config import settings
+
 target_metadata = Base.metadata
+
+# Override the URL from application settings so credentials never live in alembic.ini
+config.set_main_option("sqlalchemy.url", settings.database_url_sync)
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

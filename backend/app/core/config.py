@@ -6,13 +6,16 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     """App settings loaded from environment variables."""
 
-    # Database
-    database_url: str = "postgresql+asyncpg://docextractor:docextractor_dev@localhost:5432/docextractor"
-    database_url_sync: str = "postgresql+psycopg2://docextractor:docextractor_dev@localhost:5432/docextractor"
+    # Database — required; set DOCEXTRACTOR_DATABASE_URL and DOCEXTRACTOR_DATABASE_URL_SYNC
+    database_url: str
+    database_url_sync: str
 
-    # Firecrawl
-    firecrawl_api_url: str = "http://firecrawl.k3s.home.lan"
+    # Firecrawl — required; set DOCEXTRACTOR_FIRECRAWL_API_URL
+    firecrawl_api_url: str
     firecrawl_api_key: str = ""
+
+    # CORS — comma-separated or JSON list via DOCEXTRACTOR_CORS_ORIGINS
+    cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
 
     # Export
     export_dir: str = "exports"
@@ -23,7 +26,12 @@ class Settings(BaseSettings):
     # Image storage
     images_dir: str = "exports/images"
 
-    model_config = {"env_prefix": "DOCEXTRACTOR_", "case_sensitive": False}
+    model_config = {
+        "env_prefix": "DOCEXTRACTOR_",
+        "case_sensitive": False,
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+    }
 
 
 settings = Settings()

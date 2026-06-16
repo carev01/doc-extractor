@@ -14,7 +14,7 @@ export default function ExportPanel({ source }: Props) {
   const [toc, setToc] = useState<TOCEntry[]>([]);
   const [selectedTocIds, setSelectedTocIds] = useState<Set<string>>(new Set());
   const [topicQuery, setTopicQuery] = useState("");
-  const [splitBy, setSplitBy] = useState<string>("");
+  const [splitBy, setSplitBy] = useState<"" | "size" | "articles" | "tokens">("");
   const [splitValue, setSplitValue] = useState(50);
   const [exporting, setExporting] = useState(false);
   const [exportResult, setExportResult] = useState<ExportResponse | null>(null);
@@ -182,7 +182,7 @@ export default function ExportPanel({ source }: Props) {
         <h3>File splitting (optional):</h3>
         <select
           value={splitBy}
-          onChange={(e) => setSplitBy(e.target.value)}
+          onChange={(e) => setSplitBy(e.target.value as "" | "size" | "articles" | "tokens")}
         >
           <option value="">No splitting — single file</option>
           <option value="articles">Split by article count</option>

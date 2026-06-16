@@ -1,6 +1,7 @@
 """Firecrawl integration service — full-site extraction with TOC preservation."""
 
 import asyncio
+import hashlib
 import logging
 import os
 import re
@@ -17,10 +18,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.article import Article
+from app.models.article_version import ArticleVersion
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.image import ArticleImage
 from app.models.source import DocumentationSource, SourceStatus
 from app.models.toc import TOCEntry
+
+
+def compute_content_hash(content: str) -> str:
+    """SHA-256 hex digest of markdown content used for change detection."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 logger = logging.getLogger(__name__)
 
@@ -287,6 +294,8 @@ class FirecrawlService:
             # Step 4: Scrape each article page
             images_dir = os.path.join(settings.export_dir, settings.images_dir)
             extracted_count = 0
+            unchanged_count = 0
+            updated_count = 0
 
             for i, url in enumerate(doc_urls):
                 try:
@@ -296,6 +305,30 @@ class FirecrawlService:
                     metadata = scrape_result.get("data", {}).get("metadata", {})
 
                     if not markdown_content.strip():
+                        continue
+
+                    # Compute hash of the RAW scraped markdown (before any
+                    # image-reference rewriting) so the value is stable across
+                    # runs and is the basis for incremental change detection.
+                    content_hash = compute_content_hash(markdown_content)
+
+                    # Incremental check: does an article already exist for
+                    # this source + URL?
+                    existing_result = await db.execute(
+                        select(Article).where(
+                            Article.source_id == source_id,
+                            Article.source_url == url,
+                        )
+                    )
+                    existing_article = existing_result.scalar_one_or_none()
+
+                    if (
+                        existing_article is not None
+                        and existing_article.content_hash == content_hash
+                    ):
+                        # Content unchanged → skip (no DB write, no image
+                        # re-download).
+                        unchanged_count += 1
                         continue
 
                     # Determine title
@@ -325,21 +358,54 @@ class FirecrawlService:
                     estimated_tokens = len(markdown_content) // 4
                     content_size = len(markdown_content.encode("utf-8"))
 
-                    article = Article(
-                        source_id=source_id,
-                        extraction_run_id=run.id,
-                        toc_entry_id=toc_entry_id,
-                        title=title,
-                        source_url=url,
-                        content_markdown=markdown_content,
-                        content_html=html_content,
-                        last_updated_at=last_updated,
-                        sort_order=i,
-                        estimated_tokens=estimated_tokens,
-                        content_size_bytes=content_size,
-                    )
-                    db.add(article)
-                    await db.flush()
+                    if existing_article is not None:
+                        # Content changed → snapshot the OLD content into an
+                        # ArticleVersion row before overwriting, then update.
+                        version = ArticleVersion(
+                            article_id=existing_article.id,
+                            extraction_run_id=run.id,
+                            content_markdown=existing_article.content_markdown,
+                            content_hash=existing_article.content_hash,
+                        )
+                        db.add(version)
+
+                        article = existing_article
+                        article.extraction_run_id = run.id
+                        article.toc_entry_id = toc_entry_id
+                        article.title = title
+                        article.source_url = url
+                        article.content_markdown = markdown_content
+                        article.content_html = html_content
+                        article.content_hash = content_hash
+                        article.last_updated_at = (
+                            last_updated or datetime.now(timezone.utc)
+                        )
+                        article.sort_order = i
+                        article.estimated_tokens = estimated_tokens
+                        article.content_size_bytes = content_size
+                        # Drop stale image records; they will be re-downloaded.
+                        for old_img in list(article.images):
+                            await db.delete(old_img)
+                        await db.flush()
+                        updated_count += 1
+                    else:
+                        article = Article(
+                            source_id=source_id,
+                            extraction_run_id=run.id,
+                            toc_entry_id=toc_entry_id,
+                            title=title,
+                            source_url=url,
+                            content_markdown=markdown_content,
+                            content_html=html_content,
+                            content_hash=content_hash,
+                            last_updated_at=last_updated,
+                            sort_order=i,
+                            estimated_tokens=estimated_tokens,
+                            content_size_bytes=content_size,
+                        )
+                        db.add(article)
+                        await db.flush()
+                        extracted_count += 1
 
                     # Step 5: Download linked images
                     if html_content:
@@ -385,14 +451,17 @@ class FirecrawlService:
                                     src, local_path
                                 )
 
-                    # Update article with corrected image paths
+                    # Update article with corrected image paths. Note:
+                    # content_hash deliberately stays the hash of the raw
+                    # markdown so future runs compare like-for-like.
                     article.content_markdown = markdown_content
 
-                    extracted_count += 1
                     run.articles_extracted = extracted_count
+                    run.articles_updated = updated_count
+                    run.articles_unchanged = unchanged_count
 
                     # Commit periodically
-                    if extracted_count % 10 == 0:
+                    if (extracted_count + updated_count) % 10 == 0:
                         await db.flush()
 
                     # Small delay to be polite to the target server
@@ -407,6 +476,8 @@ class FirecrawlService:
             run.status = RunStatus.COMPLETED
             run.completed_at = datetime.now(timezone.utc)
             run.articles_extracted = extracted_count
+            run.articles_updated = updated_count
+            run.articles_unchanged = unchanged_count
 
             source.status = SourceStatus.COMPLETED
             source.last_extracted_at = datetime.now(timezone.utc)

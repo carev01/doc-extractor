@@ -34,6 +34,13 @@ class ExtractionRun(Base):
     )
     articles_extracted: Mapped[int] = mapped_column(Integer, default=0)
     articles_total: Mapped[int] = mapped_column(Integer, default=0)
+    # Incremental extraction counters.
+    articles_unchanged: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    articles_updated: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
     error_message: Mapped[str | None] = mapped_column(String(4096), nullable=True)
 
     started_at: Mapped[datetime] = mapped_column(

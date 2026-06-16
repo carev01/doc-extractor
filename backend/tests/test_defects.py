@@ -17,12 +17,14 @@ from sqlalchemy.orm import Session, sessionmaker
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from app.core.config import settings
 from app.core.database import Base
 from app.models import Vendor, DocumentationSource, Article, ExtractionRun
 from app.models.extraction_run import RunStatus
 from app.services.firecrawl import FirecrawlService, FirecrawlUnavailableError
 
-TEST_DATABASE_URL_SYNC = "postgresql+psycopg2://docextractor:docextractor_dev@localhost:5432/docextractor_test"
+# Derive test DB URL from the configured sync URL — same host/credentials, different database.
+TEST_DATABASE_URL_SYNC = settings.database_url_sync.rsplit("/", 1)[0] + "/docextractor_test"
 
 sync_engine = create_engine(TEST_DATABASE_URL_SYNC, echo=False)
 SyncSession = sessionmaker(sync_engine, class_=Session, expire_on_commit=False)
@@ -53,12 +55,13 @@ def test_defect1_all_six_tables_in_metadata():
     table_names = sorted(Base.metadata.tables.keys())
     assert table_names == [
         "article_images",
+        "article_versions",
         "articles",
         "documentation_sources",
         "extraction_runs",
         "toc_entries",
         "vendors",
-    ], f"Expected 6 tables, got {len(table_names)}: {table_names}"
+    ], f"Expected 7 tables, got {len(table_names)}: {table_names}"
 
 
 def test_defect1_tables_created_on_startup(db_session):

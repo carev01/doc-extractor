@@ -4,6 +4,7 @@ from app.models.vendor import Vendor
 from app.models.source import DocumentationSource, SourceStatus
 from app.models.toc import TOCEntry
 from app.models.article import Article
+from app.models.article_version import ArticleVersion
 from app.models.image import ArticleImage
 from app.models.extraction_run import ExtractionRun, RunStatus
 
@@ -13,6 +14,7 @@ __all__ = [
     "SourceStatus",
     "TOCEntry",
     "Article",
+    "ArticleVersion",
     "ArticleImage",
     "ExtractionRun",
     "RunStatus",

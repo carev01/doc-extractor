@@ -133,6 +133,8 @@ async def get_run_status(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         "status": run.status,
         "articles_extracted": run.articles_extracted,
         "articles_total": run.articles_total,
+        "articles_updated": run.articles_updated,
+        "articles_unchanged": run.articles_unchanged,
         "error_message": run.error_message,
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "completed_at": run.completed_at.isoformat() if run.completed_at else None,
@@ -161,6 +163,9 @@ async def list_runs(
                 "status": r.status,
                 "articles_extracted": r.articles_extracted,
                 "articles_total": r.articles_total,
+                "articles_updated": r.articles_updated,
+                "articles_unchanged": r.articles_unchanged,
+                "error_message": r.error_message,
                 "started_at": r.started_at.isoformat() if r.started_at else None,
                 "completed_at": r.completed_at.isoformat() if r.completed_at else None,
             }
