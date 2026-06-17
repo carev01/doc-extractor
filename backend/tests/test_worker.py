@@ -93,3 +93,4 @@ async def test_run_one_marks_failed_on_exception(sessions):
         run = (await db.execute(select(ExtractionRun))).scalar_one()
         assert run.status == RunStatus.FAILED
         assert "boom" in (run.error_message or "")
+        assert run.claimed_by == worker.WORKER_ID

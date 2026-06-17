@@ -61,7 +61,6 @@ async def run_one(claim_session_factory=None, work_session_factory=None) -> bool
     except Exception as exc:
         logger.exception("Run %s failed", run_id)
         async with work_session_factory() as db:
-            await db.rollback()
             res = await db.execute(
                 select(ExtractionRun).where(ExtractionRun.id == run_id)
             )
