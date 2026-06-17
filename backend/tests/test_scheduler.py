@@ -67,6 +67,7 @@ async def test_due_schedule_enqueues_and_advances(sessions):
         sched = (await db.execute(select(Schedule))).scalar_one()
         assert sched.next_run_at > NOW          # advanced to tomorrow 02:00
         assert sched.last_run_id == runs[0].id
+        assert sched.last_run_at == NOW
 
 
 @pytest.mark.asyncio
@@ -91,6 +92,7 @@ async def test_due_schedule_with_active_run_coalesces(sessions):
         assert pending == []
         sched = (await db.execute(select(Schedule))).scalar_one()
         assert sched.next_run_at > NOW  # still advanced
+        assert sched.last_run_id is None
 
 
 @pytest.mark.asyncio
