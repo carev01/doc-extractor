@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +12,14 @@ from app.models.extraction_run import ExtractionRun, RunStatus
 
 class ActiveRunExists(Exception):
     """Raised when a source already has a pending/running run (coalesce/409)."""
+
+
+def _is_active_run_violation(exc: IntegrityError) -> bool:
+    """Return True only for the uq_active_run_per_source unique-constraint violation."""
+    orig = exc.orig
+    constraint_match = "uq_active_run_per_source" in str(orig)
+    sqlstate_match = getattr(orig, "sqlstate", None) == "23505"
+    return constraint_match and sqlstate_match
 
 
 async def enqueue_run(
@@ -24,9 +32,11 @@ async def enqueue_run(
     db.add(run)
     try:
         await db.commit()
-    except IntegrityError as exc:  # uq_active_run_per_source
+    except IntegrityError as exc:
         await db.rollback()
-        raise ActiveRunExists(str(source_id)) from exc
+        if _is_active_run_violation(exc):
+            raise ActiveRunExists(str(source_id)) from exc
+        raise
     await db.refresh(run)
     return run
 
@@ -63,10 +73,12 @@ async def reap_stale_runs(
     """Requeue (or fail, at the attempt cap) runs whose worker stopped heartbeating."""
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_seconds)
     result = await db.execute(
-        select(ExtractionRun).where(
+        select(ExtractionRun)
+        .where(
             ExtractionRun.status == RunStatus.RUNNING,
-            ExtractionRun.heartbeat_at < cutoff,
+            or_(ExtractionRun.heartbeat_at.is_(None), ExtractionRun.heartbeat_at < cutoff),
         )
+        .with_for_update(skip_locked=True)
     )
     stale = result.scalars().all()
     for run in stale:
@@ -78,5 +90,6 @@ async def reap_stale_runs(
             run.status = RunStatus.PENDING
             run.claimed_by = None
             run.claimed_at = None
+            run.heartbeat_at = None
     await db.commit()
     return len(stale)

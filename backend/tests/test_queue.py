@@ -133,3 +133,28 @@ async def test_reap_requeues_stale_then_fails_at_cap(sessions):
     async with sessions() as db:
         run = (await db.execute(select(ExtractionRun).where(ExtractionRun.id == run_id))).scalar_one()
         assert run.status == RunStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_reap_handles_null_heartbeat(sessions):
+    """A RUNNING run with heartbeat_at=None must be reaped and re-queued as PENDING."""
+    async with sessions() as db:
+        source_id = await _make_source(db)
+        run = ExtractionRun(
+            source_id=source_id,
+            status=RunStatus.RUNNING,
+            attempts=0,
+            heartbeat_at=None,
+        )
+        db.add(run)
+        await db.commit()
+        run_id = run.id
+
+    async with sessions() as db:
+        n = await reap_stale_runs(db, max_attempts=3, stale_seconds=300)
+        assert n == 1
+
+    async with sessions() as db:
+        run = (await db.execute(select(ExtractionRun).where(ExtractionRun.id == run_id))).scalar_one()
+        assert run.status == RunStatus.PENDING
+        assert run.claimed_by is None
