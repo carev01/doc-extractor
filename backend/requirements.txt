@@ -10,3 +10,4 @@ httpx==0.28.1
 aiofiles==25.1.0
 beautifulsoup4==4.15.0
 python-dotenv==1.2.2
+croniter==3.0.3
