@@ -92,30 +92,50 @@ class FirecrawlService:
         })
         return data.get("html", "")
 
-    async def _scrape_article(self, url: str) -> tuple[str, str]:
-        """Return (markdown, html) scoped to the #doc element."""
-        data = await self._firecrawl_request(url, {
-            "formats": ["markdown", "html"],
+    async def _scrape_article(
+        self, url: str, tag: str | None = None
+    ) -> tuple[str, str, str | None, str | None]:
+        """Return (markdown, html, change_status, diff_text) scoped to the #doc element.
+
+        change_status is the Firecrawl changeTracking status ("new"|"same"|"changed"|
+        "removed") when an API key is configured; None otherwise.
+        diff_text is the git-diff string when change_status is "changed".
+        """
+        formats: list = ["markdown", "html"]
+        if self.api_key:
+            formats.append({"type": "changeTracking", "modes": ["git-diff"]})
+        payload: dict = {
+            "formats": formats,
             "onlyMainContent": False,
             "includeTags": ["#doc"],
             "waitFor": 1500,
-        })
-        return data.get("markdown", ""), data.get("html", "")
+        }
+        if tag and self.api_key:
+            payload["tag"] = tag
+        data = await self._firecrawl_request(url, payload)
+        markdown = data.get("markdown", "")
+        html = data.get("html", "")
+        ct = data.get("changeTracking") or {}
+        change_status = ct.get("changeStatus")
+        diff_text = (ct.get("diff") or {}).get("text")
+        return markdown, html, change_status, diff_text
 
-    async def _scrape_article_with_retry(self, url: str) -> tuple[str, str]:
+    async def _scrape_article_with_retry(
+        self, url: str, tag: str | None = None
+    ) -> tuple[str, str, str | None, str | None]:
         """Scrape a single article, retrying on empty-content responses."""
-        markdown, html = await self._scrape_article(url)
+        markdown, html, change_status, diff_text = await self._scrape_article(url, tag=tag)
         for attempt in range(self.EMPTY_CONTENT_RETRIES):
             if markdown.strip():
-                return markdown, html
+                return markdown, html, change_status, diff_text
             logger.warning(
                 "Empty content from %s (attempt %d/%d) — retrying in %.0fs",
                 url, attempt + 1, self.EMPTY_CONTENT_RETRIES,
                 self.EMPTY_CONTENT_RETRY_DELAY,
             )
             await asyncio.sleep(self.EMPTY_CONTENT_RETRY_DELAY)
-            markdown, html = await self._scrape_article(url)
-        return markdown, html
+            markdown, html, change_status, diff_text = await self._scrape_article(url, tag=tag)
+        return markdown, html, change_status, diff_text
 
     def _parse_nav_items(self, ul_el) -> list[dict]:
         items = []
@@ -231,16 +251,34 @@ class FirecrawlService:
         toc_entry_id: uuid.UUID | None,
         sort_order: int,
         title: str,
+        change_status: str | None = None,
+        diff_text: str | None = None,
     ) -> str:
         """Store or skip a single article and atomically increment run counters.
 
         Returns "new" | "updated" | "unchanged" | "empty".
         Used by both the inline polling path and the webhook handler so all
         article processing is consolidated here.
+
+        change_status is the Firecrawl changeTracking verdict ("same"|"new"|"changed"|
+        "removed"). When "same", the DB write is skipped entirely — no hash needed.
+        When "new" (first run with changeTracking for this tag) or None (no API key),
+        we fall back to hash comparison so we don't create spurious ArticleVersions
+        for articles that haven't actually changed since the last extraction.
         """
         if not markdown_content.strip():
             logger.warning("Empty content from %s — skipping", url)
             return "empty"
+
+        # Fast-path: Firecrawl has a prior snapshot and confirms no change.
+        if change_status == "same":
+            await db.execute(
+                update(ExtractionRun)
+                .where(ExtractionRun.id == run_id)
+                .values(articles_unchanged=ExtractionRun.articles_unchanged + 1)
+            )
+            await db.commit()
+            return "unchanged"
 
         content_hash = compute_content_hash(markdown_content)
 
@@ -252,14 +290,18 @@ class FirecrawlService:
         )
         existing_article = existing_result.scalar_one_or_none()
 
-        if existing_article is not None and existing_article.content_hash == content_hash:
-            await db.execute(
-                update(ExtractionRun)
-                .where(ExtractionRun.id == run_id)
-                .values(articles_unchanged=ExtractionRun.articles_unchanged + 1)
-            )
-            await db.commit()
-            return "unchanged"
+        # For "new" or None change_status fall back to hash comparison. "new" happens
+        # on the first extraction after changeTracking was enabled (Firecrawl has no
+        # prior snapshot for this tag yet, but our DB may already have the article).
+        if change_status in (None, "new"):
+            if existing_article is not None and existing_article.content_hash == content_hash:
+                await db.execute(
+                    update(ExtractionRun)
+                    .where(ExtractionRun.id == run_id)
+                    .values(articles_unchanged=ExtractionRun.articles_unchanged + 1)
+                )
+                await db.commit()
+                return "unchanged"
 
         # Parse last-updated timestamp from the filtered #doc HTML
         last_updated = None
@@ -284,6 +326,7 @@ class FirecrawlService:
                 extraction_run_id=run_id,
                 content_markdown=existing_article.content_markdown,
                 content_hash=existing_article.content_hash,
+                diff_text=diff_text,
             )
             db.add(version)
 
@@ -373,15 +416,20 @@ class FirecrawlService:
         await db.commit()
         return outcome
 
-    async def _submit_batch(self, urls: list[str]) -> str:
+    async def _submit_batch(self, urls: list[str], source_id: uuid.UUID) -> str:
         """Submit a batch scrape job and return the Firecrawl job ID."""
+        formats: list = ["markdown", "html"]
+        if self.api_key:
+            formats.append({"type": "changeTracking", "modes": ["git-diff"]})
         payload: dict = {
             "urls": urls,
-            "formats": ["markdown", "html"],
+            "formats": formats,
             "onlyMainContent": False,
             "includeTags": ["#doc"],
             "waitFor": 1500,
         }
+        if self.api_key:
+            payload["tag"] = f"src-{source_id}"
         resp = await self.client.post(
             f"{self.base_url}/v2/batch/scrape",
             json=payload,
@@ -420,12 +468,16 @@ class FirecrawlService:
         run_id: uuid.UUID,
         url_to_entry: dict[str, dict],
         job_id: str,
+        batch_tag: str | None = None,
     ) -> None:
         """Consume batch results via cursor pagination, processing each page inline.
 
         Tracks our own skip offset to avoid re-processing pages on each sleep
         cycle. After the batch finishes, any URLs not returned by Firecrawl
         (batch-side failures) are individually retried.
+
+        changeTracking data embedded in each batch result page is forwarded to
+        process_article_result so unchanged pages are skipped without a DB read.
         """
         base_url = f"{self.base_url}/v2/batch/scrape/{job_id}"
         skip = 0
@@ -445,20 +497,27 @@ class FirecrawlService:
                 markdown = page.get("markdown", "")
                 html = page.get("html", "")
 
+                # Extract changeTracking data from batch result
+                ct = page.get("changeTracking") or {}
+                change_status = ct.get("changeStatus")
+                diff_text = (ct.get("diff") or {}).get("text")
+
                 entry = url_to_entry.get(url)
                 if not entry:
                     logger.warning("Batch result URL not in TOC: %s", url)
                     processed_urls.add(url)
                     continue
 
-                # Retry empty-content responses individually
+                # Retry empty-content responses individually (preserves changeTracking)
                 if not markdown.strip():
                     logger.warning(
                         "Empty content for %s from batch — retrying individually", url
                     )
                     for attempt in range(self.EMPTY_CONTENT_RETRIES):
                         await asyncio.sleep(self.EMPTY_CONTENT_RETRY_DELAY)
-                        markdown, html = await self._scrape_article(url)
+                        markdown, html, change_status, diff_text = await self._scrape_article(
+                            url, tag=batch_tag
+                        )
                         if markdown.strip():
                             break
                         logger.warning(
@@ -466,7 +525,13 @@ class FirecrawlService:
                             url, attempt + 1, self.EMPTY_CONTENT_RETRIES,
                         )
 
-                logger.info("[%d/%d] Processing: %s", completed, total, url)
+                if change_status:
+                    logger.info(
+                        "[%d/%d] %s (%s): %s",
+                        completed, total, url, change_status, entry["title"],
+                    )
+                else:
+                    logger.info("[%d/%d] Processing: %s", completed, total, url)
                 await self.process_article_result(
                     db=db,
                     source_id=source_id,
@@ -477,6 +542,8 @@ class FirecrawlService:
                     toc_entry_id=entry.get("toc_entry_id"),
                     sort_order=entry.get("sort_order", 0),
                     title=entry["title"],
+                    change_status=change_status,
+                    diff_text=diff_text,
                 )
                 processed_urls.add(url)
 
@@ -505,7 +572,9 @@ class FirecrawlService:
                 entry = url_to_entry[url]
                 logger.info("Individual retry: %s", url)
                 try:
-                    markdown, html = await self._scrape_article_with_retry(url)
+                    markdown, html, change_status, diff_text = await self._scrape_article_with_retry(
+                        url, tag=batch_tag
+                    )
                     await self.process_article_result(
                         db=db,
                         source_id=source_id,
@@ -516,6 +585,8 @@ class FirecrawlService:
                         toc_entry_id=entry.get("toc_entry_id"),
                         sort_order=entry.get("sort_order", 0),
                         title=entry["title"],
+                        change_status=change_status,
+                        diff_text=diff_text,
                     )
                 except Exception as exc:
                     logger.warning("Individual retry failed for %s: %s", url, exc)
@@ -638,12 +709,13 @@ class FirecrawlService:
             # they complete. This is strictly faster than the old sequential loop
             # and gives the UI live per-page progress via the counters.
             url_to_entry = {entry["url"]: entry for entry in toc_entries}
-            job_id = await self._submit_batch(list(url_to_entry.keys()))
+            batch_tag = f"src-{source_id}" if self.api_key else None
+            job_id = await self._submit_batch(list(url_to_entry.keys()), source_id)
             run.firecrawl_job_id = job_id
             await db.commit()
 
             await self._poll_batch_and_process(
-                db, source_id, run.id, url_to_entry, job_id
+                db, source_id, run.id, url_to_entry, job_id, batch_tag=batch_tag
             )
 
             run.status = RunStatus.COMPLETED

@@ -34,6 +34,7 @@ class ArticleVersion(Base):
 
     content_markdown: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    diff_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     extracted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

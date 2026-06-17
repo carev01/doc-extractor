@@ -22,6 +22,7 @@ services:
       DOCEXTRACTOR_DATABASE_URL: postgresql+asyncpg://docextractor:docextractor_dev@postgres:5432/docextractor
       DOCEXTRACTOR_DATABASE_URL_SYNC: postgresql+psycopg2://docextractor:docextractor_dev@postgres:5432/docextractor
       DOCEXTRACTOR_FIRECRAWL_API_URL: http://firecrawl.k3s.home.lan
+      DOCEXTRACTOR_FIRECRAWL_API_KEY: fc-bf48f20724d6459cbdda97aef48a41fb
       # Firecrawl (running in k3s at 172.16.255.150) can reach this host at 172.16.255.190.
       # This URL is what Firecrawl calls back for per-page webhook events.
       DOCEXTRACTOR_WEBHOOK_BASE_URL: http://172.16.255.190:8000
