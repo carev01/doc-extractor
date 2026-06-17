@@ -19,6 +19,9 @@ class ExportRequest(BaseModel):
     max_articles_per_file: int | None = None
     max_file_size_bytes: int | None = None
     max_tokens_per_file: int | None = None
+    # Align file boundaries to chapters (top-level TOC). Trades uniform file
+    # sizes for chapter coherence — files may come out smaller.
+    respect_chapters: bool = False
 
 
 class ExportResponse(BaseModel):
@@ -27,6 +30,7 @@ class ExportResponse(BaseModel):
     file_count: int
     total_articles: int
     total_size_bytes: int
+    zip_filename: str  # self-contained bundle (markdown + images)
     files: list["ExportFileInfo"]
 
 

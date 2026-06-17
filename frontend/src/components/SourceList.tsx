@@ -20,11 +20,11 @@ interface Props {
 }
 
 const STATUS_COLORS: Record<string, string> = {
-  pending: "#888",
-  extracting: "#f0a030",
-  running: "#f0a030",
-  completed: "#30a030",
-  failed: "#d03030",
+  pending: "#6f8087",
+  extracting: "#eaa53d",
+  running: "#eaa53d",
+  completed: "#58c08a",
+  failed: "#e0685f",
 };
 
 function statusBadge(status: string) {

@@ -4,7 +4,12 @@ import type {
   TOCEntry,
   ExportResponse,
 } from "../types";
-import { getTOC, exportMarkdown, getDownloadUrl } from "../api/client";
+import {
+  getTOC,
+  exportMarkdown,
+  getDownloadUrl,
+  getZipDownloadUrl,
+} from "../api/client";
 
 interface Props {
   source: DocumentationSource;
@@ -16,6 +21,7 @@ export default function ExportPanel({ source }: Props) {
   const [topicQuery, setTopicQuery] = useState("");
   const [splitBy, setSplitBy] = useState<"" | "size" | "articles" | "tokens">("");
   const [splitValue, setSplitValue] = useState(50);
+  const [respectChapters, setRespectChapters] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportResult, setExportResult] = useState<ExportResponse | null>(null);
   const [error, setError] = useState("");
@@ -66,6 +72,7 @@ export default function ExportPanel({ source }: Props) {
           splitBy === "size" ? splitValue * 1024 * 1024 : undefined,
         max_tokens_per_file:
           splitBy === "tokens" ? splitValue : undefined,
+        respect_chapters: splitBy ? respectChapters : undefined,
       });
       setExportResult(result);
     } catch (e: any) {
@@ -171,10 +178,14 @@ export default function ExportPanel({ source }: Props) {
         <div className="topic-search">
           <input
             type="text"
-            placeholder="Search within documentation content..."
+            placeholder="Full-text search, e.g. backup retention policy"
             value={topicQuery}
             onChange={(e) => setTopicQuery(e.target.value)}
           />
+          <p className="hint">
+            Full-text search across titles and content — matching pages are
+            exported most-relevant first.
+          </p>
         </div>
       )}
 
@@ -204,6 +215,17 @@ export default function ExportPanel({ source }: Props) {
             }
           />
         )}
+        {splitBy && (
+          <label className="chapter-toggle">
+            <input
+              type="checkbox"
+              checked={respectChapters}
+              onChange={(e) => setRespectChapters(e.target.checked)}
+            />
+            Keep chapters together
+            <span className="hint"> — never split a chapter across files (files may be smaller)</span>
+          </label>
+        )}
       </div>
 
       <button
@@ -221,6 +243,15 @@ export default function ExportPanel({ source }: Props) {
             {exportResult.total_articles} articles in {exportResult.file_count}{" "}
             file(s) —{" "}
             {(exportResult.total_size_bytes / 1024).toFixed(1)} KB total
+          </p>
+          <p>
+            <a
+              className="btn-primary"
+              href={getZipDownloadUrl(exportResult.export_id)}
+              download
+            >
+              Download ZIP (markdown + images)
+            </a>
           </p>
           <ul>
             {exportResult.files.map((f) => (

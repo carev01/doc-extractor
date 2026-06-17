@@ -6,3 +6,6 @@ __pycache__/
 
 # Generated export files produced by the app at runtime
 backend/exports/
+
+# Canonical article images downloaded at extraction time
+backend/media/

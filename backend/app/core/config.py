@@ -26,8 +26,11 @@ class Settings(BaseSettings):
     max_file_size_bytes: int = 10 * 1024 * 1024  # 10 MB
     max_tokens_per_file: int = 100_000
 
-    # Image storage
-    images_dir: str = "exports/images"
+    # Image storage — canonical (source-of-truth) images live in media_dir,
+    # kept separate from generated exports/. Served over HTTP at media_url_prefix
+    # so the frontend can render them and exports can rewrite to relative paths.
+    media_dir: str = "media"
+    media_url_prefix: str = "/media"
 
     model_config = {
         "env_prefix": "DOCEXTRACTOR_",

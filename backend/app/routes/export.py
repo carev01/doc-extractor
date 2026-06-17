@@ -31,10 +31,29 @@ async def export_markdown(
             max_articles_per_file=body.max_articles_per_file,
             max_file_size_bytes=body.max_file_size_bytes,
             max_tokens_per_file=body.max_tokens_per_file,
+            respect_chapters=body.respect_chapters,
         )
         return ExportResponse(**result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/download/{export_id}")
+async def download_export_zip(export_id: uuid.UUID):
+    """Download the self-contained zip bundle (markdown + images) for an export."""
+    export_subdir = os.path.join(export_engine.export_dir, str(export_id))
+    if not os.path.isdir(export_subdir):
+        raise HTTPException(status_code=404, detail="Export not found")
+
+    zips = [f for f in os.listdir(export_subdir) if f.endswith(".zip")]
+    if not zips:
+        raise HTTPException(status_code=404, detail="Export bundle not found")
+
+    return FileResponse(
+        os.path.join(export_subdir, zips[0]),
+        media_type="application/zip",
+        filename=zips[0],
+    )
 
 
 @router.get("/download/{export_id}/{filename}")

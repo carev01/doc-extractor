@@ -8,6 +8,7 @@ event-loop incompatibilities.
 import os
 import sys
 import uuid
+import zipfile
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -18,6 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.core.config import settings
 from app.core.database import Base
 from app.models import Vendor, DocumentationSource, Article, TOCEntry
+from app.models.image import ArticleImage
 from app.services.exporter import ExportEngine
 
 # Derive test DB URL from the configured sync URL — same host/credentials, different database.
@@ -71,9 +73,11 @@ def test_export_full(db_session):
     assert result["files"][0]["article_count"] == 5
 
     export_dir = os.path.join(engine.export_dir, str(result["export_id"]))
-    files = os.listdir(export_dir)
-    assert len(files) == 1
-    filepath = os.path.join(export_dir, files[0])
+    md_files = [f for f in os.listdir(export_dir) if f.endswith(".md")]
+    assert len(md_files) == 1
+    # A self-contained zip bundle is produced alongside the markdown.
+    assert result["zip_filename"] in os.listdir(export_dir)
+    filepath = os.path.join(export_dir, md_files[0])
     with open(filepath) as f:
         content = f.read()
     assert "ExportSource" in content
@@ -150,6 +154,8 @@ def test_export_by_topic_search(db_session):
     export_dir = os.path.join(engine.export_dir, str(result["export_id"]))
     all_text = ""
     for fname in os.listdir(export_dir):
+        if not fname.endswith(".md"):
+            continue
         with open(os.path.join(export_dir, fname)) as f:
             all_text += f.read()
     assert "Installation Guide" in all_text
@@ -255,6 +261,68 @@ def test_export_split_by_tokens(db_session):
     assert result["total_articles"] == 8
 
 
+def test_export_zip_bundles_images_with_relative_paths(db_session):
+    """Export rewrites /media URLs to relative paths and bundles the image files."""
+    v = Vendor(name="ImageVendor")
+    db_session.add(v)
+    db_session.flush()
+
+    s = DocumentationSource(vendor_id=v.id, name="ImageSource", base_url="https://docs.img.com")
+    db_session.add(s)
+    db_session.flush()
+
+    article = Article(
+        source_id=s.id, title="With Image",
+        source_url="https://docs.img.com/a",
+        content_markdown="",  # set below once we know the article id
+        sort_order=0, estimated_tokens=50, content_size_bytes=200,
+    )
+    db_session.add(article)
+    db_session.flush()
+
+    # Content references the served /media URL, as written by extraction.
+    served_url = f"{settings.media_url_prefix}/{article.id}/pic.png"
+    article.content_markdown = f"# With Image\n\n![diagram]({served_url})"
+
+    db_session.add(ArticleImage(
+        article_id=article.id,
+        original_url="https://docs.img.com/pic.png",
+        local_filename="pic.png",
+        local_path=served_url,
+        alt_text="diagram",
+    ))
+    db_session.commit()
+
+    # Place the canonical image file on disk where the exporter expects it.
+    media_root = os.path.abspath(settings.media_dir)
+    img_dir = os.path.join(media_root, str(article.id))
+    os.makedirs(img_dir, exist_ok=True)
+    img_path = os.path.join(img_dir, "pic.png")
+    with open(img_path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n_fake_png_bytes_")
+
+    try:
+        engine = ExportEngine()
+        result = engine.export_sync(db_session, source_id=s.id)
+
+        export_dir = os.path.join(engine.export_dir, str(result["export_id"]))
+        zip_path = os.path.join(export_dir, result["zip_filename"])
+        assert os.path.isfile(zip_path)
+
+        with zipfile.ZipFile(zip_path) as zf:
+            names = zf.namelist()
+            # The image is bundled at the relative path the markdown points to.
+            assert f"images/{article.id}/pic.png" in names
+            md_name = next(n for n in names if n.endswith(".md"))
+            md_content = zf.read(md_name).decode("utf-8")
+
+        # The markdown must use the relative path, not the served /media URL.
+        assert f"images/{article.id}/pic.png" in md_content
+        assert settings.media_url_prefix not in md_content
+    finally:
+        os.remove(img_path)
+
+
 def test_export_empty_selection(db_session):
     v = Vendor(name="EmptyVendor")
     db_session.add(v)
@@ -312,6 +380,139 @@ def test_split_never_breaks_article(db_session):
             big_found = True
             assert "x" * 10000 in content
     assert big_found, "Big article not found in any export file"
+
+
+def test_topic_search_is_ranked_full_text(db_session):
+    """Topic export uses Postgres FTS: stemmed matching, most-relevant first."""
+    v = Vendor(name="FtsVendor")
+    db_session.add(v)
+    db_session.flush()
+    s = DocumentationSource(vendor_id=v.id, name="FtsSource", base_url="https://docs.fts.com")
+    db_session.add(s)
+    db_session.flush()
+
+    high = Article(
+        source_id=s.id, title="Backups",
+        source_url="https://docs.fts.com/1",
+        content_markdown="Backup policy. Backup schedule. Backup retention and backup windows.",
+        sort_order=0, estimated_tokens=10, content_size_bytes=80,
+    )
+    low = Article(
+        source_id=s.id, title="Overview",
+        source_url="https://docs.fts.com/2",
+        content_markdown="A broad overview mentioning backup once amid networking, billing, and users.",
+        sort_order=1, estimated_tokens=10, content_size_bytes=90,
+    )
+    unrelated = Article(
+        source_id=s.id, title="Networking",
+        source_url="https://docs.fts.com/3",
+        content_markdown="Routing, firewalls, and VPN tunnels.",
+        sort_order=2, estimated_tokens=10, content_size_bytes=60,
+    )
+    db_session.add_all([high, low, unrelated])
+    db_session.commit()
+
+    engine = ExportEngine()
+    # Plural query proves stemming (a substring ILIKE on "backups" would match none).
+    result = engine.export_sync(db_session, source_id=s.id, topic_query="backups")
+
+    assert result["total_articles"] == 2  # unrelated excluded
+    # Single file, articles ordered by relevance: the backup-dense page first.
+    assert result["files"][0]["first_article_title"] == "Backups"
+    assert result["files"][0]["last_article_title"] == "Overview"
+
+
+def _chapter_fixture(db_session):
+    """Two chapters; chapter 2 has two articles under a subsection.
+
+    Sizes/order are chosen so a greedy split would slice chapter 2 across files.
+    """
+    v = Vendor(name="ChapVendor")
+    db_session.add(v)
+    db_session.flush()
+    s = DocumentationSource(vendor_id=v.id, name="ChapSource", base_url="https://docs.ch.com")
+    db_session.add(s)
+    db_session.flush()
+
+    ch1 = TOCEntry(source_id=s.id, title="Chapter 1", level=0, sort_order=0)
+    ch2 = TOCEntry(source_id=s.id, title="Chapter 2", level=0, sort_order=1)
+    db_session.add_all([ch1, ch2])
+    db_session.flush()
+    sec2 = TOCEntry(
+        source_id=s.id, title="Section 2.1", level=1, sort_order=2,
+        parent_id=ch2.id, is_article=False,
+    )
+    db_session.add(sec2)
+    db_session.flush()
+
+    def art(title, toc_id, order):
+        return Article(
+            source_id=s.id, toc_entry_id=toc_id, title=title,
+            source_url=f"https://docs.ch.com/{title}",
+            content_markdown="x" * 480, sort_order=order,
+            estimated_tokens=120, content_size_bytes=500,
+        )
+
+    # A1 ∈ Chapter 1; A2, A3 ∈ Chapter 2 (via Section 2.1)
+    db_session.add_all([
+        art("A1", ch1.id, 0),
+        art("A2", sec2.id, 1),
+        art("A3", sec2.id, 2),
+    ])
+    db_session.commit()
+    return s
+
+
+def test_split_chapter_aware_keeps_chapter_together(db_session):
+    s = _chapter_fixture(db_session)
+    engine = ExportEngine()
+
+    # Greedy (no chapter awareness) packs A1+A2, pushing A3 alone — splitting ch2.
+    plain = engine.export_sync(
+        db_session, source_id=s.id, split_by="size", max_file_size_bytes=1200
+    )
+    assert plain["files"][0]["last_article_title"] == "A2"
+    assert plain["files"][1]["first_article_title"] == "A3"
+
+    # Chapter-aware starts a new file at the chapter boundary: A1 | A2+A3.
+    chap = engine.export_sync(
+        db_session, source_id=s.id, split_by="size",
+        max_file_size_bytes=1200, respect_chapters=True,
+    )
+    assert chap["file_count"] == 2
+    assert chap["files"][0]["first_article_title"] == "A1"
+    assert chap["files"][0]["last_article_title"] == "A1"
+    assert chap["files"][1]["first_article_title"] == "A2"
+    assert chap["files"][1]["last_article_title"] == "A3"
+
+
+def test_split_chapter_larger_than_limit_splits_internally(db_session):
+    """A chapter bigger than one file is split internally — articles stay intact."""
+    v = Vendor(name="BigChapVendor")
+    db_session.add(v)
+    db_session.flush()
+    s = DocumentationSource(vendor_id=v.id, name="BigChapSource", base_url="https://docs.bc.com")
+    db_session.add(s)
+    db_session.flush()
+    ch = TOCEntry(source_id=s.id, title="Solo Chapter", level=0, sort_order=0)
+    db_session.add(ch)
+    db_session.flush()
+    for i in range(3):
+        db_session.add(Article(
+            source_id=s.id, toc_entry_id=ch.id, title=f"P{i}",
+            source_url=f"https://docs.bc.com/{i}", content_markdown="y" * 480,
+            sort_order=i, estimated_tokens=120, content_size_bytes=500,
+        ))
+    db_session.commit()
+
+    engine = ExportEngine()
+    result = engine.export_sync(
+        db_session, source_id=s.id, split_by="size",
+        max_file_size_bytes=1000, respect_chapters=True,
+    )
+    # 1500 bytes of chapter / 1000 limit → 2 files, all 3 articles preserved whole.
+    assert result["file_count"] == 2
+    assert sum(f["article_count"] for f in result["files"]) == 3
 
 
 def test_toc_tree_structure(db_session):
