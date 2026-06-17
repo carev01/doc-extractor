@@ -48,7 +48,7 @@ class ExtractionRun(Base):
         SAEnum(RunStatus), default=RunStatus.RUNNING, nullable=False
     )
     # Queue / worker-coordination columns.
-    trigger: Mapped[str] = mapped_column(String(16), default="manual", nullable=False)
+    trigger: Mapped[str] = mapped_column(String(16), default="manual", server_default="manual", nullable=False)
     claimed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     claimed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -56,7 +56,7 @@ class ExtractionRun(Base):
     heartbeat_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
 
     articles_extracted: Mapped[int] = mapped_column(Integer, default=0)
     articles_total: Mapped[int] = mapped_column(Integer, default=0)
