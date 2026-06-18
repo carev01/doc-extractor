@@ -27,7 +27,6 @@ from pypdf import PdfWriter
 
 from app.core.config import settings
 from app.models.article import Article
-from app.models.image import ArticleImage
 from app.models.source import DocumentationSource
 from app.models.toc import TOCEntry
 from app.services.pdf_renderer import render_markdown_to_pdf
@@ -39,7 +38,7 @@ _TSV = (
 )
 
 # Max articles loaded per render pass (memory bound).
-_RENDER_CHUNK = 2
+_RENDER_CHUNK = 50
 
 
 class ExportEngine:

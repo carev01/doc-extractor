@@ -625,7 +625,10 @@ def test_toc_tree_structure(db_session):
     assert root.children[0].children[0].title == "Article A"
 
 
-def test_export_pdf_merges_per_chapter(db_session):
+def test_export_pdf_merges_per_chapter(db_session, monkeypatch):
+    import app.services.exporter as exporter_mod
+    monkeypatch.setattr(exporter_mod, "_RENDER_CHUNK", 1)  # force one chunk per article
+
     v = Vendor(name="MergeVendor")
     db_session.add(v); db_session.flush()
     s = DocumentationSource(vendor_id=v.id, name="MergeSrc", base_url="https://m.com")
@@ -653,9 +656,9 @@ def test_export_pdf_merges_per_chapter(db_session):
     pdfs = [f for f in os.listdir(export_dir) if f.endswith(".pdf")]
     assert len(pdfs) == 1
     reader = PdfReader(os.path.join(export_dir, pdfs[0]))
-    # Merged from a header page + 2 chapter chunks -> at least 3 pages, and valid.
-    assert len(reader.pages) >= 3
-    # No leftover temp chapter PDFs.
+    # header page + one page per article chunk (4) merged.
+    assert len(reader.pages) >= 5
+    # No leftover temp chunk PDFs.
     assert not any(f.startswith("_chunk") for f in os.listdir(export_dir))
 
 
