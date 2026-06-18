@@ -21,6 +21,7 @@ export interface DocumentationSource {
   name: string;
   base_url: string;
   status: SourceStatus;
+  platform?: string | null;
   last_extracted_at: string | null;
   error_message: string | null;
   created_at: string;

@@ -8,10 +8,25 @@ import {
   listSources,
   createSource,
   deleteSource,
+  updateSource,
   triggerExtraction,
   getRunStatus,
   listRuns,
 } from "../api/client";
+
+const PLATFORM_OPTIONS: { value: string; label: string }[] = [
+  { value: "auto", label: "Auto-detect" },
+  { value: "commvault", label: "Commvault" },
+  { value: "docusaurus", label: "Docusaurus" },
+  { value: "mkdocs", label: "MkDocs" },
+  { value: "gitbook", label: "GitBook" },
+  { value: "flare_html5", label: "Flare HTML5" },
+  { value: "flare_webhelp", label: "Flare WebHelp" },
+  { value: "intercom", label: "Intercom" },
+  { value: "freshdesk", label: "Freshdesk" },
+  { value: "confluence", label: "Confluence" },
+  { value: "generic", label: "Generic (sitemap)" },
+];
 
 interface Props {
   vendor: Vendor;
@@ -312,6 +327,31 @@ function SourceItem({
               Last: {new Date(source.last_extracted_at).toLocaleString()}
             </span>
           )}
+        </div>
+
+        <div className="item-meta">
+          <label className="sub" style={{ display: "flex", alignItems: "center", gap: "0.4em" }}>
+            Platform:
+            <select
+              value={source.platform ?? "auto"}
+              onClick={(e) => e.stopPropagation()}
+              onChange={async (e) => {
+                e.stopPropagation();
+                try {
+                  await updateSource(source.id, { platform: e.target.value });
+                  onSourceChanged();
+                } catch {
+                  /* non-fatal: parent will re-render on next refresh */
+                }
+              }}
+            >
+              {PLATFORM_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
 
         {itemError && <div className="error">{itemError}</div>}
