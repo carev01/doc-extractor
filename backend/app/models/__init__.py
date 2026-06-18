@@ -7,6 +7,7 @@ from app.models.article import Article
 from app.models.article_version import ArticleVersion
 from app.models.image import ArticleImage
 from app.models.extraction_run import ExtractionRun, RunStatus
+from app.models.schedule import Schedule
 
 __all__ = [
     "Vendor",
@@ -18,4 +19,5 @@ __all__ = [
     "ArticleImage",
     "ExtractionRun",
     "RunStatus",
+    "Schedule",
 ]

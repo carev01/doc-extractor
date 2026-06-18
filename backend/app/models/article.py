@@ -26,9 +26,27 @@ class Article(Base):
         ForeignKey("extraction_runs.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # The run that first created this article — distinguishes the baseline
+    # (first) extraction from later incremental additions in the changelog.
+    created_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("extraction_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     toc_entry_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("toc_entries.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # Removal tracking — stamped when the page first drops out of the rebuilt
+    # TOC, cleared if it returns. Drives the changelog "removed" events.
+    removed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    removal_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("extraction_runs.id", ondelete="SET NULL"),
         nullable=True,
     )
 
@@ -62,7 +80,9 @@ class Article(Base):
         "DocumentationSource", back_populates="articles"
     )
     extraction_run: Mapped["ExtractionRun | None"] = relationship(
-        "ExtractionRun", back_populates="articles"
+        "ExtractionRun",
+        back_populates="articles",
+        foreign_keys="[Article.extraction_run_id]",
     )
     toc_entry: Mapped["TOCEntry | None"] = relationship(
         "TOCEntry", back_populates="articles"

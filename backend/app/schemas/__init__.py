@@ -16,6 +16,14 @@ from app.schemas.export import (
     ExportFileInfo,
     ExtractionTriggerResponse,
 )
+from app.schemas.version import (
+    ArticleVersionResponse,
+    ArticleVersionDetailResponse,
+    ArticleVersionListResponse,
+    VersionDiffResponse,
+    ChangelogEntry,
+    ChangelogResponse,
+)
 
 __all__ = [
     "VendorCreate",
@@ -36,4 +44,10 @@ __all__ = [
     "ExportResponse",
     "ExportFileInfo",
     "ExtractionTriggerResponse",
+    "ArticleVersionResponse",
+    "ArticleVersionDetailResponse",
+    "ArticleVersionListResponse",
+    "VersionDiffResponse",
+    "ChangelogEntry",
+    "ChangelogResponse",
 ]

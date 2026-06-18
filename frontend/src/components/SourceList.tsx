@@ -20,11 +20,12 @@ interface Props {
 }
 
 const STATUS_COLORS: Record<string, string> = {
-  pending: "#888",
-  extracting: "#f0a030",
-  running: "#f0a030",
-  completed: "#30a030",
-  failed: "#d03030",
+  pending: "#6f8087",
+  extracting: "#eaa53d",
+  running: "#eaa53d",
+  completed: "#58c08a",
+  failed: "#e0685f",
+  cancelled: "#6f8087",
 };
 
 function statusBadge(status: string) {
@@ -163,7 +164,9 @@ function SourceItem({
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const isExtracting =
-    source.status === "extracting" || activeRun?.status === "running";
+    source.status === "extracting" ||
+    activeRun?.status === "running" ||
+    activeRun?.status === "pending";
 
   const loadHistory = useCallback(async () => {
     try {
@@ -194,7 +197,7 @@ function SourceItem({
       try {
         const run = await getRunStatus(runId);
         setActiveRun(run);
-        if (run.status !== "running") {
+        if (run.status !== "running" && run.status !== "pending") {
           stopPolling();
           setRunId(null);
           await loadHistory();
@@ -227,6 +230,15 @@ function SourceItem({
   };
 
   const renderRunResult = (run: ExtractionRun) => {
+    if (run.status === "pending") {
+      return (
+        <div className="run-progress">
+          <span className="run-phase run-pending">Queued…</span>
+          <div className="progress-bar indeterminate" />
+        </div>
+      );
+    }
+
     if (run.status === "running") {
       const processed =
         (run.articles_extracted ?? 0) +

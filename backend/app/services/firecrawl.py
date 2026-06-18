@@ -103,15 +103,18 @@ class FirecrawlService:
         """
         formats: list = ["markdown", "html"]
         if self.api_key:
-            formats.append({"type": "changeTracking", "modes": ["git-diff"]})
+            # The changeTracking baseline tag lives inside the changeTracking
+            # format object in Firecrawl's v2 API (a top-level "tag" is rejected).
+            ct_format: dict = {"type": "changeTracking", "modes": ["git-diff"]}
+            if tag:
+                ct_format["tag"] = tag
+            formats.append(ct_format)
         payload: dict = {
             "formats": formats,
             "onlyMainContent": False,
             "includeTags": ["#doc"],
             "waitFor": 1500,
         }
-        if tag and self.api_key:
-            payload["tag"] = tag
         data = await self._firecrawl_request(url, payload)
         markdown = data.get("markdown", "")
         html = data.get("html", "")
@@ -271,7 +274,23 @@ class FirecrawlService:
             return "empty"
 
         # Fast-path: Firecrawl has a prior snapshot and confirms no change.
+        # Content is untouched, but we still scraped the page this run — bump
+        # extracted_at so it reflects the last scrape, not the last change.
         if change_status == "same":
+            # The TOC is deleted and rebuilt every run (new entry ids), so the
+            # article's toc_entry_id was just NULLed by SET NULL. Re-link it (and
+            # refresh the TOC-derived sort_order/title) even though the content is
+            # unchanged — otherwise the page orphans and the browser hides it.
+            await db.execute(
+                update(Article)
+                .where(Article.source_id == source_id, Article.source_url == url)
+                .values(
+                    extracted_at=datetime.now(timezone.utc),
+                    toc_entry_id=toc_entry_id,
+                    sort_order=sort_order,
+                    title=title,
+                )
+            )
             await db.execute(
                 update(ExtractionRun)
                 .where(ExtractionRun.id == run_id)
@@ -295,6 +314,13 @@ class FirecrawlService:
         # prior snapshot for this tag yet, but our DB may already have the article).
         if change_status in (None, "new"):
             if existing_article is not None and existing_article.content_hash == content_hash:
+                # Unchanged content, but scraped this run — record the scrape time
+                # and re-link to the freshly-rebuilt TOC entry (the prior link was
+                # NULLed when the TOC was rebuilt) so the page isn't orphaned.
+                existing_article.extracted_at = datetime.now(timezone.utc)
+                existing_article.toc_entry_id = toc_entry_id
+                existing_article.sort_order = sort_order
+                existing_article.title = title
                 await db.execute(
                     update(ExtractionRun)
                     .where(ExtractionRun.id == run_id)
@@ -316,7 +342,7 @@ class FirecrawlService:
                 except (ValueError, TypeError):
                     pass
 
-        images_dir = os.path.join(settings.export_dir, settings.images_dir)
+        media_root = os.path.abspath(settings.media_dir)
         estimated_tokens = len(markdown_content) // 4
         content_size = len(markdown_content.encode("utf-8"))
 
@@ -338,7 +364,11 @@ class FirecrawlService:
             article.content_markdown = markdown_content
             article.content_html = doc_html
             article.content_hash = content_hash
-            article.last_updated_at = last_updated or datetime.now(timezone.utc)
+            # Source's own update time — left NULL when the page exposes none,
+            # rather than masking it with the scrape time.
+            article.last_updated_at = last_updated
+            # extracted_at tracks the last scrape; created_at stays first-seen.
+            article.extracted_at = datetime.now(timezone.utc)
             article.sort_order = sort_order
             article.estimated_tokens = estimated_tokens
             article.content_size_bytes = content_size
@@ -354,6 +384,7 @@ class FirecrawlService:
             article = Article(
                 source_id=source_id,
                 extraction_run_id=run_id,
+                created_run_id=run_id,
                 toc_entry_id=toc_entry_id,
                 title=title,
                 source_url=url,
@@ -369,10 +400,13 @@ class FirecrawlService:
             await db.flush()
             outcome = "new"
 
-        # Download and rewrite image URLs
+        # Download images and rewrite their references in the markdown to the
+        # served /media URL so the frontend renders them directly and exports
+        # can rewrite to relative paths. Images are parsed from the HTML format
+        # (the markdown only carries URLs), so no extra Firecrawl scan is needed.
         if doc_html:
             img_soup = BeautifulSoup(doc_html, "html.parser")
-            article_img_dir = os.path.join(images_dir, str(article.id))
+            article_img_dir = os.path.join(media_root, str(article.id))
 
             for j, img in enumerate(img_soup.find_all("img")):
                 src = img.get("src", "")
@@ -384,19 +418,23 @@ class FirecrawlService:
 
                 local_filename = await self._download_image(full_src, article_img_dir)
                 if local_filename:
-                    local_path = os.path.join(
-                        settings.images_dir, str(article.id), local_filename
+                    served_url = (
+                        f"{settings.media_url_prefix}/{article.id}/{local_filename}"
                     )
                     db.add(ArticleImage(
                         article_id=article.id,
                         original_url=full_src,
                         local_filename=local_filename,
-                        local_path=local_path,
+                        local_path=served_url,
                         alt_text=img.get("alt", ""),
                         sort_order=j,
                     ))
-                    markdown_content = markdown_content.replace(full_src, local_path)
-                    markdown_content = markdown_content.replace(src, local_path)
+                    # Replace the resolved absolute URL first. Only fall back to
+                    # the raw src for non-trivial relative paths, to avoid a
+                    # blind substring replace clobbering short, ambiguous tokens.
+                    markdown_content = markdown_content.replace(full_src, served_url)
+                    if src != full_src and src.startswith(("/", "./", "../")):
+                        markdown_content = markdown_content.replace(src, served_url)
 
         article.content_markdown = markdown_content
 
@@ -420,7 +458,13 @@ class FirecrawlService:
         """Submit a batch scrape job and return the Firecrawl job ID."""
         formats: list = ["markdown", "html"]
         if self.api_key:
-            formats.append({"type": "changeTracking", "modes": ["git-diff"]})
+            # The changeTracking baseline tag lives inside the changeTracking
+            # format object in Firecrawl's v2 API (a top-level "tag" is rejected).
+            formats.append({
+                "type": "changeTracking",
+                "modes": ["git-diff"],
+                "tag": f"src-{source_id}",
+            })
         payload: dict = {
             "urls": urls,
             "formats": formats,
@@ -428,8 +472,6 @@ class FirecrawlService:
             "includeTags": ["#doc"],
             "waitFor": 1500,
         }
-        if self.api_key:
-            payload["tag"] = f"src-{source_id}"
         resp = await self.client.post(
             f"{self.base_url}/v2/batch/scrape",
             json=payload,
@@ -591,6 +633,38 @@ class FirecrawlService:
                 except Exception as exc:
                     logger.warning("Individual retry failed for %s: %s", url, exc)
 
+    async def _reconcile_removals(
+        self, db: AsyncSession, source_id: uuid.UUID, run_id: uuid.UUID
+    ) -> None:
+        """Stamp pages that dropped out of the rebuilt TOC, clear ones that returned.
+
+        Runs after all pages are processed (and re-linked), so the set of articles
+        with toc_entry_id IS NULL is exactly the removed pages. removed_at is only
+        set when currently NULL, so it stays pinned to first detection across runs.
+        """
+        now = datetime.now(timezone.utc)
+        # Newly removed.
+        await db.execute(
+            update(Article)
+            .where(
+                Article.source_id == source_id,
+                Article.toc_entry_id.is_(None),
+                Article.removed_at.is_(None),
+            )
+            .values(removed_at=now, removal_run_id=run_id)
+        )
+        # Re-added → clear the removal flag.
+        await db.execute(
+            update(Article)
+            .where(
+                Article.source_id == source_id,
+                Article.toc_entry_id.isnot(None),
+                Article.removed_at.isnot(None),
+            )
+            .values(removed_at=None, removal_run_id=None)
+        )
+        await db.commit()
+
     async def extract_source(
         self,
         db: AsyncSession,
@@ -717,6 +791,9 @@ class FirecrawlService:
             await self._poll_batch_and_process(
                 db, source_id, run.id, url_to_entry, job_id, batch_tag=batch_tag
             )
+
+            # Record removals (pages gone from the rebuilt TOC) before completing.
+            await self._reconcile_removals(db, source_id, run.id)
 
             run.status = RunStatus.COMPLETED
             run.completed_at = datetime.now(timezone.utc)

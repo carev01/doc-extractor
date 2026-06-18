@@ -1,6 +1,7 @@
 """DocExtractor — FastAPI application entry point."""
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 # Ensure app loggers (e.g. app.services.firecrawl) are visible at INFO level.
@@ -10,6 +11,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
 from app.core.database import engine, Base
@@ -64,6 +66,15 @@ app.include_router(sources_router)
 app.include_router(extraction_router)
 app.include_router(articles_router)
 app.include_router(export_router)
+
+# Serve canonical article images. The directory must exist before StaticFiles
+# is mounted, so create it here at import time.
+os.makedirs(settings.media_dir, exist_ok=True)
+app.mount(
+    settings.media_url_prefix,
+    StaticFiles(directory=settings.media_dir),
+    name="media",
+)
 
 
 @app.get("/api/health")

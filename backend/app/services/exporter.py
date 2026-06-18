@@ -1,11 +1,13 @@
 """Markdown export engine — full, partial, and split exports."""
 
 import os
+import shutil
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from typing import Sequence
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session, selectinload
 
@@ -15,12 +17,19 @@ from app.models.image import ArticleImage
 from app.models.source import DocumentationSource
 from app.models.toc import TOCEntry
 
+# Full-text search expression over title + content. Kept identical to the GIN
+# expression index (see the add_fts_index migration) so the planner can use it.
+_TSV = (
+    "to_tsvector('english', coalesce(title,'') || ' ' || coalesce(content_markdown,''))"
+)
+
 
 class ExportEngine:
     """Builds markdown export files from extracted articles."""
 
     def __init__(self):
         self.export_dir = os.path.abspath(settings.export_dir)
+        self.media_root = os.path.abspath(settings.media_dir)
         os.makedirs(self.export_dir, exist_ok=True)
 
     async def _resolve_articles(
@@ -68,12 +77,21 @@ class ExportEngine:
 
             query = query.where(Article.toc_entry_id.in_(expanded))
         elif topic_query:
-            # Full-text search on content
+            # Postgres full-text search, returned most-relevant first.
             query = query.where(
-                Article.content_markdown.ilike(f"%{topic_query}%")
+                text(f"{_TSV} @@ plainto_tsquery('english', :q)").bindparams(
+                    q=topic_query
+                )
+            ).order_by(
+                text(f"ts_rank({_TSV}, plainto_tsquery('english', :qr)) DESC").bindparams(
+                    qr=topic_query
+                ),
+                Article.sort_order,
             )
+            result = await db.execute(query)
+            return list(result.scalars().all())
 
-        # Always order by TOC sort_order, then article sort_order
+        # Non-topic selections keep the original TOC reading order.
         query = query.order_by(Article.sort_order)
 
         result = await db.execute(query)
@@ -135,6 +153,102 @@ class ExportEngine:
             slug = slug.replace("--", "-")
         return slug.strip("-")
 
+    def _article_metric(self, article: Article, split_by: str) -> int:
+        """The quantity a split limit is measured in, per article."""
+        if split_by == "size":
+            return article.content_size_bytes
+        if split_by == "tokens":
+            return article.estimated_tokens
+        return 1  # "articles"
+
+    def _split_limit(
+        self,
+        split_by: str,
+        max_articles: int | None,
+        max_size: int | None,
+        max_tokens: int | None,
+    ) -> int:
+        if split_by == "size":
+            return max_size or settings.max_file_size_bytes
+        if split_by == "tokens":
+            return max_tokens or settings.max_tokens_per_file
+        return max_articles or settings.max_articles_per_file
+
+    def _chapter_keys(
+        self, toc_rows: Sequence, articles: Sequence[Article]
+    ) -> dict[uuid.UUID, uuid.UUID | None]:
+        """Map each article to its top-level TOC ancestor (its "chapter").
+
+        toc_rows is a sequence of (id, parent_id) tuples. Articles with no TOC
+        entry (e.g. orphaned/removed pages) map to None — treated as one chapter.
+        """
+        parent = {row[0]: row[1] for row in toc_rows}
+
+        def root(tid: uuid.UUID | None) -> uuid.UUID | None:
+            seen: set[uuid.UUID] = set()
+            while tid is not None and parent.get(tid) is not None and tid not in seen:
+                seen.add(tid)
+                tid = parent[tid]
+            return tid
+
+        return {a.id: root(a.toc_entry_id) for a in articles}
+
+    def _split_by_chapter(
+        self,
+        articles: list[Article],
+        split_by: str,
+        max_articles: int | None,
+        max_size: int | None,
+        max_tokens: int | None,
+        chapter_keys: dict[uuid.UUID, uuid.UUID | None],
+    ) -> list[list[Article]]:
+        """Pack whole chapters into files, preferring smaller files over splitting
+        a chapter across files. A chapter larger than the limit on its own is the
+        only case that gets split internally (still never breaking an article).
+        """
+        limit = self._split_limit(split_by, max_articles, max_size, max_tokens)
+
+        # Group consecutive articles by chapter (TOC DFS order keeps a chapter's
+        # pages contiguous, so consecutive grouping == grouping by chapter).
+        chapters: list[list[Article]] = []
+        for article in articles:
+            key = chapter_keys.get(article.id)
+            if chapters and key == chapters[-1][0]:
+                chapters[-1][1].append(article)  # type: ignore[index]
+            else:
+                chapters.append([key, [article]])  # type: ignore[list-item]
+        chapter_lists = [c[1] for c in chapters]
+
+        groups: list[list[Article]] = []
+        current: list[Article] = []
+        current_total = 0
+
+        for chapter in chapter_lists:
+            chapter_total = sum(self._article_metric(a, split_by) for a in chapter)
+
+            if current and current_total + chapter_total > limit:
+                groups.append(current)
+                current = []
+                current_total = 0
+
+            if not current and chapter_total > limit:
+                # Chapter exceeds a whole file by itself — split it internally,
+                # which still guarantees individual articles stay intact.
+                groups.extend(
+                    self._split_articles(
+                        chapter, split_by, max_articles, max_size, max_tokens
+                    )
+                )
+                continue
+
+            current.extend(chapter)
+            current_total += chapter_total
+
+        if current:
+            groups.append(current)
+
+        return groups
+
     def _split_articles(
         self,
         articles: list[Article],
@@ -142,13 +256,22 @@ class ExportEngine:
         max_articles: int | None = None,
         max_size: int | None = None,
         max_tokens: int | None = None,
+        respect_chapters: bool = False,
+        chapter_keys: dict[uuid.UUID, uuid.UUID | None] | None = None,
     ) -> list[list[Article]]:
         """Split articles into groups without breaking individual articles.
 
-        Guarantee: no single article is ever split across files.
+        Guarantee: no single article is ever split across files. When
+        respect_chapters is set, file boundaries also align to chapter (top-level
+        TOC) boundaries — producing smaller files to keep chapters coherent.
         """
         if not articles:
             return []
+
+        if respect_chapters and chapter_keys is not None:
+            return self._split_by_chapter(
+                articles, split_by, max_articles, max_size, max_tokens, chapter_keys
+            )
 
         groups: list[list[Article]] = []
         current_group: list[Article] = []
@@ -204,6 +327,7 @@ class ExportEngine:
         max_articles_per_file: int | None = None,
         max_file_size_bytes: int | None = None,
         max_tokens_per_file: int | None = None,
+        respect_chapters: bool = False,
     ) -> dict:
         """Execute an export and return metadata about the generated files."""
         # Get source
@@ -222,7 +346,20 @@ class ExportEngine:
         if not articles:
             raise ValueError("No articles matched the selection criteria")
 
-        return self._generate_export(articles, source.name, source_id, split_by, max_articles_per_file, max_file_size_bytes, max_tokens_per_file)
+        chapter_keys = None
+        if respect_chapters and split_by:
+            toc = await db.execute(
+                select(TOCEntry.id, TOCEntry.parent_id).where(
+                    TOCEntry.source_id == source_id
+                )
+            )
+            chapter_keys = self._chapter_keys(toc.all(), articles)
+
+        return self._generate_export(
+            articles, source.name, source_id, split_by,
+            max_articles_per_file, max_file_size_bytes, max_tokens_per_file,
+            respect_chapters, chapter_keys,
+        )
 
     def export_sync(
         self,
@@ -235,6 +372,7 @@ class ExportEngine:
         max_articles_per_file: int | None = None,
         max_file_size_bytes: int | None = None,
         max_tokens_per_file: int | None = None,
+        respect_chapters: bool = False,
     ) -> dict:
         """Synchronous version of export for testing."""
         result = db.execute(
@@ -251,7 +389,20 @@ class ExportEngine:
         if not articles:
             raise ValueError("No articles matched the selection criteria")
 
-        return self._generate_export(articles, source.name, source_id, split_by, max_articles_per_file, max_file_size_bytes, max_tokens_per_file)
+        chapter_keys = None
+        if respect_chapters and split_by:
+            toc = db.execute(
+                select(TOCEntry.id, TOCEntry.parent_id).where(
+                    TOCEntry.source_id == source_id
+                )
+            )
+            chapter_keys = self._chapter_keys(toc.all(), articles)
+
+        return self._generate_export(
+            articles, source.name, source_id, split_by,
+            max_articles_per_file, max_file_size_bytes, max_tokens_per_file,
+            respect_chapters, chapter_keys,
+        )
 
     def _resolve_articles_sync(
         self,
@@ -294,8 +445,17 @@ class ExportEngine:
             query = query.where(Article.toc_entry_id.in_(expanded))
         elif topic_query:
             query = query.where(
-                Article.content_markdown.ilike(f"%{topic_query}%")
+                text(f"{_TSV} @@ plainto_tsquery('english', :q)").bindparams(
+                    q=topic_query
+                )
+            ).order_by(
+                text(f"ts_rank({_TSV}, plainto_tsquery('english', :qr)) DESC").bindparams(
+                    qr=topic_query
+                ),
+                Article.sort_order,
             )
+            result = db.execute(query)
+            return list(result.scalars().all())
 
         query = query.order_by(Article.sort_order)
         result = db.execute(query)
@@ -310,6 +470,8 @@ class ExportEngine:
         max_articles_per_file: int | None = None,
         max_file_size_bytes: int | None = None,
         max_tokens_per_file: int | None = None,
+        respect_chapters: bool = False,
+        chapter_keys: dict[uuid.UUID, uuid.UUID | None] | None = None,
     ) -> dict:
         """Generate export files from resolved articles."""
         if split_by:
@@ -319,6 +481,8 @@ class ExportEngine:
                 max_articles_per_file,
                 max_file_size_bytes,
                 max_tokens_per_file,
+                respect_chapters,
+                chapter_keys,
             )
         else:
             groups = [articles]
@@ -327,6 +491,9 @@ class ExportEngine:
         export_subdir = os.path.join(self.export_dir, str(export_id))
         os.makedirs(export_subdir, exist_ok=True)
 
+        # (abs path on disk, arcname inside the zip) — collected as we go so the
+        # zip contains exactly the markdown files and copied images.
+        archive_members: list[tuple[str, str]] = []
         files_info: list[dict] = []
         total_size = 0
 
@@ -337,10 +504,16 @@ class ExportEngine:
                 filename = f"{source_name.replace(' ', '_')}_part{i:03d}.md"
 
             content = self._build_markdown_document(group, source_name)
+            # Rewrite served media URLs (/media/<id>/<file>) to bundle-relative
+            # paths (images/<id>/<file>) so the export renders offline.
+            content = content.replace(
+                f"{settings.media_url_prefix}/", "images/"
+            )
             filepath = os.path.join(export_subdir, filename)
 
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(content)
+            archive_members.append((filepath, filename))
 
             file_size = len(content.encode("utf-8"))
             total_size += file_size
@@ -355,12 +528,37 @@ class ExportEngine:
                 "last_article_title": group[-1].title,
             })
 
+        # Copy every referenced image into the bundle's images/ dir (deduped),
+        # mirroring the media/<article_id>/<file> layout the rewrite expects.
+        copied: set[str] = set()
+        for article in articles:
+            for image in article.images:
+                rel = os.path.join(str(article.id), image.local_filename)
+                if rel in copied:
+                    continue
+                src_path = os.path.join(self.media_root, rel)
+                if not os.path.isfile(src_path):
+                    continue  # image missing on disk — skip rather than fail
+                dst_path = os.path.join(export_subdir, "images", rel)
+                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                shutil.copy2(src_path, dst_path)
+                archive_members.append((dst_path, os.path.join("images", rel)))
+                copied.add(rel)
+
+        # Bundle everything into a single self-contained zip.
+        zip_filename = f"{source_name.replace(' ', '_')}.zip"
+        zip_path = os.path.join(export_subdir, zip_filename)
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for abs_path, arcname in archive_members:
+                zf.write(abs_path, arcname)
+
         return {
             "export_id": export_id,
             "source_id": source_id,
             "file_count": len(files_info),
             "total_articles": len(articles),
             "total_size_bytes": total_size,
+            "zip_filename": zip_filename,
             "files": files_info,
         }
 

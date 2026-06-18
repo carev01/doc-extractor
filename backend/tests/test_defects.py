@@ -44,7 +44,7 @@ def db_session():
 # ── Defect 1: Models registered in Base.metadata ──
 
 def test_defect1_all_six_tables_in_metadata():
-    """After importing app.models, Base.metadata must contain all 6 tables.
+    """After importing app.models, Base.metadata must contain all expected tables.
 
     This was the root cause: main.py did `Base.metadata.create_all` without
     importing the model modules first, so no tables were created.
@@ -59,9 +59,10 @@ def test_defect1_all_six_tables_in_metadata():
         "articles",
         "documentation_sources",
         "extraction_runs",
+        "schedules",
         "toc_entries",
         "vendors",
-    ], f"Expected 7 tables, got {len(table_names)}: {table_names}"
+    ], f"Expected 8 tables, got {len(table_names)}: {table_names}"
 
 
 def test_defect1_tables_created_on_startup(db_session):
@@ -162,19 +163,51 @@ def test_defect3_extract_source_uses_passed_run_id(db_session):
 
 
 def test_defect3_no_duplicate_runs(db_session):
-    """Verify that the route creates ONE run and the background task
-    updates that SAME run — not creates a second one.
+    """Verify that the trigger route enqueues exactly ONE pending run per source.
 
-    We verify the extraction route passes run_id to the background task.
+    Previously the route ran extraction in-process via BackgroundTask, risking
+    duplicate run rows. Now it delegates to enqueue_run which enforces the
+    uq_active_run_per_source DB constraint — a second enqueue raises
+    ActiveRunExists (409). We verify this invariant at the service level.
     """
-    import inspect
-    from app.routes.extraction import _run_extraction_background
+    import asyncio
+    from app.services.queue import enqueue_run, ActiveRunExists
 
-    sig = inspect.signature(_run_extraction_background)
-    params = list(sig.parameters.keys())
-    assert "run_id" in params, (
-        f"_run_extraction_background should accept run_id parameter, got: {params}"
+    v = Vendor(name="RunIdVendor2")
+    db_session.add(v)
+    db_session.flush()
+
+    s = DocumentationSource(
+        vendor_id=v.id, name="RunIdSource2",
+        base_url="https://docs.runid2.com"
     )
+    db_session.add(s)
+    db_session.commit()
+    source_id = s.id
+
+    # enqueue_run uses async session; run via asyncio.run with an async engine.
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+    from sqlalchemy.pool import NullPool
+
+    TEST_DATABASE_URL_ASYNC = settings.database_url.rsplit("/", 1)[0] + "/docextractor_test"
+
+    async def _run():
+        engine = create_async_engine(TEST_DATABASE_URL_ASYNC, poolclass=NullPool)
+        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        async with factory() as db:
+            run1 = await enqueue_run(db, source_id, trigger="manual")
+            assert run1.status.value == "pending"
+            assert run1.trigger == "manual"
+
+        # Second enqueue for the same source must raise ActiveRunExists.
+        async with factory() as db:
+            with pytest.raises(ActiveRunExists):
+                await enqueue_run(db, source_id, trigger="manual")
+
+        await engine.dispose()
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

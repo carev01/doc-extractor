@@ -1,6 +1,6 @@
 /** API client for DocExtractor backend. */
 
-import axios from "axios";
+import axios, { isAxiosError } from "axios";
 import type {
   Vendor,
   VendorList,
@@ -13,6 +13,13 @@ import type {
   ExtractionTrigger,
   ExportRequest,
   ExportResponse,
+  ArticleVersionList,
+  ArticleVersionDetail,
+  VersionDiff,
+  ChangelogResponse,
+  BrowseResponse,
+  Schedule,
+  ScheduleConfig,
 } from "../types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -154,4 +161,86 @@ export async function exportMarkdown(
 
 export function getDownloadUrl(exportId: string, filename: string): string {
   return `${API_BASE}/api/export/download/${exportId}/${filename}`;
+}
+
+/** URL of the self-contained zip bundle (markdown + images) for an export. */
+export function getZipDownloadUrl(exportId: string): string {
+  return `${API_BASE}/api/export/download/${exportId}`;
+}
+
+/** Resolve a served /media image path to an absolute backend URL. */
+export function mediaUrl(path: string): string {
+  return path.startsWith("/media/") ? `${API_BASE}${path}` : path;
+}
+
+// ── Version history & changelog ──
+
+export async function getSourceChangelog(
+  sourceId: string,
+  skip = 0,
+  limit = 50
+): Promise<ChangelogResponse> {
+  const res = await api.get(`/sources/${sourceId}/changelog`, {
+    params: { skip, limit },
+  });
+  return res.data;
+}
+
+export async function listArticleVersions(
+  articleId: string,
+  skip = 0,
+  limit = 50
+): Promise<ArticleVersionList> {
+  const res = await api.get(`/articles/${articleId}/versions`, {
+    params: { skip, limit },
+  });
+  return res.data;
+}
+
+export async function getArticleVersion(
+  articleId: string,
+  versionId: string
+): Promise<ArticleVersionDetail> {
+  const res = await api.get(`/articles/${articleId}/versions/${versionId}`);
+  return res.data;
+}
+
+export async function getVersionDiff(
+  articleId: string,
+  versionId: string,
+  against: "next" | "current" = "next"
+): Promise<VersionDiff> {
+  const res = await api.get(
+    `/articles/${articleId}/versions/${versionId}/diff`,
+    { params: { against } }
+  );
+  return res.data;
+}
+
+export async function browseSource(sourceId: string): Promise<BrowseResponse> {
+  const res = await api.get(`/sources/${sourceId}/browse`);
+  return res.data;
+}
+
+// ── Schedule ──
+
+export async function getSchedule(sourceId: string): Promise<Schedule | null> {
+  try {
+    const { data } = await api.get<Schedule>(`/sources/${sourceId}/schedule`);
+    return data;
+  } catch (e) {
+    if (isAxiosError(e) && e.response?.status === 404) return null;
+    throw e;
+  }
+}
+
+export async function putSchedule(
+  sourceId: string, config: ScheduleConfig,
+): Promise<Schedule> {
+  const { data } = await api.put<Schedule>(`/sources/${sourceId}/schedule`, config);
+  return data;
+}
+
+export async function deleteSchedule(sourceId: string): Promise<void> {
+  await api.delete(`/sources/${sourceId}/schedule`);
 }
