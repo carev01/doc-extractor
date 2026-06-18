@@ -32,7 +32,9 @@ async def sidebar_tree_toc(
     def walk(ul, level: int, parent_url: str | None) -> None:
         for li in ul.find_all("li", recursive=False):
             a = li.find(item_selector)
-            child_ul = li.find("ul", recursive=False)
+            # Prefer a direct child <ul>; fall back to any descendant <ul> to
+            # handle wrappers like MkDocs Material's <li><nav><ul>…</ul></nav></li>.
+            child_ul = li.find("ul", recursive=False) or li.find("ul")
             if not a or not a.get("href"):
                 # Section label without its own link: descend, keeping the parent.
                 if child_ul:

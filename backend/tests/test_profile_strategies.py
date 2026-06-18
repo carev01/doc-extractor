@@ -56,6 +56,34 @@ async def test_sidebar_tree_ul_selector_directly():
     assert all(e.is_article for e in toc)
 
 
+WRAPPED_CHILD = """<html><body><ul id="nav">
+<li><a href="/top">Top</a></li>
+<li><a href="/section">Section</a><nav><ul>
+  <li><a href="/section/child">Child</a></li>
+</ul></nav></li>
+</ul></body></html>"""
+
+
+@pytest.mark.asyncio
+async def test_sidebar_tree_wrapped_child_ul():
+    """Regression: child <ul> wrapped in <nav> (MkDocs Material pattern) must be
+    detected via fallback ``li.find('ul')`` and yield nested entries at level+1.
+    The parent <li> has both an <a href> (so it is emitted) and a <nav><ul> wrapper
+    containing children — mirrors MkDocs Material's section+children pattern."""
+    sc = FakeScraper({"https://x/": WRAPPED_CHILD})
+    toc = await sidebar_tree_toc(sc, "https://x/", "#nav")
+    titles = [e.title for e in toc]
+    assert "Top" in titles
+    assert "Section" in titles
+    assert "Child" in titles
+    section = next(e for e in toc if e.title == "Section")
+    child = next(e for e in toc if e.title == "Child")
+    assert section.level == 0
+    assert section.is_article is False  # has children -> section
+    assert child.level == 1, f"Expected child at level 1, got {child.level}"
+    assert child.is_article is True
+
+
 @pytest.mark.asyncio
 async def test_sitemap_urls_document_order():
     sm = '<urlset><url><loc>https://x/a</loc></url><url><loc>https://x/b</loc></url></urlset>'
