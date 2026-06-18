@@ -127,6 +127,7 @@ export interface ExportRequest {
   max_file_size_bytes?: number;
   max_tokens_per_file?: number;
   respect_chapters?: boolean;
+  format?: "markdown" | "pdf";
 }
 
 export interface ExportFileInfo {
