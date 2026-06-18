@@ -27,6 +27,10 @@ from app.services.profiles.scraper import Scraper
 # Default content scrape options when no profile config is supplied (legacy Commvault).
 _LEGACY_CONTENT = {"includeTags": ["#doc"], "onlyMainContent": False, "waitFor": 1500}
 
+# Browser User-Agent so bot-gated sites (e.g. Confluence Cloud) render real
+# content instead of a JS "unsupported browser" shell.
+_BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+
 
 def compute_content_hash(content: str) -> str:
     """SHA-256 hex digest of markdown content used for change detection."""
@@ -192,9 +196,13 @@ class FirecrawlService:
 
     async def _firecrawl_request(self, url: str, payload: dict) -> dict:
         """Make a Firecrawl v2 scrape request and return the data dict."""
+        # Inject a browser UA so bot-gated sites render real content. A
+        # caller-provided "headers" key overrides (merged dict: UA first,
+        # caller's value wins via **payload spread).
+        body = {"url": url, "headers": {"User-Agent": _BROWSER_UA}, **payload}
         resp = await self.client.post(
             f"{self.base_url}/v2/scrape",
-            json={"url": url, **payload},
+            json=body,
             headers=self._auth_headers(),
         )
         resp.raise_for_status()
@@ -498,7 +506,11 @@ class FirecrawlService:
                 "modes": ["git-diff"],
                 "tag": f"src-{source_id}",
             })
-        payload: dict = {"urls": urls, "formats": formats, **(content_config or _LEGACY_CONTENT)}
+        content = content_config or _LEGACY_CONTENT
+        # Inject a browser UA so bot-gated sites render real content. Preserve
+        # any "headers" already present in content_config (caller wins).
+        scrape_headers = {"User-Agent": _BROWSER_UA, **(content.get("headers") or {})}
+        payload: dict = {"urls": urls, "formats": formats, **content, "headers": scrape_headers}
         resp = await self.client.post(
             f"{self.base_url}/v2/batch/scrape",
             json=payload,
