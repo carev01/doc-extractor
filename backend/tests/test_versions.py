@@ -643,3 +643,73 @@ async def test_unchanged_paths_relink_rebuilt_toc(client):
         )
     assert outcome == "unchanged"
     assert await fetch() == (toc_c_id, 3)
+
+
+async def test_reconcile_removals_stamps_clears_and_pins(client):
+    """Newly orphaned articles get removed_at/removal_run_id; the timestamp is
+    pinned on later runs; a re-added page is cleared; linked pages stay NULL."""
+    client, TestSession = client
+    async with TestSession() as s:
+        vendor = Vendor(name="RemVendor")
+        s.add(vendor)
+        await s.flush()
+        source = DocumentationSource(
+            vendor_id=vendor.id, name="RemSrc", base_url="https://rm.com"
+        )
+        s.add(source)
+        await s.flush()
+        # Both COMPLETED: the active-run-per-source unique index forbids two
+        # simultaneously pending/running runs for one source.
+        run1 = ExtractionRun(source_id=source.id, status=RunStatus.COMPLETED)
+        run2 = ExtractionRun(source_id=source.id, status=RunStatus.COMPLETED)
+        s.add_all([run1, run2])
+        await s.flush()
+        toc = TOCEntry(
+            source_id=source.id, title="Kept", url="https://rm.com/k",
+            level=0, sort_order=0, is_article=True,
+        )
+        s.add(toc)
+        await s.flush()
+
+        def mk(title, url, toc_id):
+            return Article(
+                source_id=source.id, toc_entry_id=toc_id, title=title,
+                source_url=url, content_markdown="x", content_hash="h",
+                sort_order=0, estimated_tokens=1, content_size_bytes=1,
+            )
+
+        kept = mk("Kept", "https://rm.com/k", toc.id)       # linked → never removed
+        gone = mk("Gone", "https://rm.com/g", None)          # orphaned → removed
+        s.add_all([kept, gone])
+        await s.commit()
+        source_id, run1_id, run2_id = source.id, run1.id, run2.id
+        kept_id, gone_id, toc_id = kept.id, gone.id, toc.id
+
+    async def fetch(aid):
+        async with TestSession() as s:
+            a = (await s.execute(select(Article).where(Article.id == aid))).scalar_one()
+            return a.removed_at, a.removal_run_id, a.toc_entry_id
+
+    # Run 1 reconcile: 'gone' is stamped, 'kept' untouched.
+    async with TestSession() as s:
+        await firecrawl_service._reconcile_removals(s, source_id, run1_id)
+    g_removed1, g_run1, _ = await fetch(gone_id)
+    k_removed, _, _ = await fetch(kept_id)
+    assert g_removed1 is not None and g_run1 == run1_id
+    assert k_removed is None
+
+    # Run 2 reconcile (still orphaned): timestamp + run pinned to first detection.
+    async with TestSession() as s:
+        await firecrawl_service._reconcile_removals(s, source_id, run2_id)
+    g_removed2, g_run2, _ = await fetch(gone_id)
+    assert g_removed2 == g_removed1 and g_run2 == run1_id
+
+    # 'gone' is re-added (re-linked to a toc entry), then reconcile clears it.
+    async with TestSession() as s:
+        a = (await s.execute(select(Article).where(Article.id == gone_id))).scalar_one()
+        a.toc_entry_id = toc_id
+        await s.commit()
+    async with TestSession() as s:
+        await firecrawl_service._reconcile_removals(s, source_id, run2_id)
+    g_removed3, g_run3, _ = await fetch(gone_id)
+    assert g_removed3 is None and g_run3 is None

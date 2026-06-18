@@ -84,5 +84,7 @@ class ExtractionRun(Base):
         "DocumentationSource", back_populates="extraction_runs"
     )
     articles: Mapped[list["Article"]] = relationship(
-        "Article", back_populates="extraction_run"
+        "Article",
+        back_populates="extraction_run",
+        foreign_keys="[Article.extraction_run_id]",
     )

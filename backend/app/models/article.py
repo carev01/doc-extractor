@@ -73,7 +73,9 @@ class Article(Base):
         "DocumentationSource", back_populates="articles"
     )
     extraction_run: Mapped["ExtractionRun | None"] = relationship(
-        "ExtractionRun", back_populates="articles"
+        "ExtractionRun",
+        back_populates="articles",
+        foreign_keys="[Article.extraction_run_id]",
     )
     toc_entry: Mapped["TOCEntry | None"] = relationship(
         "TOCEntry", back_populates="articles"

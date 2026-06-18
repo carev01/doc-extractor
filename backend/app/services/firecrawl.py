@@ -632,6 +632,38 @@ class FirecrawlService:
                 except Exception as exc:
                     logger.warning("Individual retry failed for %s: %s", url, exc)
 
+    async def _reconcile_removals(
+        self, db: AsyncSession, source_id: uuid.UUID, run_id: uuid.UUID
+    ) -> None:
+        """Stamp pages that dropped out of the rebuilt TOC, clear ones that returned.
+
+        Runs after all pages are processed (and re-linked), so the set of articles
+        with toc_entry_id IS NULL is exactly the removed pages. removed_at is only
+        set when currently NULL, so it stays pinned to first detection across runs.
+        """
+        now = datetime.now(timezone.utc)
+        # Newly removed.
+        await db.execute(
+            update(Article)
+            .where(
+                Article.source_id == source_id,
+                Article.toc_entry_id.is_(None),
+                Article.removed_at.is_(None),
+            )
+            .values(removed_at=now, removal_run_id=run_id)
+        )
+        # Re-added → clear the removal flag.
+        await db.execute(
+            update(Article)
+            .where(
+                Article.source_id == source_id,
+                Article.toc_entry_id.isnot(None),
+                Article.removed_at.isnot(None),
+            )
+            .values(removed_at=None, removal_run_id=None)
+        )
+        await db.commit()
+
     async def extract_source(
         self,
         db: AsyncSession,
@@ -758,6 +790,9 @@ class FirecrawlService:
             await self._poll_batch_and_process(
                 db, source_id, run.id, url_to_entry, job_id, batch_tag=batch_tag
             )
+
+            # Record removals (pages gone from the rebuilt TOC) before completing.
+            await self._reconcile_removals(db, source_id, run.id)
 
             run.status = RunStatus.COMPLETED
             run.completed_at = datetime.now(timezone.utc)
