@@ -21,6 +21,7 @@ from app.models.image import ArticleImage
 from app.models.source import DocumentationSource, SourceStatus
 from app.models.toc import TOCEntry
 from app.services.profiles import registry as profile_registry
+from app.services.profiles.detector import detect_platform
 from app.services.profiles.scraper import Scraper
 
 # Default content scrape options when no profile config is supplied (legacy Commvault).
@@ -63,16 +64,43 @@ class FirecrawlService:
         # empty-content retries scope content the same way the batch did.
         self._content_config_by_source: dict[uuid.UUID, dict] = {}
 
-    def _resolve_profile(self, source: DocumentationSource):
-        """Pick the extraction profile for a source: stored override, else default.
+    async def _resolve_profile(self, source: DocumentationSource):
+        """Pick the extraction profile for a source.
 
-        Auto-detection is layered in by a later step; until then an un-set
-        platform falls back to the Commvault profile (preserving prior behavior).
+        Resolution order:
+        1. Stored ``source.platform`` override — if the name resolves to a
+           registered profile, use it immediately.
+        2. Auto-detection — scrape the root URL once and iterate registered
+           profiles' ``detect()`` methods.  If a match is found, store it on
+           ``source.platform`` so the caller can persist it with a DB commit.
+        3. Default — fall back to the Commvault profile (preserves prior
+           behaviour until a generic fallback profile is implemented).
         """
         if source.platform:
             p = profile_registry.get(source.platform)
             if p is not None:
                 return p
+
+        # Auto-detect: scrape the root page once and check all profiles.
+        try:
+            scraper = Scraper(self)
+            root_html = await scraper.get_html(source.base_url)
+            detected_name = detect_platform(root_html, source.base_url)
+            if detected_name:
+                p = profile_registry.get(detected_name)
+                if p is not None:
+                    source.platform = detected_name  # caller commits
+                    logger.info(
+                        "Auto-detected platform '%s' for %s",
+                        detected_name,
+                        source.base_url,
+                    )
+                    return p
+        except Exception as exc:
+            logger.warning(
+                "Platform auto-detection failed for %s: %s", source.base_url, exc
+            )
+
         return profile_registry.get("commvault")
 
     def _auth_headers(self) -> dict:
@@ -641,7 +669,8 @@ class FirecrawlService:
             await self._check_available()
 
             # ── Phase 1: Build ordered TOC via the source's extraction profile ──
-            profile = self._resolve_profile(source)
+            profile = await self._resolve_profile(source)
+            await db.commit()  # persist auto-detected platform name, if any
             content_cfg = profile.content_config()
             self._content_config_by_source[source_id] = content_cfg
             logger.info(
