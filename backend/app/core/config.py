@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     media_dir: str = "media"
     media_url_prefix: str = "/media"
 
+    # LLM fallback profile — off by default; requires an Anthropic API key.
+    # Set DOCEXTRACTOR_LLM_FALLBACK_ENABLED=true and DOCEXTRACTOR_ANTHROPIC_API_KEY=sk-...
+    # to enable. When enabled, unrecognized sites are analysed by the LLM before
+    # falling back to the generic sitemap profile.
+    llm_fallback_enabled: bool = False
+    anthropic_api_key: str = ""
+
     model_config = {
         "env_prefix": "DOCEXTRACTOR_",
         "case_sensitive": False,

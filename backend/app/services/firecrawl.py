@@ -91,7 +91,11 @@ class FirecrawlService:
         2. Auto-detection — scrape the root URL once and iterate registered
            profiles' ``detect()`` methods.  If a match is found, store it on
            ``source.platform`` so the caller can persist it with a DB commit.
-        3. Default — fall back to the generic sitemap profile.
+        3. LLM fallback — if ``settings.llm_fallback_enabled`` is True, return
+           the ``"llm"`` profile so it can interrogate the page and choose an
+           appropriate strategy.  Skipped (flag is False by default) to avoid
+           unintended LLM calls.
+        4. Default — fall back to the generic sitemap profile.
         """
         if source.platform:
             p = profile_registry.get(source.platform)
@@ -117,6 +121,16 @@ class FirecrawlService:
             logger.warning(
                 "Platform auto-detection failed for %s: %s", source.base_url, exc
             )
+
+        # LLM fallback — gated behind the opt-in flag (default OFF).
+        if settings.llm_fallback_enabled:
+            llm_profile = profile_registry.get("llm")
+            if llm_profile is not None:
+                logger.info(
+                    "No profile detected for %s — using LLM fallback",
+                    source.base_url,
+                )
+                return llm_profile
 
         return profile_registry.get("generic")
 
