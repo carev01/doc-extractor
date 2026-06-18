@@ -174,12 +174,15 @@ export interface VersionDiff {
   computed: boolean;
 }
 
+export type ChangeType = "added" | "changed" | "removed";
+
 export interface ChangelogEntry {
   article_id: string;
   title: string;
-  version_id: string;
+  change_type: ChangeType;
+  timestamp: string;
+  version_id: string | null;
   extraction_run_id: string | null;
-  extracted_at: string;
   has_diff: boolean;
 }
 

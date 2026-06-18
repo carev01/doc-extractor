@@ -1,83 +1,78 @@
-import { useState, useEffect } from "react";
-import type {
-  DocumentationSource,
-  ChangelogEntry,
-  VersionDiff,
-} from "../types";
-import { getSourceChangelog, getVersionDiff } from "../api/client";
-import DiffView from "./DiffView";
+import { useState, useEffect, useMemo } from "react";
+import type { DocumentationSource, ChangelogEntry, ArticleDetail } from "../types";
+import { getSourceChangelog, getArticle } from "../api/client";
+import MarkdownView from "./MarkdownView";
+import VersionOverlay from "./VersionOverlay";
 
 interface Props {
   source: DocumentationSource;
 }
 
-type Against = "next" | "current";
+const BADGE: Record<ChangelogEntry["change_type"], string> = {
+  added: "ADDED",
+  changed: "CHANGED",
+  removed: "REMOVED",
+};
+
+function dateKey(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
 
 export default function ChangelogPanel({ source }: Props) {
   const [entries, setEntries] = useState<ChangelogEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const [openVersionId, setOpenVersionId] = useState<string | null>(null);
-  const [against, setAgainst] = useState<Against>("next");
-  const [diff, setDiff] = useState<VersionDiff | null>(null);
-  const [diffLoading, setDiffLoading] = useState(false);
+  // Open viewer: either a side-by-side version overlay (changed) or a rendered
+  // article (added/removed).
+  const [overlay, setOverlay] = useState<{ id: string; title: string; md: string } | null>(null);
+  const [article, setArticle] = useState<{ detail: ArticleDetail; removed: boolean } | null>(null);
 
   useEffect(() => {
-    loadChangelog();
-    setOpenVersionId(null);
-    setDiff(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source.id]);
-
-  const loadChangelog = async () => {
+    setOverlay(null);
+    setArticle(null);
     setLoading(true);
     setError("");
+    getSourceChangelog(source.id)
+      .then((d) => setEntries(d.entries))
+      .catch(() => setError("Failed to load changelog"))
+      .finally(() => setLoading(false));
+  }, [source.id]);
+
+  const groups = useMemo(() => {
+    const m = new Map<string, ChangelogEntry[]>();
+    for (const e of entries) {
+      const k = dateKey(e.timestamp);
+      const bucket = m.get(k);
+      if (bucket) bucket.push(e);
+      else m.set(k, [e]);
+    }
+    return Array.from(m.entries()); // insertion order = newest-first from API
+  }, [entries]);
+
+  const openEntry = async (e: ChangelogEntry) => {
+    setError("");
     try {
-      const data = await getSourceChangelog(source.id);
-      setEntries(data.entries);
-    } catch (e) {
-      setError("Failed to load changelog");
-    } finally {
-      setLoading(false);
+      const detail = await getArticle(e.article_id);
+      if (e.change_type === "changed") {
+        setOverlay({ id: e.article_id, title: detail.title, md: detail.content_markdown });
+      } else {
+        setArticle({ detail, removed: e.change_type === "removed" });
+      }
+    } catch {
+      setError("Failed to open article");
     }
-  };
-
-  const loadDiff = async (entry: ChangelogEntry, mode: Against) => {
-    setDiffLoading(true);
-    setDiff(null);
-    try {
-      const data = await getVersionDiff(entry.article_id, entry.version_id, mode);
-      setDiff(data);
-    } catch (e) {
-      setError("Failed to load diff");
-    } finally {
-      setDiffLoading(false);
-    }
-  };
-
-  const handleToggleEntry = (entry: ChangelogEntry) => {
-    if (openVersionId === entry.version_id) {
-      setOpenVersionId(null);
-      setDiff(null);
-      return;
-    }
-    setOpenVersionId(entry.version_id);
-    setAgainst("next");
-    loadDiff(entry, "next");
-  };
-
-  const handleSetAgainst = (entry: ChangelogEntry, mode: Against) => {
-    setAgainst(mode);
-    loadDiff(entry, mode);
   };
 
   if (source.status !== "completed") {
     return (
       <div className="changelog-panel">
         <p className="hint">
-          Run an extraction first — the changelog records changes captured
-          across runs.
+          Run an extraction first — the changelog records changes captured across runs.
         </p>
       </div>
     );
@@ -86,67 +81,57 @@ export default function ChangelogPanel({ source }: Props) {
   return (
     <div className="changelog-panel">
       <h2>Changelog — {source.name}</h2>
-      <p className="hint">
-        Every recorded article change, newest first. Expand an entry to see what
-        changed.
-      </p>
+      <p className="hint">A timeline of page additions, changes and removals, newest first.</p>
 
       {error && <p className="error">{error}</p>}
       {loading && <p>Loading changelog…</p>}
+      {!loading && entries.length === 0 && <p className="hint">No events yet.</p>}
 
-      {!loading && entries.length === 0 && (
-        <p className="hint">
-          No changes recorded yet. Changes appear here after a re-run detects
-          updated content.
-        </p>
+      {groups.map(([day, evs]) => (
+        <div key={day} className="timeline-group">
+          <div className="timeline-date">{day}</div>
+          <ul className="timeline-list">
+            {evs.map((e, i) => (
+              <li
+                key={`${e.change_type}-${e.version_id ?? e.article_id}-${i}`}
+                className="timeline-row"
+              >
+                <button className="timeline-event" onClick={() => openEntry(e)}>
+                  <span className={`badge-${e.change_type}`}>{BADGE[e.change_type]}</span>
+                  <span className="timeline-title">{e.title}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+
+      {overlay && (
+        <VersionOverlay
+          articleId={overlay.id}
+          title={overlay.title}
+          currentMarkdown={overlay.md}
+          onClose={() => setOverlay(null)}
+        />
       )}
 
-      <ul className="changelog-list">
-        {entries.map((entry) => {
-          const open = openVersionId === entry.version_id;
-          return (
-            <li key={entry.version_id} className="changelog-entry">
-              <button
-                className="changelog-entry-header"
-                onClick={() => handleToggleEntry(entry)}
-              >
-                <span className="changelog-caret">{open ? "▾" : "▸"}</span>
-                <span className="changelog-title">{entry.title}</span>
-                <span className="changelog-date">
-                  {new Date(entry.extracted_at).toLocaleString()}
-                </span>
-                {!entry.has_diff && (
-                  <span className="status-badge">computed diff</span>
-                )}
-              </button>
-
-              {open && (
-                <div className="diff-container">
-                  <div className="diff-toolbar">
-                    <button
-                      className={against === "next" ? "active" : ""}
-                      onClick={() => handleSetAgainst(entry, "next")}
-                    >
-                      vs. next version
-                    </button>
-                    <button
-                      className={against === "current" ? "active" : ""}
-                      onClick={() => handleSetAgainst(entry, "current")}
-                    >
-                      vs. current
-                    </button>
-                  </div>
-                  {diffLoading && <p>Loading diff…</p>}
-                  {!diffLoading && diff && <DiffView text={diff.diff_text} />}
-                  {!diffLoading && diff && diff.diff_text.trim() === "" && (
-                    <p className="hint">No textual differences.</p>
-                  )}
-                </div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
+      {article && (
+        <div className="article-modal-backdrop" onClick={() => setArticle(null)}>
+          <div className="article-modal" onClick={(ev) => ev.stopPropagation()}>
+            <div className="article-modal-head">
+              <h3>{article.detail.title}</h3>
+              <button onClick={() => setArticle(null)}>✕</button>
+            </div>
+            {article.removed && (
+              <div className="removed-banner">
+                This page is no longer present in the source's current table of
+                contents. It is preserved here from the last run that included it.
+              </div>
+            )}
+            <MarkdownView content={article.detail.content_markdown} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

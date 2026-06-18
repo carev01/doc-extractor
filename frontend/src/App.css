@@ -1416,6 +1416,131 @@ a.btn-primary {
   letter-spacing: 0.04em;
 }
 
+/* ============================================================
+   Changelog timeline
+   ============================================================ */
+.timeline-group {
+  margin-top: 18px;
+}
+
+.timeline-date {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--amber);
+  padding-bottom: 6px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.timeline-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.timeline-event {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  background: var(--ink-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: inherit;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.timeline-event:hover {
+  border-color: var(--amber);
+  background: var(--ink-2);
+}
+
+.timeline-title {
+  font-weight: 500;
+}
+
+/* Event badges share the base badge layout (see .badge-new/.badge-upd). */
+.badge-added,
+.badge-changed {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  border: 1px solid transparent;
+  flex-shrink: 0;
+}
+
+.badge-added {
+  color: var(--add);
+  background: var(--new-ghost);
+  border-color: rgba(88, 192, 138, 0.35);
+}
+
+.badge-changed {
+  color: var(--amber);
+  background: var(--amber-ghost);
+  border-color: rgba(234, 165, 61, 0.35);
+}
+
+/* The REMOVED badge in the timeline reuses .badge-removed but needs the
+   timeline's flex layout to not shrink it. */
+.timeline-event .badge-removed {
+  flex-shrink: 0;
+  margin-left: 0;
+}
+
+/* Article viewer modal (added / removed click-through). */
+.article-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 48px 16px;
+  z-index: 50;
+  overflow-y: auto;
+}
+
+.article-modal {
+  background: var(--ink-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  max-width: 860px;
+  width: 100%;
+  padding: 20px 24px 28px;
+}
+
+.article-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 12px;
+  margin-bottom: 16px;
+}
+
+.article-modal-head button {
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--amber);
+  cursor: pointer;
+  padding: 4px 10px;
+}
+
 /* Quality floor: respect reduced-motion. */
 @media (prefers-reduced-motion: reduce) {
   *,
