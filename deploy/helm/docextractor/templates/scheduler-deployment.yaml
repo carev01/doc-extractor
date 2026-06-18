@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-scheduler
+  labels:
+    {{- include "docextractor.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas.scheduler }}
+  selector:
+    matchLabels:
+      {{- include "docextractor.selectorLabels" (dict "ctx" . "component" "scheduler") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "docextractor.selectorLabels" (dict "ctx" . "component" "scheduler") | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: scheduler
+          image: "{{ .Values.image.backend.repository }}:{{ .Values.image.backend.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "app.scheduler"]
+          envFrom:
+            - configMapRef: { name: {{ .Release.Name }}-config }
+            - secretRef: { name: {{ .Release.Name }}-secret }
+          livenessProbe:
+            exec: { command: ["sh", "-c", "pgrep -f 'app.scheduler' >/dev/null"] }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.resources.scheduler | nindent 12 }}
