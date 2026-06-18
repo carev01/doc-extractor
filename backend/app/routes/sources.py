@@ -1,6 +1,7 @@
 """DocumentationSource CRUD routes."""
 
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func
@@ -11,8 +12,11 @@ from app.core.database import get_db
 from app.models.article import Article
 from app.models.article_version import ArticleVersion
 from app.models.extraction_run import ExtractionRun, RunStatus
+from app.models.schedule import Schedule
 from app.models.source import DocumentationSource
 from app.models.toc import TOCEntry
+from app.schemas.browse import BrowseTOCEntry, RemovedArticle, BrowseResponse
+from app.schemas.schedule import ScheduleConfig, ScheduleResponse, ScheduleLastRun
 from app.schemas.source import (
     SourceCreate,
     SourceUpdate,
@@ -20,7 +24,7 @@ from app.schemas.source import (
     SourceListResponse,
 )
 from app.schemas.version import ChangelogEntry, ChangelogResponse
-from app.schemas.browse import BrowseTOCEntry, RemovedArticle, BrowseResponse
+from app.services.cron import build_cron, compute_next_run
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
@@ -296,3 +300,90 @@ async def browse_source(source_id: uuid.UUID, db: AsyncSession = Depends(get_db)
         entries=roots,
         removed=removed,
     )
+
+
+async def _schedule_response(db: AsyncSession, sched: Schedule) -> ScheduleResponse:
+    last_run = None
+    if sched.last_run_id is not None:
+        run = (
+            await db.execute(
+                select(ExtractionRun).where(ExtractionRun.id == sched.last_run_id)
+            )
+        ).scalar_one_or_none()
+        if run is not None:
+            last_run = ScheduleLastRun(
+                id=run.id, status=run.status.value, completed_at=run.completed_at
+            )
+    return ScheduleResponse(
+        source_id=sched.source_id,
+        enabled=sched.enabled,
+        frequency=sched.frequency,
+        time_of_day=sched.time_of_day,
+        day_of_week=sched.day_of_week,
+        day_of_month=sched.day_of_month,
+        cron=sched.cron,
+        timezone=sched.timezone,
+        next_run_at=sched.next_run_at,
+        last_run_at=sched.last_run_at,
+        last_run=last_run,
+    )
+
+
+@router.get("/{source_id}/schedule", response_model=ScheduleResponse)
+async def get_schedule(source_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    sched = (
+        await db.execute(select(Schedule).where(Schedule.source_id == source_id))
+    ).scalar_one_or_none()
+    if sched is None:
+        raise HTTPException(status_code=404, detail="No schedule for this source")
+    return await _schedule_response(db, sched)
+
+
+@router.put("/{source_id}/schedule", response_model=ScheduleResponse)
+async def put_schedule(
+    source_id: uuid.UUID,
+    body: ScheduleConfig,
+    db: AsyncSession = Depends(get_db),
+):
+    source = (
+        await db.execute(
+            select(DocumentationSource).where(DocumentationSource.id == source_id)
+        )
+    ).scalar_one_or_none()
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    cron = build_cron(
+        body.frequency, body.time_of_day, body.day_of_week, body.day_of_month
+    )
+    now = datetime.now(timezone.utc)
+    next_run_at = compute_next_run(cron, body.timezone, now) if body.enabled else None
+
+    sched = (
+        await db.execute(select(Schedule).where(Schedule.source_id == source_id))
+    ).scalar_one_or_none()
+    if sched is None:
+        sched = Schedule(source_id=source_id)
+        db.add(sched)
+    sched.enabled = body.enabled
+    sched.frequency = body.frequency
+    sched.time_of_day = body.time_of_day
+    sched.day_of_week = body.day_of_week
+    sched.day_of_month = body.day_of_month
+    sched.cron = cron
+    sched.timezone = body.timezone
+    sched.next_run_at = next_run_at
+    await db.commit()
+    await db.refresh(sched)
+    return await _schedule_response(db, sched)
+
+
+@router.delete("/{source_id}/schedule", status_code=204)
+async def delete_schedule(source_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    sched = (
+        await db.execute(select(Schedule).where(Schedule.source_id == source_id))
+    ).scalar_one_or_none()
+    if sched is not None:
+        await db.delete(sched)
+        await db.commit()
+    return None
