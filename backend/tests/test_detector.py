@@ -1,7 +1,6 @@
 """Tests for the platform detector (app.services.profiles.detector).
 
-Only the commvault profile is registered at this point.  Other platform
-profiles are tested in their own test_profiles_<name>.py files (Tasks 6-13).
+Profiles are tested in their own test_profiles_<name>.py files (Tasks 6-14).
 """
 
 import os
@@ -10,6 +9,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.services.profiles.detector import detect_platform
+from app.services.profiles import registry
 
 FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures", "platforms")
 COMMVAULT_ROOT = "https://documentation.commvault.com/clumio/index.html"
@@ -31,3 +31,10 @@ def test_junk_html_returns_none():
 
 def test_empty_html_returns_none():
     assert detect_platform("", "https://example.com/") is None
+
+
+def test_generic_profile_exists_in_registry():
+    """The generic profile must be registered so _resolve_profile fallback works."""
+    p = registry.get("generic")
+    assert p is not None
+    assert p.name == "generic"

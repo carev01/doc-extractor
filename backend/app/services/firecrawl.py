@@ -6,7 +6,7 @@ import logging
 import os
 import uuid
 from datetime import datetime, timezone
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -119,7 +119,7 @@ class FirecrawlService:
                 "Platform auto-detection failed for %s: %s", source.base_url, exc
             )
 
-        return profile_registry.get("commvault")
+        return profile_registry.get("generic")
 
     def _auth_headers(self) -> dict:
         if self.api_key:
@@ -139,6 +139,43 @@ class FirecrawlService:
                 f"Firecrawl at {self.base_url} did not respond within "
                 f"{self.CONNECT_TIMEOUT}s. Original error: {exc}"
             ) from exc
+
+    async def map_urls(self, root_url: str) -> list[str]:
+        """Return all URLs discovered under *root_url* via the Firecrawl /v2/map endpoint.
+
+        Primary path: POST ``/v2/map`` with ``{"url": root_url}`` and return the
+        ``links`` (or ``data``) list from the response.
+
+        Fallback (any error or empty result): fetch ``<scheme>://<host>/sitemap.xml``
+        directly and parse ``<loc>`` entries in document order.
+
+        Always returns a list (never raises); on total failure returns [].
+        """
+        try:
+            resp = await self.client.post(
+                f"{self.base_url}/v2/map",
+                json={"url": root_url},
+                headers=self._auth_headers(),
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            urls: list[str] = body.get("links") or body.get("data") or []
+            if urls:
+                return urls
+        except Exception as exc:
+            logger.warning("Firecrawl /v2/map failed for %s: %s — trying sitemap fallback", root_url, exc)
+
+        # Sitemap fallback
+        try:
+            parsed = urlparse(root_url)
+            sitemap_url = f"{parsed.scheme}://{parsed.netloc}/sitemap.xml"
+            resp = await self.client.get(sitemap_url, headers=self._auth_headers())
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+            return [loc.get_text(strip=True) for loc in soup.find_all("loc")]
+        except Exception as exc:
+            logger.warning("Sitemap fallback also failed for %s: %s", root_url, exc)
+            return []
 
     async def _firecrawl_request(self, url: str, payload: dict) -> dict:
         """Make a Firecrawl v2 scrape request and return the data dict."""
