@@ -20,6 +20,11 @@ from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.image import ArticleImage
 from app.models.source import DocumentationSource, SourceStatus
 from app.models.toc import TOCEntry
+from app.services.profiles import registry as profile_registry
+from app.services.profiles.scraper import Scraper
+
+# Default content scrape options when no profile config is supplied (legacy Commvault).
+_LEGACY_CONTENT = {"includeTags": ["#doc"], "onlyMainContent": False, "waitFor": 1500}
 
 
 def compute_content_hash(content: str) -> str:
@@ -54,6 +59,21 @@ class FirecrawlService:
                 pool=30.0,
             )
         )
+        # Per-source content scrape options, set at run start so the webhook /
+        # empty-content retries scope content the same way the batch did.
+        self._content_config_by_source: dict[uuid.UUID, dict] = {}
+
+    def _resolve_profile(self, source: DocumentationSource):
+        """Pick the extraction profile for a source: stored override, else default.
+
+        Auto-detection is layered in by a later step; until then an un-set
+        platform falls back to the Commvault profile (preserving prior behavior).
+        """
+        if source.platform:
+            p = profile_registry.get(source.platform)
+            if p is not None:
+                return p
+        return profile_registry.get("commvault")
 
     def _auth_headers(self) -> dict:
         if self.api_key:
@@ -84,16 +104,8 @@ class FirecrawlService:
         resp.raise_for_status()
         return resp.json().get("data", {})
 
-    async def _scrape_nav_html(self, url: str) -> str:
-        data = await self._firecrawl_request(url, {
-            "formats": ["html"],
-            "onlyMainContent": False,
-            "waitFor": 1500,
-        })
-        return data.get("html", "")
-
     async def _scrape_article(
-        self, url: str, tag: str | None = None
+        self, url: str, tag: str | None = None, content_config: dict | None = None
     ) -> tuple[str, str, str | None, str | None]:
         """Return (markdown, html, change_status, diff_text) scoped to the #doc element.
 
@@ -109,12 +121,7 @@ class FirecrawlService:
             if tag:
                 ct_format["tag"] = tag
             formats.append(ct_format)
-        payload: dict = {
-            "formats": formats,
-            "onlyMainContent": False,
-            "includeTags": ["#doc"],
-            "waitFor": 1500,
-        }
+        payload: dict = {"formats": formats, **(content_config or _LEGACY_CONTENT)}
         data = await self._firecrawl_request(url, payload)
         markdown = data.get("markdown", "")
         html = data.get("html", "")
@@ -124,10 +131,12 @@ class FirecrawlService:
         return markdown, html, change_status, diff_text
 
     async def _scrape_article_with_retry(
-        self, url: str, tag: str | None = None
+        self, url: str, tag: str | None = None, content_config: dict | None = None
     ) -> tuple[str, str, str | None, str | None]:
         """Scrape a single article, retrying on empty-content responses."""
-        markdown, html, change_status, diff_text = await self._scrape_article(url, tag=tag)
+        markdown, html, change_status, diff_text = await self._scrape_article(
+            url, tag=tag, content_config=content_config
+        )
         for attempt in range(self.EMPTY_CONTENT_RETRIES):
             if markdown.strip():
                 return markdown, html, change_status, diff_text
@@ -137,84 +146,10 @@ class FirecrawlService:
                 self.EMPTY_CONTENT_RETRY_DELAY,
             )
             await asyncio.sleep(self.EMPTY_CONTENT_RETRY_DELAY)
-            markdown, html, change_status, diff_text = await self._scrape_article(url, tag=tag)
+            markdown, html, change_status, diff_text = await self._scrape_article(
+                url, tag=tag, content_config=content_config
+            )
         return markdown, html, change_status, diff_text
-
-    def _parse_nav_items(self, ul_el) -> list[dict]:
-        items = []
-        for li in ul_el.find_all("li", class_="nav-row", recursive=False):
-            div = li.find(class_="nav-item")
-            if not div:
-                continue
-            a_tag = div.find("a")
-            if not a_tag:
-                continue
-            href = a_tag.get("href", "").strip()
-            title = a_tag.get_text(strip=True)
-            is_parent = div.has_attr("data-is-parent")
-            if href and title:
-                items.append({"title": title, "url": href, "is_parent": is_parent})
-        return items
-
-    async def _build_toc_recursive(
-        self,
-        url: str,
-        level: int,
-        visited: set[str],
-        nav_html_cache: dict[str, str],
-    ) -> list[dict]:
-        if url in visited:
-            return []
-        visited.add(url)
-
-        if url not in nav_html_cache:
-            try:
-                nav_html_cache[url] = await self._scrape_nav_html(url)
-            except Exception as exc:
-                logger.warning("TOC scrape failed for %s: %s", url, exc)
-                return []
-
-        html = nav_html_cache[url]
-        if not html:
-            return []
-
-        soup = BeautifulSoup(html, "html.parser")
-        nav = soup.find(id="nav")
-        if not nav:
-            return []
-
-        if level == 0:
-            root_ul = nav.find("ul", class_="nav-group-root")
-            if not root_ul:
-                root_ul = nav.find("ul", class_="nav-group")
-            if not root_ul:
-                return []
-            items = self._parse_nav_items(root_ul)
-        else:
-            active_div = nav.find(class_="nav-item-active")
-            if not active_div:
-                return []
-            parent_li = active_div.parent
-            children_ul = parent_li.find("ul", class_="nav-group")
-            if not children_ul:
-                return []
-            items = self._parse_nav_items(children_ul)
-
-        toc: list[dict] = []
-        for item in items:
-            toc.append({
-                "title": item["title"],
-                "url": item["url"],
-                "level": level,
-                "is_article": True,
-            })
-            if item["is_parent"]:
-                children = await self._build_toc_recursive(
-                    item["url"], level + 1, visited, nav_html_cache
-                )
-                toc.extend(children)
-
-        return toc
 
     async def _download_image(self, img_url: str, article_dir: str) -> str | None:
         try:
@@ -454,7 +389,9 @@ class FirecrawlService:
         await db.commit()
         return outcome
 
-    async def _submit_batch(self, urls: list[str], source_id: uuid.UUID) -> str:
+    async def _submit_batch(
+        self, urls: list[str], source_id: uuid.UUID, content_config: dict | None = None
+    ) -> str:
         """Submit a batch scrape job and return the Firecrawl job ID."""
         formats: list = ["markdown", "html"]
         if self.api_key:
@@ -465,13 +402,7 @@ class FirecrawlService:
                 "modes": ["git-diff"],
                 "tag": f"src-{source_id}",
             })
-        payload: dict = {
-            "urls": urls,
-            "formats": formats,
-            "onlyMainContent": False,
-            "includeTags": ["#doc"],
-            "waitFor": 1500,
-        }
+        payload: dict = {"urls": urls, "formats": formats, **(content_config or _LEGACY_CONTENT)}
         resp = await self.client.post(
             f"{self.base_url}/v2/batch/scrape",
             json=payload,
@@ -511,6 +442,7 @@ class FirecrawlService:
         url_to_entry: dict[str, dict],
         job_id: str,
         batch_tag: str | None = None,
+        content_config: dict | None = None,
     ) -> None:
         """Consume batch results via cursor pagination, processing each page inline.
 
@@ -558,7 +490,7 @@ class FirecrawlService:
                     for attempt in range(self.EMPTY_CONTENT_RETRIES):
                         await asyncio.sleep(self.EMPTY_CONTENT_RETRY_DELAY)
                         markdown, html, change_status, diff_text = await self._scrape_article(
-                            url, tag=batch_tag
+                            url, tag=batch_tag, content_config=content_config
                         )
                         if markdown.strip():
                             break
@@ -615,7 +547,7 @@ class FirecrawlService:
                 logger.info("Individual retry: %s", url)
                 try:
                     markdown, html, change_status, diff_text = await self._scrape_article_with_retry(
-                        url, tag=batch_tag
+                        url, tag=batch_tag, content_config=content_config
                     )
                     await self.process_article_result(
                         db=db,
@@ -708,15 +640,18 @@ class FirecrawlService:
         try:
             await self._check_available()
 
-            # ── Phase 1: Build ordered TOC via recursive nav scraping ──────
-            logger.info("Discovering TOC for %s", source.base_url)
-            nav_html_cache: dict[str, str] = {}
-            visited: set[str] = set()
-
-            toc_entries = await self._build_toc_recursive(
-                source.base_url, level=0, visited=visited,
-                nav_html_cache=nav_html_cache,
+            # ── Phase 1: Build ordered TOC via the source's extraction profile ──
+            profile = self._resolve_profile(source)
+            content_cfg = profile.content_config()
+            self._content_config_by_source[source_id] = content_cfg
+            logger.info(
+                "Discovering TOC for %s (profile=%s)", source.base_url, profile.name
             )
+            toc_objs = await profile.build_toc(source.base_url, Scraper(self))
+            toc_entries = [
+                {"title": e.title, "url": e.url, "level": e.level, "is_article": e.is_article}
+                for e in toc_objs
+            ]
 
             if not toc_entries:
                 toc_entries = [{
@@ -784,12 +719,15 @@ class FirecrawlService:
             # and gives the UI live per-page progress via the counters.
             url_to_entry = {entry["url"]: entry for entry in toc_entries}
             batch_tag = f"src-{source_id}" if self.api_key else None
-            job_id = await self._submit_batch(list(url_to_entry.keys()), source_id)
+            job_id = await self._submit_batch(
+                list(url_to_entry.keys()), source_id, content_config=content_cfg
+            )
             run.firecrawl_job_id = job_id
             await db.commit()
 
             await self._poll_batch_and_process(
-                db, source_id, run.id, url_to_entry, job_id, batch_tag=batch_tag
+                db, source_id, run.id, url_to_entry, job_id, batch_tag=batch_tag,
+                content_config=content_cfg,
             )
 
             # Record removals (pages gone from the rebuilt TOC) before completing.
