@@ -155,7 +155,10 @@ export async function getTOC(sourceId: string): Promise<TOCResponse> {
 export async function exportMarkdown(
   data: ExportRequest
 ): Promise<ExportResponse> {
-  const res = await api.post("/export/markdown", data);
+  // Exports run synchronously server-side; a full PDF render of a large source
+  // can take well over the default 30s. Allow up to the nginx proxy_read_timeout
+  // (600s) for this request rather than the global client timeout.
+  const res = await api.post("/export/markdown", data, { timeout: 600_000 });
   return res.data;
 }
 
