@@ -32,6 +32,7 @@ async def export_markdown(
             max_file_size_bytes=body.max_file_size_bytes,
             max_tokens_per_file=body.max_tokens_per_file,
             respect_chapters=body.respect_chapters,
+            format=body.format,
         )
         return ExportResponse(**result)
     except ValueError as e:
@@ -98,7 +99,7 @@ async def list_exports(db: AsyncSession = Depends(get_db)):
                 files = [
                     f.name
                     for f in os.scandir(entry.path)
-                    if f.is_file() and f.name.endswith(".md")
+                    if f.is_file() and f.name.endswith((".md", ".pdf"))
                 ]
                 exports.append({
                     "export_id": str(export_uuid),

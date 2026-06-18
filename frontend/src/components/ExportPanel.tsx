@@ -22,6 +22,7 @@ export default function ExportPanel({ source }: Props) {
   const [splitBy, setSplitBy] = useState<"" | "size" | "articles" | "tokens">("");
   const [splitValue, setSplitValue] = useState(50);
   const [respectChapters, setRespectChapters] = useState(false);
+  const [format, setFormat] = useState<"markdown" | "pdf">("markdown");
   const [exporting, setExporting] = useState(false);
   const [exportResult, setExportResult] = useState<ExportResponse | null>(null);
   const [error, setError] = useState("");
@@ -73,6 +74,7 @@ export default function ExportPanel({ source }: Props) {
         max_tokens_per_file:
           splitBy === "tokens" ? splitValue : undefined,
         respect_chapters: splitBy ? respectChapters : undefined,
+        format,
       });
       setExportResult(result);
     } catch (e: any) {
@@ -190,6 +192,17 @@ export default function ExportPanel({ source }: Props) {
       )}
 
       <div className="split-options">
+        <h3>Format:</h3>
+        <select
+          value={format}
+          onChange={(e) => setFormat(e.target.value as "markdown" | "pdf")}
+        >
+          <option value="markdown">Markdown</option>
+          <option value="pdf">PDF</option>
+        </select>
+      </div>
+
+      <div className="split-options">
         <h3>File splitting (optional):</h3>
         <select
           value={splitBy}
@@ -233,7 +246,9 @@ export default function ExportPanel({ source }: Props) {
         onClick={handleExport}
         disabled={exporting}
       >
-        {exporting ? "Generating..." : "Generate Markdown Export"}
+        {exporting
+          ? "Generating..."
+          : `Generate ${format === "pdf" ? "PDF" : "Markdown"} Export`}
       </button>
 
       {exportResult && (
