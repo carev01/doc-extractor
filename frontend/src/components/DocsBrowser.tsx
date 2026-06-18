@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import type {
   DocumentationSource,
   BrowseResponse,
@@ -6,6 +7,7 @@ import type {
   ArticleDetail,
 } from "../types";
 import { browseSource, getArticle } from "../api/client";
+import { flattenVisible, filterVisible, type FlatRow } from "./docsTree";
 import MarkdownView from "./MarkdownView";
 import VersionOverlay from "./VersionOverlay";
 
@@ -20,6 +22,8 @@ interface ArticleMeta {
   removed: boolean;
 }
 
+const ROW_HEIGHT = 32;
+
 function firstArticleId(nodes: BrowseTOCEntry[]): string | null {
   for (const n of nodes) {
     if (n.article_id) return n.article_id;
@@ -29,14 +33,32 @@ function firstArticleId(nodes: BrowseTOCEntry[]): string | null {
   return null;
 }
 
+/** Wrap the matched substring in <mark> (case-insensitive). */
+function highlight(title: string, query: string) {
+  const q = query.trim();
+  if (!q) return title;
+  const idx = title.toLowerCase().indexOf(q.toLowerCase());
+  if (idx < 0) return title;
+  return (
+    <>
+      {title.slice(0, idx)}
+      <mark className="docs-hl">{title.slice(idx, idx + q.length)}</mark>
+      {title.slice(idx + q.length)}
+    </>
+  );
+}
+
 export default function DocsBrowser({ source }: Props) {
   const [data, setData] = useState<BrowseResponse | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [article, setArticle] = useState<ArticleDetail | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [query, setQuery] = useState("");
   const [showHistory, setShowHistory] = useState(false);
   const [loadingArticle, setLoadingArticle] = useState(false);
   const [error, setError] = useState("");
+
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (source.status === "completed") load();
@@ -48,6 +70,7 @@ export default function DocsBrowser({ source }: Props) {
     setData(null);
     setArticle(null);
     setSelectedId(null);
+    setQuery("");
     try {
       const d = await browseSource(source.id);
       setData(d);
@@ -86,6 +109,22 @@ export default function DocsBrowser({ source }: Props) {
     return m;
   }, [data]);
 
+  // The flat row array fed to the virtualizer: filtered view when querying,
+  // otherwise the expand/collapse-aware flatten.
+  const rows: FlatRow[] = useMemo(() => {
+    if (!data) return [];
+    return query.trim()
+      ? filterVisible(data.entries, query)
+      : flattenVisible(data.entries, collapsed);
+  }, [data, collapsed, query]);
+
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 12,
+  });
+
   const selectArticle = async (articleId: string) => {
     setSelectedId(articleId);
     setShowHistory(false);
@@ -106,6 +145,20 @@ export default function DocsBrowser({ source }: Props) {
     setCollapsed(next);
   };
 
+  const renderBadge = (status: ArticleMeta["change_status"]) => {
+    if (status === "new") return <span className="badge-new">NEW</span>;
+    if (status === "updated") return <span className="badge-upd">UPDATED</span>;
+    return null;
+  };
+
+  const removed = useMemo(() => {
+    if (!data) return [];
+    const q = query.trim().toLowerCase();
+    return q
+      ? data.removed.filter((r) => r.title.toLowerCase().includes(q))
+      : data.removed;
+  }, [data, query]);
+
   if (source.status !== "completed") {
     return (
       <div className="docs-browser">
@@ -116,52 +169,37 @@ export default function DocsBrowser({ source }: Props) {
     );
   }
 
-  const renderBadge = (status: ArticleMeta["change_status"]) => {
-    if (status === "new") return <span className="badge-new">NEW</span>;
-    if (status === "updated") return <span className="badge-upd">UPDATED</span>;
-    return null;
+  const renderRow = (row: FlatRow) => {
+    const n = row.node;
+    const isArticle = !!n.article_id;
+    return (
+      <div
+        className="docs-toc-row"
+        style={{ paddingLeft: row.depth * 14 }}
+      >
+        {row.hasChildren ? (
+          <button className="docs-toc-caret" onClick={() => toggle(n.id)}>
+            {row.expanded ? "▾" : "▸"}
+          </button>
+        ) : (
+          <span className="docs-toc-caret-spacer" />
+        )}
+        {isArticle ? (
+          <button
+            className={`docs-toc-link ${selectedId === n.article_id ? "active" : ""}`}
+            onClick={() => selectArticle(n.article_id!)}
+          >
+            <span className="docs-toc-title">{highlight(n.title, query)}</span>
+            {renderBadge(n.change_status)}
+          </button>
+        ) : (
+          <button className="docs-toc-section" onClick={() => toggle(n.id)}>
+            {highlight(n.title, query)}
+          </button>
+        )}
+      </div>
+    );
   };
-
-  const renderTree = (nodes: BrowseTOCEntry[]) => (
-    <ul className="docs-toc-list">
-      {nodes.map((n) => {
-        const isCollapsed = collapsed.has(n.id);
-        const hasChildren = n.children.length > 0;
-        return (
-          <li key={n.id} className="docs-toc-item">
-            <div className="docs-toc-row">
-              {hasChildren ? (
-                <button className="docs-toc-caret" onClick={() => toggle(n.id)}>
-                  {isCollapsed ? "▸" : "▾"}
-                </button>
-              ) : (
-                <span className="docs-toc-caret-spacer" />
-              )}
-              {n.article_id ? (
-                <button
-                  className={`docs-toc-link ${
-                    selectedId === n.article_id ? "active" : ""
-                  }`}
-                  onClick={() => selectArticle(n.article_id!)}
-                >
-                  <span className="docs-toc-title">{n.title}</span>
-                  {renderBadge(n.change_status)}
-                </button>
-              ) : (
-                <button
-                  className="docs-toc-section"
-                  onClick={() => toggle(n.id)}
-                >
-                  {n.title}
-                </button>
-              )}
-            </div>
-            {hasChildren && !isCollapsed && renderTree(n.children)}
-          </li>
-        );
-      })}
-    </ul>
-  );
 
   const meta = article ? metaById.get(article.id) : undefined;
 
@@ -171,16 +209,51 @@ export default function DocsBrowser({ source }: Props) {
 
       <div className="docs-layout">
         <nav className="docs-sidebar">
-          {data && data.entries.length === 0 && (
-            <p className="hint">No pages extracted.</p>
-          )}
-          {data && renderTree(data.entries)}
+          <input
+            className="docs-filter"
+            type="search"
+            placeholder="Filter pages…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
 
-          {data && data.removed.length > 0 && (
+          {data && rows.length === 0 && (
+            <p className="hint">
+              {query.trim() ? "No pages match the filter." : "No pages extracted."}
+            </p>
+          )}
+
+          <div ref={scrollRef} className="docs-toc-scroll">
+            <div
+              style={{
+                height: virtualizer.getTotalSize(),
+                position: "relative",
+                width: "100%",
+              }}
+            >
+              {virtualizer.getVirtualItems().map((vi) => (
+                <div
+                  key={rows[vi.index].node.id}
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    height: vi.size,
+                    transform: `translateY(${vi.start}px)`,
+                  }}
+                >
+                  {renderRow(rows[vi.index])}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {removed.length > 0 && (
             <div className="docs-removed">
               <div className="docs-removed-label">Removed pages</div>
               <ul className="docs-toc-list">
-                {data.removed.map((r) => (
+                {removed.map((r) => (
                   <li key={r.article_id} className="docs-toc-item">
                     <div className="docs-toc-row">
                       <span className="docs-toc-caret-spacer" />
@@ -190,7 +263,7 @@ export default function DocsBrowser({ source }: Props) {
                         }`}
                         onClick={() => selectArticle(r.article_id)}
                       >
-                        <span className="docs-toc-title">{r.title}</span>
+                        <span className="docs-toc-title">{highlight(r.title, query)}</span>
                         <span className="badge-removed">REMOVED</span>
                       </button>
                     </div>
@@ -211,8 +284,7 @@ export default function DocsBrowser({ source }: Props) {
               {meta?.removed && (
                 <div className="removed-banner">
                   This page is no longer present in the source's current table of
-                  contents. It is preserved here from the last run that included
-                  it.
+                  contents. It is preserved here from the last run that included it.
                 </div>
               )}
               <div className="docs-content-head">
@@ -221,11 +293,7 @@ export default function DocsBrowser({ source }: Props) {
                   {article.title} {renderBadge(meta?.change_status ?? null)}
                 </h2>
                 <div className="docs-content-meta">
-                  <a
-                    href={article.source_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
+                  <a href={article.source_url} target="_blank" rel="noopener noreferrer">
                     {article.source_url}
                   </a>
                   {article.last_updated_at && (
@@ -235,14 +303,10 @@ export default function DocsBrowser({ source }: Props) {
                     </span>
                   )}
                   <span>
-                    Last scraped{" "}
-                    {new Date(article.extracted_at).toLocaleDateString()}
+                    Last scraped {new Date(article.extracted_at).toLocaleDateString()}
                   </span>
                   {meta && meta.version_count > 0 && (
-                    <button
-                      className="btn-link"
-                      onClick={() => setShowHistory(true)}
-                    >
+                    <button className="btn-link" onClick={() => setShowHistory(true)}>
                       History ({meta.version_count})
                     </button>
                   )}

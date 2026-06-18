@@ -888,10 +888,27 @@ a.btn-primary {
   border-radius: var(--radius-sm);
   padding: 12px;
   max-height: 76vh;
-  overflow-y: auto;
   position: sticky;
   top: 16px;
+  /* Flex column so filter sits on top, scroll container fills remaining space */
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
+.docs-filter {
+  width: 100%;
+  margin-bottom: 10px;
+  padding: 7px 10px;
+  background: var(--ink-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: inherit;
+  font-family: var(--font-body);
+}
+.docs-filter:focus { outline: none; border-color: var(--amber); box-shadow: 0 0 0 3px var(--amber-ghost); }
+.docs-toc-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+.docs-virtual-row { } /* rows are absolutely positioned by the virtualizer wrapper */
+.docs-hl { background: var(--amber-ghost); color: var(--amber-hi); border-radius: 2px; }
 
 .docs-toc-list {
   list-style: none;
@@ -904,9 +921,12 @@ a.btn-primary {
 }
 
 .docs-toc-row {
+  height: 32px;
   display: flex;
   align-items: center;
   gap: 2px;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .docs-toc-caret,
