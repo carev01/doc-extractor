@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func
+from sqlalchemy import select, func, literal, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -136,25 +136,50 @@ async def get_source_changelog(
     if result.scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="Source not found")
 
-    count_query = (
-        select(func.count(ArticleVersion.id))
-        .join(Article, Article.id == ArticleVersion.article_id)
-        .where(Article.source_id == source_id)
+    # A typed NULL (cast to the version-id UUID type) so all three union branches
+    # agree on the column type — an untyped NULL can trip Postgres' UNION type
+    # resolution.
+    null_version_id = literal(None).cast(ArticleVersion.id.type)
+
+    # Three event streams sharing one column shape, merged newest-first.
+    added = select(
+        Article.id.label("article_id"),
+        Article.title.label("title"),
+        literal("added").label("change_type"),
+        Article.created_at.label("timestamp"),
+        null_version_id.label("version_id"),
+        Article.extraction_run_id.label("extraction_run_id"),
+        literal(False).label("has_diff"),
+    ).where(Article.source_id == source_id)
+
+    changed = select(
+        ArticleVersion.article_id.label("article_id"),
+        Article.title.label("title"),
+        literal("changed").label("change_type"),
+        ArticleVersion.extracted_at.label("timestamp"),
+        ArticleVersion.id.label("version_id"),
+        ArticleVersion.extraction_run_id.label("extraction_run_id"),
+        ArticleVersion.diff_text.isnot(None).label("has_diff"),
+    ).join(Article, Article.id == ArticleVersion.article_id).where(
+        Article.source_id == source_id
     )
-    total = (await db.execute(count_query)).scalar()
+
+    removed = select(
+        Article.id.label("article_id"),
+        Article.title.label("title"),
+        literal("removed").label("change_type"),
+        Article.removed_at.label("timestamp"),
+        null_version_id.label("version_id"),
+        Article.removal_run_id.label("extraction_run_id"),
+        literal(False).label("has_diff"),
+    ).where(Article.source_id == source_id, Article.removed_at.isnot(None))
+
+    events = union_all(added, changed, removed).subquery()
+    total = (await db.execute(select(func.count()).select_from(events))).scalar()
 
     rows = await db.execute(
-        select(
-            ArticleVersion.id.label("version_id"),
-            ArticleVersion.article_id,
-            Article.title,
-            ArticleVersion.extraction_run_id,
-            ArticleVersion.extracted_at,
-            ArticleVersion.diff_text.isnot(None).label("has_diff"),
-        )
-        .join(Article, Article.id == ArticleVersion.article_id)
-        .where(Article.source_id == source_id)
-        .order_by(ArticleVersion.extracted_at.desc())
+        select(events)
+        .order_by(events.c.timestamp.desc())
         .offset(skip)
         .limit(limit)
     )
@@ -163,9 +188,10 @@ async def get_source_changelog(
         ChangelogEntry(
             article_id=r.article_id,
             title=r.title,
+            change_type=r.change_type,
+            timestamp=r.timestamp,
             version_id=r.version_id,
             extraction_run_id=r.extraction_run_id,
-            extracted_at=r.extracted_at,
             has_diff=r.has_diff,
         )
         for r in rows

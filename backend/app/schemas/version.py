@@ -41,9 +41,10 @@ class VersionDiffResponse(BaseModel):
 class ChangelogEntry(BaseModel):
     article_id: uuid.UUID
     title: str
-    version_id: uuid.UUID
+    change_type: str  # "added" | "changed" | "removed"
+    timestamp: datetime
+    version_id: uuid.UUID | None
     extraction_run_id: uuid.UUID | None
-    extracted_at: datetime
     has_diff: bool
 
 
