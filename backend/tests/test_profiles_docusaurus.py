@@ -50,3 +50,5 @@ async def test_build_toc_yields_ordered_entries():
     assert "Release Notes" in titles
     # All 11 sidebar items should be present
     assert len(toc) == 11
+    # DOM order must be preserved: first item before last item
+    assert titles.index("Portworx Backup Documentation") < titles.index("Release Notes")

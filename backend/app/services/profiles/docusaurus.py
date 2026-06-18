@@ -1,8 +1,10 @@
 """Docusaurus documentation profile.
 
 TOC: parse the nested sidebar nav via sidebar_tree_toc using the
-``nav[aria-label="Docs sidebar"]`` selector, which is a stable Docusaurus
-landmark.  The shared strategy walks ``<li>/<a>`` + nested ``<ul>``.
+``.theme-doc-sidebar-menu`` selector, which is the stable Docusaurus class
+(i18n-robust, unlike the English aria-label).  The shared strategy treats a
+selected ``<ul>`` directly as the top-level list and walks ``<li>/<a>`` +
+nested ``<ul>``.
 Content: the ``.theme-doc-markdown`` wrapper.
 """
 
@@ -22,7 +24,7 @@ class DocusaurusProfile:
 
     async def build_toc(self, root_url: str, scraper) -> list[TocEntry]:
         return await sidebar_tree_toc(
-            scraper, root_url, 'nav[aria-label="Docs sidebar"]'
+            scraper, root_url, ".theme-doc-sidebar-menu"
         )
 
     def content_config(self) -> dict:

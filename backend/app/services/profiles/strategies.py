@@ -17,6 +17,9 @@ async def sidebar_tree_toc(
 ) -> list[TocEntry]:
     """Parse the nested list under ``nav_selector`` into an ordered TOC.
 
+    Pass the nav container element OR the list (<ul>) itself — if the selected
+    element is already a ``<ul>``, it is used directly as the top-level list.
+
     A node with a child <ul> is treated as a section (is_article=False); a leaf
     link is an article. Order is the DOM order of the nav.
     """
@@ -43,7 +46,7 @@ async def sidebar_tree_toc(
             if child_ul:
                 walk(child_ul, level + 1, url)
 
-    top = nav.find("ul")
+    top = nav if nav.name == "ul" else nav.find("ul")
     if top:
         walk(top, 0, None)
     return out

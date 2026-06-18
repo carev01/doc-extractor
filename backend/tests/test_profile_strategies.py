@@ -42,6 +42,20 @@ async def test_hubspoke_order_and_hierarchy():
     ]
 
 
+UL_AS_ROOT = """<html><body>
+<ul id="m"><li><a href="/x">X</a></li><li><a href="/y">Y</a></li></ul>
+</body></html>"""
+
+
+@pytest.mark.asyncio
+async def test_sidebar_tree_ul_selector_directly():
+    """Regression: sidebar_tree_toc must work when the selector matches the <ul> itself."""
+    sc = FakeScraper({"https://x/": UL_AS_ROOT})
+    toc = await sidebar_tree_toc(sc, "https://x/", "#m")
+    assert [e.title for e in toc] == ["X", "Y"]
+    assert all(e.is_article for e in toc)
+
+
 @pytest.mark.asyncio
 async def test_sitemap_urls_document_order():
     sm = '<urlset><url><loc>https://x/a</loc></url><url><loc>https://x/b</loc></url></urlset>'
