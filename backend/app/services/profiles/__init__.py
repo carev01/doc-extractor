@@ -13,5 +13,6 @@ from app.services.profiles import commvault  # noqa: F401,E402
 from app.services.profiles import docusaurus  # noqa: F401,E402
 from app.services.profiles import mkdocs  # noqa: F401,E402
 from app.services.profiles import gitbook  # noqa: F401,E402
+from app.services.profiles import flare_html5  # noqa: F401,E402
 
 __all__ = ["registry", "ExtractionProfile", "TocEntry"]
