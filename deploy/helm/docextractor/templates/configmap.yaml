@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  labels:
+    {{- include "docextractor.labels" . | nindent 4 }}
+data:
+  DOCEXTRACTOR_FIRECRAWL_API_URL: {{ .Values.firecrawl.apiUrl | quote }}
+  DOCEXTRACTOR_WEBHOOK_BASE_URL: "http://{{ include "docextractor.backendServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:8000"
+  DOCEXTRACTOR_CORS_ORIGINS: "http://{{ .Values.ingress.host }}{{ if .Values.ingress.tls.enabled }},https://{{ .Values.ingress.host }}{{ end }}"
+  DOCEXTRACTOR_LLM_FALLBACK_ENABLED: {{ .Values.llm.fallbackEnabled | quote }}
+  DOCEXTRACTOR_LLM_PROVIDER: {{ .Values.llm.provider | quote }}
+  DOCEXTRACTOR_LLM_BASE_URL: {{ .Values.llm.baseUrl | quote }}
+  DOCEXTRACTOR_LLM_MODEL: {{ .Values.llm.model | quote }}
