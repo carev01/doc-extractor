@@ -22,6 +22,8 @@ class ExportRequest(BaseModel):
     # Align file boundaries to chapters (top-level TOC). Trades uniform file
     # sizes for chapter coherence — files may come out smaller.
     respect_chapters: bool = False
+    # Output format. "pdf" renders each group to a self-contained PDF.
+    format: str = "markdown"  # "markdown" | "pdf"
 
 
 class ExportResponse(BaseModel):

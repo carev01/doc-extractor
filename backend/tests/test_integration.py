@@ -85,6 +85,61 @@ def test_export_full(db_session):
     assert "Article 4" in content
 
 
+def test_export_pdf_full(db_session):
+    v = Vendor(name="PdfVendor")
+    db_session.add(v)
+    db_session.flush()
+    s = DocumentationSource(vendor_id=v.id, name="PdfSource", base_url="https://docs.pdf.com")
+    db_session.add(s)
+    db_session.flush()
+    for i in range(3):
+        db_session.add(Article(
+            source_id=s.id, title=f"Article {i}",
+            source_url=f"https://docs.pdf.com/{i}",
+            content_markdown=f"# Article {i}\n\nContent {i}.",
+            sort_order=i, estimated_tokens=50, content_size_bytes=200,
+        ))
+    db_session.commit()
+
+    engine = ExportEngine()
+    result = engine.export_sync(db_session, source_id=s.id, format="pdf")
+    assert result["file_count"] == 1
+    export_dir = os.path.join(engine.export_dir, str(result["export_id"]))
+    pdf_files = [f for f in os.listdir(export_dir) if f.endswith(".pdf")]
+    assert len(pdf_files) == 1
+    # Self-contained: a PDF bundle has no images/ directory.
+    assert not os.path.isdir(os.path.join(export_dir, "images"))
+    with open(os.path.join(export_dir, pdf_files[0]), "rb") as f:
+        assert f.read(5) == b"%PDF-"
+    assert result["files"][0]["filename"].endswith(".pdf")
+
+
+def test_export_pdf_split_produces_multiple_pdfs(db_session):
+    v = Vendor(name="PdfSplitVendor")
+    db_session.add(v)
+    db_session.flush()
+    s = DocumentationSource(vendor_id=v.id, name="PdfSplit", base_url="https://docs.ps.com")
+    db_session.add(s)
+    db_session.flush()
+    for i in range(4):
+        db_session.add(Article(
+            source_id=s.id, title=f"A{i}", source_url=f"https://docs.ps.com/{i}",
+            content_markdown=f"# A{i}\n\nx", sort_order=i,
+            estimated_tokens=50, content_size_bytes=200,
+        ))
+    db_session.commit()
+
+    engine = ExportEngine()
+    result = engine.export_sync(
+        db_session, source_id=s.id, split_by="articles",
+        max_articles_per_file=2, format="pdf",
+    )
+    assert result["file_count"] == 2
+    export_dir = os.path.join(engine.export_dir, str(result["export_id"]))
+    pdf_files = [f for f in os.listdir(export_dir) if f.endswith(".pdf")]
+    assert len(pdf_files) == 2
+
+
 def test_export_partial_by_articles(db_session):
     v = Vendor(name="PartialVendor")
     db_session.add(v)

@@ -16,6 +16,7 @@ from app.models.article import Article
 from app.models.image import ArticleImage
 from app.models.source import DocumentationSource
 from app.models.toc import TOCEntry
+from app.services.pdf_renderer import render_markdown_to_pdf
 
 # Full-text search expression over title + content. Kept identical to the GIN
 # expression index (see the add_fts_index migration) so the planner can use it.
@@ -328,6 +329,7 @@ class ExportEngine:
         max_file_size_bytes: int | None = None,
         max_tokens_per_file: int | None = None,
         respect_chapters: bool = False,
+        format: str = "markdown",
     ) -> dict:
         """Execute an export and return metadata about the generated files."""
         # Get source
@@ -358,7 +360,7 @@ class ExportEngine:
         return self._generate_export(
             articles, source.name, source_id, split_by,
             max_articles_per_file, max_file_size_bytes, max_tokens_per_file,
-            respect_chapters, chapter_keys,
+            respect_chapters, chapter_keys, format,
         )
 
     def export_sync(
@@ -373,6 +375,7 @@ class ExportEngine:
         max_file_size_bytes: int | None = None,
         max_tokens_per_file: int | None = None,
         respect_chapters: bool = False,
+        format: str = "markdown",
     ) -> dict:
         """Synchronous version of export for testing."""
         result = db.execute(
@@ -401,7 +404,7 @@ class ExportEngine:
         return self._generate_export(
             articles, source.name, source_id, split_by,
             max_articles_per_file, max_file_size_bytes, max_tokens_per_file,
-            respect_chapters, chapter_keys,
+            respect_chapters, chapter_keys, format,
         )
 
     def _resolve_articles_sync(
@@ -472,6 +475,7 @@ class ExportEngine:
         max_tokens_per_file: int | None = None,
         respect_chapters: bool = False,
         chapter_keys: dict[uuid.UUID, uuid.UUID | None] | None = None,
+        format: str = "markdown",
     ) -> dict:
         """Generate export files from resolved articles."""
         if split_by:
@@ -498,24 +502,37 @@ class ExportEngine:
         total_size = 0
 
         for i, group in enumerate(groups, 1):
+            base_name = source_name.replace(" ", "_")
+            ext = "pdf" if format == "pdf" else "md"
             if len(groups) == 1:
-                filename = f"{source_name.replace(' ', '_')}.md"
+                filename = f"{base_name}.{ext}"
             else:
-                filename = f"{source_name.replace(' ', '_')}_part{i:03d}.md"
+                filename = f"{base_name}_part{i:03d}.{ext}"
 
-            content = self._build_markdown_document(group, source_name)
-            # Rewrite served media URLs (/media/<id>/<file>) to bundle-relative
-            # paths (images/<id>/<file>) so the export renders offline.
-            content = content.replace(
-                f"{settings.media_url_prefix}/", "images/"
-            )
+            markdown_doc = self._build_markdown_document(group, source_name)
             filepath = os.path.join(export_subdir, filename)
 
-            with open(filepath, "w", encoding="utf-8") as f:
-                f.write(content)
-            archive_members.append((filepath, filename))
+            if format == "pdf":
+                # Resolve /media/<id>/<file> against the media root so WeasyPrint
+                # embeds the images directly into the PDF (self-contained).
+                pdf_md = markdown_doc.replace(f"{settings.media_url_prefix}/", "")
+                pdf_bytes = render_markdown_to_pdf(
+                    pdf_md, base_url=self.media_root + os.sep
+                )
+                with open(filepath, "wb") as f:
+                    f.write(pdf_bytes)
+                file_size = len(pdf_bytes)
+            else:
+                # Rewrite served media URLs (/media/<id>/<file>) to bundle-relative
+                # paths (images/<id>/<file>) so the export renders offline.
+                content = markdown_doc.replace(
+                    f"{settings.media_url_prefix}/", "images/"
+                )
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write(content)
+                file_size = len(content.encode("utf-8"))
 
-            file_size = len(content.encode("utf-8"))
+            archive_members.append((filepath, filename))
             total_size += file_size
             group_tokens = sum(a.estimated_tokens for a in group)
 
@@ -528,22 +545,25 @@ class ExportEngine:
                 "last_article_title": group[-1].title,
             })
 
-        # Copy every referenced image into the bundle's images/ dir (deduped),
-        # mirroring the media/<article_id>/<file> layout the rewrite expects.
-        copied: set[str] = set()
-        for article in articles:
-            for image in article.images:
-                rel = os.path.join(str(article.id), image.local_filename)
-                if rel in copied:
-                    continue
-                src_path = os.path.join(self.media_root, rel)
-                if not os.path.isfile(src_path):
-                    continue  # image missing on disk — skip rather than fail
-                dst_path = os.path.join(export_subdir, "images", rel)
-                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-                shutil.copy2(src_path, dst_path)
-                archive_members.append((dst_path, os.path.join("images", rel)))
-                copied.add(rel)
+        # Markdown bundles carry loose image files; PDFs embed images inline, so
+        # they need no images/ dir. Copy referenced images only for markdown.
+        if format != "pdf":
+            # Copy every referenced image into the bundle's images/ dir (deduped),
+            # mirroring the media/<article_id>/<file> layout the rewrite expects.
+            copied: set[str] = set()
+            for article in articles:
+                for image in article.images:
+                    rel = os.path.join(str(article.id), image.local_filename)
+                    if rel in copied:
+                        continue
+                    src_path = os.path.join(self.media_root, rel)
+                    if not os.path.isfile(src_path):
+                        continue  # image missing on disk — skip rather than fail
+                    dst_path = os.path.join(export_subdir, "images", rel)
+                    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                    shutil.copy2(src_path, dst_path)
+                    archive_members.append((dst_path, os.path.join("images", rel)))
+                    copied.add(rel)
 
         # Bundle everything into a single self-contained zip.
         zip_filename = f"{source_name.replace(' ', '_')}.zip"
