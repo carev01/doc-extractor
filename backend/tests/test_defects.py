@@ -58,11 +58,12 @@ def test_defect1_all_six_tables_in_metadata():
         "article_versions",
         "articles",
         "documentation_sources",
+        "export_jobs",
         "extraction_runs",
         "schedules",
         "toc_entries",
         "vendors",
-    ], f"Expected 8 tables, got {len(table_names)}: {table_names}"
+    ], f"Expected 9 tables, got {len(table_names)}: {table_names}"
 
 
 def test_defect1_tables_created_on_startup(db_session):

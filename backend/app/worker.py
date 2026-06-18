@@ -16,7 +16,8 @@ import app.models  # noqa: F401
 from app.core.database import async_session
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.services.firecrawl import firecrawl_service
-from app.services.queue import claim_next_run
+from app.services.queue import claim_next_run, claim_next_export
+from app.services.export_runner import run_export_job_sync
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 logger = logging.getLogger(__name__)
@@ -42,6 +43,23 @@ async def _heartbeat(run_id: uuid.UUID, session_factory) -> None:
             logger.exception("Heartbeat update failed for run %s", run_id)
 
 
+async def _heartbeat_export(job_id: uuid.UUID, session_factory) -> None:
+    """Bump ExportJob.heartbeat_at on its own session until cancelled."""
+    from app.models.export_job import ExportJob
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL)
+        try:
+            async with session_factory() as db:
+                await db.execute(
+                    update(ExportJob)
+                    .where(ExportJob.id == job_id)
+                    .values(heartbeat_at=datetime.now(timezone.utc))
+                )
+                await db.commit()
+        except Exception:
+            logger.exception("Export heartbeat failed for %s", job_id)
+
+
 async def run_one(claim_session_factory=None, work_session_factory=None) -> bool:
     """Claim and execute one run. Returns True if a run was handled."""
     claim_session_factory = claim_session_factory or async_session
@@ -50,7 +68,20 @@ async def run_one(claim_session_factory=None, work_session_factory=None) -> bool
     async with claim_session_factory() as db:
         run = await claim_next_run(db, WORKER_ID)
         if run is None:
-            return False
+            # No extraction run available — try an export job.
+            async with claim_session_factory() as db:
+                job = await claim_next_export(db, WORKER_ID)
+                if job is None:
+                    return False
+                job_id = job.id
+
+            hb = asyncio.create_task(_heartbeat_export(job_id, work_session_factory))
+            try:
+                # Generation is synchronous; run it off the event loop.
+                await asyncio.to_thread(run_export_job_sync, job_id)
+            finally:
+                hb.cancel()
+            return True
         run_id, source_id = run.id, run.source_id
 
     hb = asyncio.create_task(_heartbeat(run_id, work_session_factory))
