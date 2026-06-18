@@ -16,5 +16,6 @@ from app.services.profiles import gitbook  # noqa: F401,E402
 from app.services.profiles import flare_webhelp  # noqa: F401,E402
 from app.services.profiles import flare_html5  # noqa: F401,E402
 from app.services.profiles import intercom  # noqa: F401,E402
+from app.services.profiles import freshdesk  # noqa: F401,E402
 
 __all__ = ["registry", "ExtractionProfile", "TocEntry"]
