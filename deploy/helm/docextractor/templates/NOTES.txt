@@ -1,0 +1,13 @@
+DocExtractor deployed as release {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+Frontend (Traefik Ingress):
+  http://{{ .Values.ingress.host }}
+
+The Firecrawl webhook target (in-cluster) is:
+  http://{{ include "docextractor.backendServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:8000
+
+Check status:
+  kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+  kubectl logs deploy/{{ .Release.Name }}-worker
+
+Migrations ran via the pre-upgrade Job {{ .Release.Name }}-migrate.
