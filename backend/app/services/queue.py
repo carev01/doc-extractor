@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.extraction_run import ExtractionRun, RunStatus
+from app.models.export_job import ExportJob, ExportStatus
 
 
 class ActiveRunExists(Exception):
@@ -91,5 +92,70 @@ async def reap_stale_runs(
             run.claimed_by = None
             run.claimed_at = None
             run.heartbeat_at = None
+    await db.commit()
+    return len(stale)
+
+
+async def enqueue_export(
+    db: AsyncSession, source_id: uuid.UUID, request: dict
+) -> ExportJob:
+    """Insert a pending export job."""
+    job = ExportJob(source_id=source_id, request=request, status=ExportStatus.PENDING)
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+    return job
+
+
+async def claim_next_export(
+    db: AsyncSession, worker_id: str
+) -> ExportJob | None:
+    """Atomically claim the oldest pending export job, or None if empty."""
+    result = await db.execute(
+        select(ExportJob)
+        .where(ExportJob.status == ExportStatus.PENDING)
+        .order_by(ExportJob.created_at)
+        .with_for_update(skip_locked=True)
+        .limit(1)
+    )
+    job = result.scalar_one_or_none()
+    if job is None:
+        return None
+    now = datetime.now(timezone.utc)
+    job.status = ExportStatus.RUNNING
+    job.claimed_by = worker_id
+    job.claimed_at = now
+    job.heartbeat_at = now
+    job.started_at = now
+    job.attempts += 1
+    await db.commit()
+    await db.refresh(job)
+    return job
+
+
+async def reap_stale_exports(
+    db: AsyncSession, max_attempts: int = 3, stale_seconds: int = 300
+) -> int:
+    """Requeue (or fail, at the attempt cap) export jobs whose worker stopped heartbeating."""
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_seconds)
+    result = await db.execute(
+        select(ExportJob)
+        .where(
+            ExportJob.status == ExportStatus.RUNNING,
+            or_(ExportJob.heartbeat_at.is_(None), ExportJob.heartbeat_at < cutoff),
+        )
+        .with_for_update(skip_locked=True)
+    )
+    stale = result.scalars().all()
+    for job in stale:
+        if job.attempts >= max_attempts:
+            job.status = ExportStatus.FAILED
+            job.error_message = (job.error_message or "worker lost")[:4096]
+            job.completed_at = datetime.now(timezone.utc)
+        else:
+            job.status = ExportStatus.PENDING
+            job.claimed_by = None
+            job.claimed_at = None
+            job.heartbeat_at = None
     await db.commit()
     return len(stale)
