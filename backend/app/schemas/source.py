@@ -18,6 +18,7 @@ class SourceUpdate(BaseModel):
     name: str | None = None
     base_url: str | None = None
     platform: str | None = None
+    refresh_profile: bool | None = None
 
 
 class SourceResponse(BaseModel):

@@ -25,7 +25,9 @@ const PLATFORM_OPTIONS: { value: string; label: string }[] = [
   { value: "intercom", label: "Intercom" },
   { value: "freshdesk", label: "Freshdesk" },
   { value: "confluence", label: "Confluence" },
+  { value: "salesforce", label: "Salesforce" },
   { value: "generic", label: "Generic (sitemap)" },
+  { value: "llm", label: "LLM fallback" },
 ];
 
 interface Props {
@@ -351,6 +353,22 @@ function SourceItem({
                 </option>
               ))}
             </select>
+            <button
+              type="button"
+              className="btn-secondary-sm"
+              title="Clear cached LLM-derived profile; re-derives on next extraction"
+              onClick={async (e) => {
+                e.stopPropagation();
+                try {
+                  await updateSource(source.id, { refresh_profile: true });
+                  onSourceChanged();
+                } catch {
+                  /* non-fatal */
+                }
+              }}
+            >
+              ↻ Re-derive
+            </button>
           </label>
         </div>
 
