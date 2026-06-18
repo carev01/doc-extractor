@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import type {
   DocumentationSource,
   TOCEntry,
@@ -6,7 +6,8 @@ import type {
 } from "../types";
 import {
   getTOC,
-  exportMarkdown,
+  enqueueExport,
+  getExportJob,
   getDownloadUrl,
   getZipDownloadUrl,
 } from "../api/client";
@@ -24,15 +25,25 @@ export default function ExportPanel({ source }: Props) {
   const [respectChapters, setRespectChapters] = useState(false);
   const [format, setFormat] = useState<"markdown" | "pdf">("markdown");
   const [exporting, setExporting] = useState(false);
+  const [jobStatusMsg, setJobStatusMsg] = useState<string | null>(null);
   const [exportResult, setExportResult] = useState<ExportResponse | null>(null);
   const [error, setError] = useState("");
   const [mode, setMode] = useState<"full" | "chapters" | "topic">("full");
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     if (source.status === "completed") {
       loadTOC();
     }
   }, [source.id, source.status]);
+
+  useEffect(() => {
+    return () => {
+      if (pollIntervalRef.current !== null) {
+        clearInterval(pollIntervalRef.current);
+      }
+    };
+  }, []);
 
   const loadTOC = async () => {
     try {
@@ -53,13 +64,23 @@ export default function ExportPanel({ source }: Props) {
     setSelectedTocIds(next);
   };
 
+  const stopPolling = () => {
+    if (pollIntervalRef.current !== null) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+  };
+
   const handleExport = async () => {
     setExporting(true);
     setError("");
     setExportResult(null);
+    setJobStatusMsg("Queued…");
+    stopPolling();
 
+    let jobId: string;
     try {
-      const result = await exportMarkdown({
+      const created = await enqueueExport({
         source_id: source.id,
         toc_entry_ids:
           mode === "chapters" && selectedTocIds.size > 0
@@ -76,12 +97,47 @@ export default function ExportPanel({ source }: Props) {
         respect_chapters: splitBy ? respectChapters : undefined,
         format,
       });
-      setExportResult(result);
+      jobId = created.export_job_id;
     } catch (e: any) {
       setError(e.response?.data?.detail || "Export failed");
-    } finally {
       setExporting(false);
+      setJobStatusMsg(null);
+      return;
     }
+
+    pollIntervalRef.current = setInterval(async () => {
+      try {
+        const job = await getExportJob(jobId);
+        if (job.status === "pending") {
+          setJobStatusMsg("Queued…");
+        } else if (job.status === "running") {
+          setJobStatusMsg("Generating…");
+        } else if (job.status === "completed") {
+          stopPolling();
+          setJobStatusMsg(null);
+          setExporting(false);
+          setExportResult({
+            export_id: job.export_id!,
+            source_id: job.source_id,
+            file_count: job.files?.length ?? 0,
+            total_articles: job.files?.reduce((s, f) => s + f.article_count, 0) ?? 0,
+            total_size_bytes: job.files?.reduce((s, f) => s + f.size_bytes, 0) ?? 0,
+            zip_filename: job.zip_filename ?? "",
+            files: job.files ?? [],
+          });
+        } else if (job.status === "failed" || job.status === "cancelled") {
+          stopPolling();
+          setJobStatusMsg(null);
+          setExporting(false);
+          setError(job.error_message || "Export failed");
+        }
+      } catch {
+        stopPolling();
+        setJobStatusMsg(null);
+        setExporting(false);
+        setError("Export failed");
+      }
+    }, 2000);
   };
 
   const renderTocTree = (entries: TOCEntry[], depth = 0) => {
@@ -247,7 +303,7 @@ export default function ExportPanel({ source }: Props) {
         disabled={exporting}
       >
         {exporting
-          ? "Generating..."
+          ? (jobStatusMsg ?? "Queued…")
           : `Generate ${format === "pdf" ? "PDF" : "Markdown"} Export`}
       </button>
 

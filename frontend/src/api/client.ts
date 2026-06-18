@@ -12,7 +12,8 @@ import type {
   ExtractionRun,
   ExtractionTrigger,
   ExportRequest,
-  ExportResponse,
+  ExportJobCreated,
+  ExportJobStatus,
   ArticleVersionList,
   ArticleVersionDetail,
   VersionDiff,
@@ -152,13 +153,15 @@ export async function getTOC(sourceId: string): Promise<TOCResponse> {
 
 // ── Export ──
 
-export async function exportMarkdown(
+export async function enqueueExport(
   data: ExportRequest
-): Promise<ExportResponse> {
-  // Exports run synchronously server-side; a full PDF render of a large source
-  // can take well over the default 30s. Allow up to the nginx proxy_read_timeout
-  // (600s) for this request rather than the global client timeout.
-  const res = await api.post("/export/markdown", data, { timeout: 600_000 });
+): Promise<ExportJobCreated> {
+  const res = await api.post("/export", data);
+  return res.data;
+}
+
+export async function getExportJob(jobId: string): Promise<ExportJobStatus> {
+  const res = await api.get(`/export/jobs/${jobId}`);
   return res.data;
 }
 

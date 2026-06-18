@@ -1,42 +1,50 @@
-"""Export routes — markdown export and file download."""
+"""Export routes — async export enqueue, job status, and file download."""
 
 import os
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.schemas.export import ExportRequest, ExportResponse
+from app.models.export_job import ExportJob, ExportStatus
+from app.models.source import DocumentationSource
+from app.schemas.export import (
+    ExportJobCreatedResponse,
+    ExportJobStatusResponse,
+    ExportRequest,
+)
 from app.services.exporter import export_engine
+from app.services.queue import enqueue_export
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
 
-@router.post("/markdown", response_model=ExportResponse)
-async def export_markdown(
-    body: ExportRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """Generate a markdown export based on the request parameters."""
-    try:
-        result = await export_engine.export(
-            db=db,
-            source_id=body.source_id,
-            article_ids=body.article_ids,
-            toc_entry_ids=body.toc_entry_ids,
-            topic_query=body.topic_query,
-            split_by=body.split_by,
-            max_articles_per_file=body.max_articles_per_file,
-            max_file_size_bytes=body.max_file_size_bytes,
-            max_tokens_per_file=body.max_tokens_per_file,
-            respect_chapters=body.respect_chapters,
-            format=body.format,
-        )
-        return ExportResponse(**result)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+@router.post("", response_model=ExportJobCreatedResponse)
+async def create_export(body: ExportRequest, db: AsyncSession = Depends(get_db)):
+    """Enqueue an export job; the worker generates it. Poll /api/export/jobs/{id}."""
+    src = await db.execute(
+        select(DocumentationSource.id).where(DocumentationSource.id == body.source_id)
+    )
+    if src.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+    job = await enqueue_export(db, body.source_id, body.model_dump(mode="json"))
+    return ExportJobCreatedResponse(export_job_id=job.id, status="pending")
+
+
+@router.get("/jobs/{job_id}", response_model=ExportJobStatusResponse)
+async def get_export_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    job = (await db.execute(select(ExportJob).where(ExportJob.id == job_id))).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Export job not found")
+    result = job.result or {}
+    return ExportJobStatusResponse(
+        id=job.id, source_id=job.source_id, status=job.status.value,
+        export_id=job.export_id, zip_filename=result.get("zip_filename"),
+        files=result.get("files"), error_message=job.error_message,
+    )
 
 
 @router.get("/download/{export_id}")

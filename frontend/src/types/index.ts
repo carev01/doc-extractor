@@ -149,6 +149,21 @@ export interface ExportResponse {
   files: ExportFileInfo[];
 }
 
+export interface ExportJobCreated {
+  export_job_id: string;
+  status: string;
+}
+
+export interface ExportJobStatus {
+  id: string;
+  source_id: string;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  export_id: string | null;
+  zip_filename: string | null;
+  files: ExportFileInfo[] | null;
+  error_message: string | null;
+}
+
 export interface ArticleVersion {
   id: string;
   article_id: string;

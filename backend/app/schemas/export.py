@@ -5,6 +5,21 @@ import uuid
 from pydantic import BaseModel
 
 
+class ExportJobCreatedResponse(BaseModel):
+    export_job_id: uuid.UUID
+    status: str
+
+
+class ExportJobStatusResponse(BaseModel):
+    id: uuid.UUID
+    source_id: uuid.UUID
+    status: str
+    export_id: uuid.UUID | None
+    zip_filename: str | None
+    files: list["ExportFileInfo"] | None
+    error_message: str | None
+
+
 class ExportRequest(BaseModel):
     """Request to export documentation as markdown."""
 

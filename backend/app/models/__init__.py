@@ -8,6 +8,7 @@ from app.models.article_version import ArticleVersion
 from app.models.image import ArticleImage
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.schedule import Schedule
+from app.models.export_job import ExportJob, ExportStatus
 
 __all__ = [
     "Vendor",
@@ -20,4 +21,6 @@ __all__ = [
     "ExtractionRun",
     "RunStatus",
     "Schedule",
+    "ExportJob",
+    "ExportStatus",
 ]

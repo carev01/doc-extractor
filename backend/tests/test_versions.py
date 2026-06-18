@@ -779,3 +779,28 @@ async def test_changelog_collapses_baseline_and_merges_events(client):
     assert by_type["removed"]["version_id"] is None
     # The initial summary is the oldest event (baseline run time).
     assert data["entries"][-1]["change_type"] == "initial"
+
+
+# ── Export enqueue + job-status routes ──
+
+@pytest.mark.asyncio
+async def test_export_enqueue_and_status(client):
+    c, sf = client
+    async with sf() as db:
+        v = Vendor(name="ExpRoute"); db.add(v); await db.flush()
+        s = DocumentationSource(vendor_id=v.id, name="ExpRouteSrc", base_url="https://er.com")
+        db.add(s); await db.flush()
+        db.add(Article(source_id=s.id, title="A", source_url="https://er.com/a",
+                       content_markdown="# A\n\nx", sort_order=0,
+                       estimated_tokens=1, content_size_bytes=1))
+        await db.commit()
+        sid = str(s.id)
+
+    r = await c.post("/api/export", json={"source_id": sid, "format": "markdown"})
+    assert r.status_code == 200
+    jid = r.json()["export_job_id"]
+    assert r.json()["status"] == "pending"
+
+    g = await c.get(f"/api/export/jobs/{jid}")
+    assert g.status_code == 200
+    assert g.json()["status"] == "pending"  # worker not running in this test
