@@ -1,0 +1,13 @@
+postgres:
+  password: "CHANGE_ME"
+  storageClassName: ""        # set to your VMware CSI RWO StorageClass name
+storage:
+  storageClassName: ""        # set to your VMware CSI RWO StorageClass name
+firecrawl:
+  apiUrl: http://firecrawl.k3s.home.lan
+  apiKey: "CHANGE_ME"
+ingress:
+  host: docextractor.k3s.home.lan
+image:
+  backend: { tag: latest }
+  frontend: { tag: latest }
