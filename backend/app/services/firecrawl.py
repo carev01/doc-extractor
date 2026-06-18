@@ -36,6 +36,24 @@ def compute_content_hash(content: str) -> str:
 logger = logging.getLogger(__name__)
 
 
+def _dedupe_toc_entries(entries: list[dict]) -> list[dict]:
+    """Assign sort_order and drop duplicate *article* URLs, preserving DFS order.
+
+    Entries with a falsy url (structural section headers) are always kept and
+    never collapsed."""
+    seen: set[str] = set()
+    out: list[dict] = []
+    for e in entries:
+        u = e.get("url") or ""
+        if u and u in seen:
+            continue
+        if u:
+            seen.add(u)
+        e["sort_order"] = len(out)
+        out.append(e)
+    return out
+
+
 class FirecrawlUnavailableError(Exception):
     """Raised when the Firecrawl service is not reachable."""
     pass
@@ -690,15 +708,9 @@ class FirecrawlService:
                     "is_article": True,
                 }]
 
-            # Deduplicate while preserving DFS order
-            seen_toc_urls: set[str] = set()
-            unique_entries: list[dict] = []
-            for entry in toc_entries:
-                if entry["url"] not in seen_toc_urls:
-                    seen_toc_urls.add(entry["url"])
-                    entry["sort_order"] = len(unique_entries)
-                    unique_entries.append(entry)
-            toc_entries = unique_entries
+            # Deduplicate while preserving DFS order; url-less section headers
+            # are always kept (never collapsed).
+            toc_entries = _dedupe_toc_entries(toc_entries)
 
             logger.info("TOC contains %d pages", len(toc_entries))
             run.articles_total = len(toc_entries)
@@ -728,7 +740,8 @@ class FirecrawlService:
                 db.add(toc_entry)
                 await db.flush()
 
-                toc_db_map[td["url"]] = toc_entry.id
+                if td.get("url"):
+                    toc_db_map[td["url"]] = toc_entry.id
                 level_to_parent[td["level"]] = toc_entry.id
                 for deeper in [k for k in level_to_parent if k > td["level"]]:
                     del level_to_parent[deeper]
@@ -746,7 +759,7 @@ class FirecrawlService:
             # them concurrently, then consume results via cursor pagination as
             # they complete. This is strictly faster than the old sequential loop
             # and gives the UI live per-page progress via the counters.
-            url_to_entry = {entry["url"]: entry for entry in toc_entries}
+            url_to_entry = {e["url"]: e for e in toc_entries if e.get("url")}
             batch_tag = f"src-{source_id}" if self.api_key else None
             job_id = await self._submit_batch(
                 list(url_to_entry.keys()), source_id, content_config=content_cfg
