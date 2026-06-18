@@ -24,14 +24,12 @@ These markers are absent from all other supported platform fixtures.
 """
 
 import re
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
 from app.services.profiles import registry
 from app.services.profiles.base import TocEntry
-
-ROOT = "https://documentation.campus.barracuda.com/wiki/spaces/BCCB/overview?homepageId=3244034"
 
 # Matches any href that contains both /wiki/spaces/ and /pages/ — the
 # canonical pattern for Confluence page links.

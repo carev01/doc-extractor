@@ -63,8 +63,6 @@ class FlareHtml5Profile:
         available in the initial HTML.  Deeper branches require JS execution
         to trigger lazy Toc.xml chunk loads — this is a known limitation.
         """
-        from app.services.profiles.scraper import FakeScraper as _FS  # noqa: F401 (type hint only)
-
         html = await scraper.get_html(root_url, 1500)
         # Remove invisible-label spans that Flare injects inside <a> tags to
         # duplicate the link text for screen-reader toggle buttons.

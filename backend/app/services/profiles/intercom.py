@@ -25,7 +25,6 @@ from app.services.profiles import registry
 from app.services.profiles.base import TocEntry
 from app.services.profiles.strategies import hubspoke_toc
 
-ROOT = "https://help.druva.com/en/"
 
 
 class IntercomProfile:

@@ -43,8 +43,6 @@ Documented follow-ons (NOT implemented here)
 import json
 import logging
 
-import httpx
-
 from app.core.config import settings
 from app.services.profiles import registry
 from app.services.profiles.base import TocEntry

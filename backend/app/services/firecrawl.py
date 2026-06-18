@@ -179,6 +179,7 @@ class FirecrawlService:
             urls: list[str] = body.get("links") or body.get("data") or []
             if urls:
                 return urls
+            logger.info("Firecrawl /v2/map returned empty list for %s — trying sitemap fallback", root_url)
         except Exception as exc:
             logger.warning("Firecrawl /v2/map failed for %s: %s — trying sitemap fallback", root_url, exc)
 

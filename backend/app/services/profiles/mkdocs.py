@@ -10,7 +10,7 @@ MkDocs Material wraps nested child navs as:
     <nav class="md-nav"><ul class="md-nav__list">…children…</ul></nav>
   </li>
 
-The shared ``sidebar_tree_toc`` helper uses ``li.find("ul") or li.find("ul")``
+The shared ``sidebar_tree_toc`` helper uses ``li.find("ul", recursive=False) or li.find("ul")``
 (fallback to any descendant) to correctly find the wrapped child list.
 
 Content: ``article.md-content__inner`` — the Material article wrapper.
