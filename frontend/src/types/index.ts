@@ -97,7 +97,8 @@ export interface TOCResponse {
 export interface ExtractionRun {
   id: string;
   source_id: string;
-  status: "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  trigger?: "manual" | "scheduled";
   current_phase: "toc_discovery" | "content_scraping" | null;
   firecrawl_job_id: string | null;
   articles_extracted: number;
@@ -193,6 +194,25 @@ export interface ArticleVersionDetail extends ArticleVersion {
 }
 
 export type ChangeStatus = "new" | "updated" | "unchanged";
+
+export type Frequency = "hourly" | "daily" | "weekly" | "monthly";
+
+export interface ScheduleConfig {
+  enabled: boolean;
+  frequency: Frequency;
+  time_of_day: string;        // HH:MM
+  day_of_week?: number | null;
+  day_of_month?: number | null;
+  timezone: string;
+}
+
+export interface Schedule extends ScheduleConfig {
+  source_id: string;
+  cron: string;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_run: { id: string; status: string; completed_at: string | null } | null;
+}
 
 export interface BrowseTOCEntry {
   id: string;

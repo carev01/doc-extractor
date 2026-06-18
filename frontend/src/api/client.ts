@@ -1,6 +1,6 @@
 /** API client for DocExtractor backend. */
 
-import axios from "axios";
+import axios, { isAxiosError } from "axios";
 import type {
   Vendor,
   VendorList,
@@ -18,6 +18,8 @@ import type {
   VersionDiff,
   ChangelogResponse,
   BrowseResponse,
+  Schedule,
+  ScheduleConfig,
 } from "../types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -218,4 +220,27 @@ export async function getVersionDiff(
 export async function browseSource(sourceId: string): Promise<BrowseResponse> {
   const res = await api.get(`/sources/${sourceId}/browse`);
   return res.data;
+}
+
+// ── Schedule ──
+
+export async function getSchedule(sourceId: string): Promise<Schedule | null> {
+  try {
+    const { data } = await api.get<Schedule>(`/sources/${sourceId}/schedule`);
+    return data;
+  } catch (e) {
+    if (isAxiosError(e) && e.response?.status === 404) return null;
+    throw e;
+  }
+}
+
+export async function putSchedule(
+  sourceId: string, config: ScheduleConfig,
+): Promise<Schedule> {
+  const { data } = await api.put<Schedule>(`/sources/${sourceId}/schedule`, config);
+  return data;
+}
+
+export async function deleteSchedule(sourceId: string): Promise<void> {
+  await api.delete(`/sources/${sourceId}/schedule`);
 }

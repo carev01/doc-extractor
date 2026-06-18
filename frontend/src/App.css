@@ -1313,6 +1313,109 @@ a.btn-primary {
   }
 }
 
+/* ============================================================
+   Schedule control
+   ============================================================ */
+.schedule-control {
+  padding: 20px 22px;
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  max-width: 540px;
+}
+
+.schedule-toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  margin-bottom: 14px;
+  color: var(--text);
+}
+
+.schedule-toggle input[type="checkbox"] {
+  accent-color: var(--amber);
+  width: 16px;
+  height: 16px;
+}
+
+.schedule-fields {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.schedule-fields select,
+.schedule-fields input[type="time"] {
+  padding: 8px 10px;
+  background: var(--ink-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 0.88rem;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.schedule-fields select:focus,
+.schedule-fields input[type="time"]:focus {
+  outline: none;
+  border-color: var(--amber);
+  box-shadow: 0 0 0 3px var(--amber-ghost);
+}
+
+.schedule-tz {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--text-faint);
+  background: var(--ink-0);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+}
+
+.schedule-control > button {
+  background: var(--amber);
+  color: #1a1205;
+  font-weight: 600;
+  border: none;
+  padding: 8px 18px;
+  border-radius: var(--radius-sm);
+  font-size: 0.88rem;
+  margin-bottom: 10px;
+}
+
+.schedule-control > button:hover:not(:disabled) {
+  background: var(--amber-hi);
+}
+
+.schedule-control > button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.schedule-control .hint {
+  display: block;
+  margin-top: 5px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.schedule-control .error {
+  margin-top: 8px;
+  margin-bottom: 0;
+}
+
+/* ── Pending / queued run chip ── */
+.run-pending {
+  color: var(--text-faint);
+  letter-spacing: 0.04em;
+}
+
 /* Quality floor: respect reduced-motion. */
 @media (prefers-reduced-motion: reduce) {
   *,
