@@ -1,19 +1,33 @@
 """LLM-assisted extraction profile — gated, opt-in fallback for unrecognized sites.
 
-This profile is **never auto-selected by detection** (``detect`` always returns
-False).  It is inserted into the resolver's fallback chain ONLY when
-``settings.llm_fallback_enabled`` is True, sitting between auto-detection and
-the generic sitemap profile.
+This module provides two cooperating pieces:
 
-Design
-------
-The profile accepts an injectable *client* callable ``(html: str, root_url: str)
--> dict`` that returns a selector spec.  This keeps the LLM layer fully
-unit-testable — tests pass a fake client and the real Anthropic HTTP path is
-never exercised.  The default client is built lazily (only when the flag is on
-and an API key is present) and calls the Anthropic Messages API via httpx.
+1. ``derive_spec(html, root_url) -> dict | None``
+   Async function that calls an LLM (Anthropic or OpenAI-compatible) to analyse
+   a documentation root page and return a selector spec.  Multi-provider: branch
+   on ``settings.llm_provider`` ("anthropic" | "openai").  Returns ``None`` on
+   any error or missing API key.
 
-The returned spec looks like::
+2. ``DerivedProfile(spec)``
+   A parameterized profile built from a cached/fresh spec.  Its ``build_toc``
+   dispatches to the same strategy helpers as the original profile; its
+   ``content_config`` is spec-aware: when the LLM identified a ``content_selector``
+   it forwards that CSS selector to Firecrawl instead of the generic heuristic.
+
+3. ``LlmProfile``
+   Thin safety-net; registered as ``"llm"`` in the registry so the UI option and
+   ``registry.get("llm")`` still resolve.  ``build_toc`` scrapes the root HTML,
+   calls ``derive_spec``, and delegates to ``DerivedProfile``.
+
+Spec caching (the "source hook")
+---------------------------------
+``_resolve_profile`` in ``firecrawl.py`` is the primary caching site.  When it
+enters the LLM branch it reads ``source.profile_config["llm_spec"]`` (cache hit)
+or calls ``derive_spec`` and writes the result back (cache miss).  The existing
+``await db.commit()`` immediately after ``_resolve_profile`` persists the new
+spec.  Subsequent extractions of the same source skip re-derivation entirely.
+
+The spec shape::
 
     {
         "strategy": "sidebar" | "hubspoke" | "sitemap",
@@ -22,26 +36,16 @@ The returned spec looks like::
         # hubspoke:
         "category_link_selector": "...",
         "article_link_selector": "...",
-        # optional for future use:
+        # optional:
         "content_selector": "...",
     }
-
-Documented follow-ons (NOT implemented here)
---------------------------------------------
-- Per-source ``profile_config`` caching of the LLM-derived selector spec: the
-  current ``ExtractionProfile`` interface does not expose the ``source`` object
-  inside ``build_toc``, so the spec cannot be persisted back to the DB in this
-  call.  Implement by adding an optional ``source`` parameter (or a
-  ``set_source()`` hook) to the interface and storing ``source.profile_config``
-  here.
-- LLM-derived ``content_selector``: once per-source caching is in place, the
-  spec's ``content_selector`` can be forwarded via ``content_config()`` so
-  Firecrawl uses a precise CSS selector rather than the generic
-  ``onlyMainContent`` heuristic.
 """
 
 import json
 import logging
+import re
+
+import httpx
 
 from app.core.config import settings
 from app.services.profiles import registry
@@ -71,95 +75,138 @@ Choose "hubspoke" when the root lists discrete help-center categories.
 Choose "sitemap" when neither pattern is identifiable from the HTML.
 """
 
+# Provider defaults
+_ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1/messages"
+_ANTHROPIC_DEFAULT_MODEL = "claude-haiku-4-5"
+_OPENAI_BASE_URL = "https://api.openai.com/v1/chat/completions"
+_OPENAI_DEFAULT_MODEL = "gpt-4o-mini"
 
-def _build_default_client():
-    """Return a synchronous callable that calls the Anthropic Messages API.
-
-    This is the real implementation; it is only ever called when the flag is on
-    and an API key is present.  Tests always inject a fake client instead.
-    """
-    import httpx as _httpx
-
-    api_key = settings.anthropic_api_key
-
-    def _call(html: str, root_url: str) -> dict:
-        # Truncate to avoid hitting the context window; 20 000 chars is plenty
-        # to detect nav patterns.
-        snippet = html[:20_000]
-        payload = {
-            "model": "claude-haiku-4-5",
-            "max_tokens": 512,
-            "system": _SYSTEM_PROMPT,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": (
-                        f"URL: {root_url}\n\nHTML (truncated):\n{snippet}"
-                    ),
-                }
-            ],
-        }
-        resp = _httpx.post(
-            "https://api.anthropic.com/v1/messages",
-            json=payload,
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            timeout=30.0,
-        )
-        resp.raise_for_status()
-        text = resp.json()["content"][0]["text"]
-        return json.loads(text)
-
-    return _call
+_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
 
-class LlmProfile:
-    """LLM-assisted profile for unrecognized documentation sites.
+def _strip_fences(text: str) -> str:
+    """Remove markdown code fences defensively."""
+    m = _FENCE_RE.search(text)
+    return m.group(1) if m else text.strip()
+
+
+async def derive_spec(html: str, root_url: str) -> "dict | None":
+    """Call the configured LLM to derive a selector spec for a documentation root page.
 
     Parameters
     ----------
-    client:
-        Optional injectable callable ``(html, root_url) -> dict``.  When
-        *None*, a default client that calls the Anthropic Messages API is
-        built lazily on first use.  Inject a fake in tests.
+    html:
+        Raw HTML of the root page (will be truncated to 20 000 chars).
+    root_url:
+        Canonical URL of the root page (included in the prompt for context).
+
+    Returns
+    -------
+    dict
+        The parsed spec (keys: strategy, nav_selector, …) on success.
+    None
+        On missing API key, HTTP error, JSON parse failure, or any other
+        exception (logged as a warning).
+    """
+    api_key = settings.llm_api_key
+    if not api_key:
+        logger.warning("LLM derive_spec skipped: llm_api_key is not set")
+        return None
+
+    provider = settings.llm_provider
+    snippet = html[:20_000]
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            if provider == "anthropic":
+                base_url = settings.llm_base_url or _ANTHROPIC_BASE_URL
+                model = settings.llm_model or _ANTHROPIC_DEFAULT_MODEL
+                headers = {
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                }
+                body = {
+                    "model": model,
+                    "max_tokens": 512,
+                    "system": _SYSTEM_PROMPT,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": f"URL: {root_url}\n\nHTML (truncated):\n{snippet}",
+                        }
+                    ],
+                }
+                resp = await client.post(base_url, headers=headers, json=body)
+                resp.raise_for_status()
+                text = resp.json()["content"][0]["text"]
+
+            elif provider == "openai":
+                base_url = settings.llm_base_url or _OPENAI_BASE_URL
+                model = settings.llm_model or _OPENAI_DEFAULT_MODEL
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "content-type": "application/json",
+                }
+                body = {
+                    "model": model,
+                    "max_tokens": 512,
+                    "messages": [
+                        {"role": "system", "content": _SYSTEM_PROMPT},
+                        {
+                            "role": "user",
+                            "content": f"URL: {root_url}\n\nHTML (truncated):\n{snippet}",
+                        },
+                    ],
+                    "response_format": {"type": "json_object"},
+                }
+                resp = await client.post(base_url, headers=headers, json=body)
+                resp.raise_for_status()
+                text = resp.json()["choices"][0]["message"]["content"]
+
+            else:
+                logger.warning("LLM derive_spec: unknown provider %r", provider)
+                return None
+
+        return json.loads(_strip_fences(text))
+
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("LLM derive_spec failed for %s: %s", root_url, exc)
+        return None
+
+
+class DerivedProfile:
+    """Parameterized extraction profile built from an LLM-derived spec.
+
+    This is the runtime profile returned by ``_resolve_profile`` when the LLM
+    branch is taken (either via the flag or an explicit ``source.platform=="llm"``
+    override).  It holds the cached spec so ``content_config`` can forward the
+    spec's ``content_selector`` to Firecrawl.
+
+    Parameters
+    ----------
+    spec:
+        Selector spec dict (as returned by ``derive_spec``).
     """
 
     name = "llm"
 
-    def __init__(self, client=None):
-        self._client_override = client
-        self._client_instance = None  # lazily initialised
-
-    @property
-    def _client(self):
-        if self._client_override is not None:
-            return self._client_override
-        if self._client_instance is None:
-            self._client_instance = _build_default_client()
-        return self._client_instance
+    def __init__(self, spec: dict) -> None:
+        self._spec = spec
 
     def detect(self, root_html: str, root_url: str) -> bool:
-        """Always returns False — LLM profile is never auto-selected."""
+        """Always False — DerivedProfile is never auto-selected by detection."""
         return False
 
     async def build_toc(self, root_url: str, scraper) -> list[TocEntry]:
-        """Ask the LLM which strategy to use, then dispatch to it.
+        """Dispatch to the strategy indicated in the spec.
 
-        Returns ``[]`` when:
-        - ``settings.llm_fallback_enabled`` is False (silent no-op gate).
-        - The LLM call or strategy dispatch raises any exception (resilience).
+        Returns ``[]`` on any exception (resilience).
         """
-        if not settings.llm_fallback_enabled:
-            return []
+        spec = self._spec
+        strategy = spec.get("strategy", "sitemap")
 
         try:
-            html = await scraper.get_html(root_url)
-            spec = self._client(html, root_url)
-            strategy = spec.get("strategy", "sitemap")
-
             if strategy == "sidebar":
                 return await sidebar_tree_toc(
                     scraper, root_url, spec["nav_selector"]
@@ -182,19 +229,80 @@ class LlmProfile:
 
         except Exception as exc:  # noqa: BLE001
             logger.warning(
+                "DerivedProfile.build_toc failed for %s: %s", root_url, exc
+            )
+            return []
+
+    def content_config(self) -> dict:
+        """Return spec-aware content extraction config.
+
+        When the LLM identified a ``content_selector`` use it for precise
+        capture; otherwise fall back to the generic ``onlyMainContent`` heuristic.
+        """
+        selector = self._spec.get("content_selector")
+        if selector and isinstance(selector, str) and selector.strip():
+            return {
+                "includeTags": [selector],
+                "onlyMainContent": False,
+                "waitFor": 1500,
+            }
+        return {"onlyMainContent": True, "waitFor": 1500}
+
+
+class LlmProfile:
+    """LLM-assisted profile for unrecognized documentation sites.
+
+    Thin safety-net registered as ``"llm"`` so ``registry.get("llm")`` and UI
+    selection continue to resolve.  The primary path for LLM-assisted extraction
+    goes through ``_resolve_profile`` in ``firecrawl.py`` which caches the derived
+    spec in ``source.profile_config["llm_spec"]`` and returns a ``DerivedProfile``
+    directly.
+
+    ``build_toc`` here is called only when the profile is used without a cached
+    spec (e.g. direct/manual use or tests).  It scrapes the root HTML, calls
+    ``derive_spec``, and delegates to ``DerivedProfile`` if a spec is returned.
+
+    ``content_config`` returns the generic default because no cached spec is
+    available at this call site.
+    """
+
+    name = "llm"
+
+    def detect(self, root_html: str, root_url: str) -> bool:
+        """Always returns False — LLM profile is never auto-selected."""
+        return False
+
+    async def build_toc(self, root_url: str, scraper) -> list[TocEntry]:
+        """Ask the LLM which strategy to use, then dispatch to it.
+
+        Returns ``[]`` when:
+        - ``settings.llm_fallback_enabled`` is False (silent no-op gate).
+        - ``derive_spec`` returns None (missing key, network error, etc.).
+        - The strategy dispatch raises any exception (resilience).
+        """
+        if not settings.llm_fallback_enabled:
+            return []
+
+        try:
+            html = await scraper.get_html(root_url)
+            spec = await derive_spec(html, root_url)
+            if spec is None:
+                return []
+            return await DerivedProfile(spec).build_toc(root_url, scraper)
+
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
                 "LLM fallback profile failed for %s: %s", root_url, exc
             )
             return []
 
     def content_config(self) -> dict:
-        """Generic content-extraction config.
+        """Generic content-extraction config (no cached spec available here).
 
         ``onlyMainContent=True`` with a modest ``waitFor`` is a reasonable
-        default for unrecognized sites.
-
-        Follow-on: once per-source ``profile_config`` caching is available,
-        use the LLM-derived ``content_selector`` here instead (see module
-        docstring).
+        default for unrecognized sites.  When a spec is cached in
+        ``source.profile_config``, ``_resolve_profile`` returns a
+        ``DerivedProfile`` whose ``content_config`` is spec-aware.
         """
         return {"onlyMainContent": True, "waitFor": 1500}
 

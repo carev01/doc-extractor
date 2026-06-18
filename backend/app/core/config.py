@@ -32,12 +32,22 @@ class Settings(BaseSettings):
     media_dir: str = "media"
     media_url_prefix: str = "/media"
 
-    # LLM fallback profile — off by default; requires an Anthropic API key.
-    # Set DOCEXTRACTOR_LLM_FALLBACK_ENABLED=true and DOCEXTRACTOR_ANTHROPIC_API_KEY=sk-...
-    # to enable. When enabled, unrecognized sites are analysed by the LLM before
-    # falling back to the generic sitemap profile.
+    # LLM fallback profile — off by default; requires an API key.
+    # Set DOCEXTRACTOR_LLM_FALLBACK_ENABLED=true to enable. When enabled,
+    # unrecognized sites are analysed by the LLM before falling back to the
+    # generic sitemap profile. The derived spec is cached in
+    # source.profile_config["llm_spec"] so subsequent runs skip re-derivation.
+    #
+    # Provider selection:
+    #   DOCEXTRACTOR_LLM_PROVIDER   — "anthropic" (default) | "openai"
+    #   DOCEXTRACTOR_LLM_BASE_URL   — override endpoint (blank → provider default)
+    #   DOCEXTRACTOR_LLM_API_KEY    — API key (Anthropic sk-ant-... or OpenAI sk-...)
+    #   DOCEXTRACTOR_LLM_MODEL      — model name (blank → provider default)
     llm_fallback_enabled: bool = False
-    anthropic_api_key: str = ""
+    llm_provider: str = "anthropic"   # "anthropic" | "openai"
+    llm_base_url: str = ""            # blank → provider default
+    llm_api_key: str = ""
+    llm_model: str = ""               # blank → provider default
 
     model_config = {
         "env_prefix": "DOCEXTRACTOR_",

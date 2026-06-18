@@ -22,6 +22,7 @@ from app.models.source import DocumentationSource, SourceStatus
 from app.models.toc import TOCEntry
 from app.services.profiles import registry as profile_registry
 from app.services.profiles.detector import detect_platform
+import app.services.profiles.llm as llm_mod
 from app.services.profiles.scraper import Scraper
 
 # Default content scrape options when no profile config is supplied (legacy Commvault).
@@ -90,26 +91,39 @@ class FirecrawlService:
         """Pick the extraction profile for a source.
 
         Resolution order:
-        1. Stored ``source.platform`` override — if the name resolves to a
-           registered profile, use it immediately.
+        1. Stored ``source.platform`` override (non-LLM) — if the name resolves
+           to a registered profile that is not ``"llm"``, use it immediately.
         2. Auto-detection — scrape the root URL once and iterate registered
            profiles' ``detect()`` methods.  If a match is found, store it on
            ``source.platform`` so the caller can persist it with a DB commit.
-        3. LLM fallback — if ``settings.llm_fallback_enabled`` is True, return
-           the ``"llm"`` profile so it can interrogate the page and choose an
-           appropriate strategy.  Skipped (flag is False by default) to avoid
-           unintended LLM calls.
+           Skipped when ``source.platform == "llm"`` (explicit LLM override).
+        3. LLM branch — entered when ``settings.llm_fallback_enabled`` is True
+           OR ``source.platform == "llm"`` (explicit override, honoured even
+           when the flag is off).
+           - Read cached spec from ``source.profile_config["llm_spec"]``.
+           - Cache miss: call ``derive_spec`` and write back to
+             ``source.profile_config`` (persisted by the existing commit).
+           - Return a ``DerivedProfile(spec)`` when a spec is available.
         4. Default — fall back to the generic sitemap profile.
         """
-        if source.platform:
+        # 1. Stored platform override — skip the LLM special-case here.
+        if source.platform and source.platform != "llm":
             p = profile_registry.get(source.platform)
             if p is not None:
                 return p
 
-        # Auto-detect: scrape the root page once and check all profiles.
+        # 2. Scrape root HTML (needed for both auto-detect and LLM derivation).
+        root_html: str | None = None
         try:
             scraper = Scraper(self)
             root_html = await scraper.get_html(source.base_url)
+        except Exception as exc:
+            logger.warning(
+                "Root HTML fetch failed for %s: %s", source.base_url, exc
+            )
+
+        # Auto-detect only when not explicitly set to "llm".
+        if root_html is not None and source.platform != "llm":
             detected_name = detect_platform(root_html, source.base_url)
             if detected_name:
                 p = profile_registry.get(detected_name)
@@ -121,21 +135,38 @@ class FirecrawlService:
                         source.base_url,
                     )
                     return p
-        except Exception as exc:
-            logger.warning(
-                "Platform auto-detection failed for %s: %s", source.base_url, exc
-            )
 
-        # LLM fallback — gated behind the opt-in flag (default OFF).
-        if settings.llm_fallback_enabled:
-            llm_profile = profile_registry.get("llm")
-            if llm_profile is not None:
+        # 3. LLM branch — flag OR explicit platform=="llm".
+        use_llm = settings.llm_fallback_enabled or source.platform == "llm"
+        if use_llm:
+            cfg = source.profile_config or {}
+            spec = cfg.get("llm_spec")
+
+            if spec:
                 logger.info(
-                    "No profile detected for %s — using LLM fallback",
+                    "LLM spec cache hit for %s — skipping re-derivation",
                     source.base_url,
                 )
-                return llm_profile
+            else:
+                html_for_llm = root_html or ""
+                spec = await llm_mod.derive_spec(html_for_llm, source.base_url)
+                if spec:
+                    source.profile_config = {**cfg, "llm_spec": spec}
+                    logger.info(
+                        "LLM spec freshly derived and cached for %s",
+                        source.base_url,
+                    )
+                else:
+                    logger.warning(
+                        "LLM spec derivation returned None for %s — "
+                        "falling through to generic profile",
+                        source.base_url,
+                    )
 
+            if spec:
+                return llm_mod.DerivedProfile(spec)
+
+        # 4. Default.
         return profile_registry.get("generic")
 
     def _auth_headers(self) -> dict:
