@@ -11,6 +11,7 @@ import uuid
 import zipfile
 
 import pytest
+from pypdf import PdfReader
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -622,6 +623,40 @@ def test_toc_tree_structure(db_session):
     assert root.children[0].title == "Section 1.1"
     assert len(root.children[0].children) == 1
     assert root.children[0].children[0].title == "Article A"
+
+
+def test_export_pdf_merges_per_chapter(db_session):
+    v = Vendor(name="MergeVendor")
+    db_session.add(v); db_session.flush()
+    s = DocumentationSource(vendor_id=v.id, name="MergeSrc", base_url="https://m.com")
+    db_session.add(s); db_session.flush()
+    # Two top-level chapters, 2 articles each.
+    ch1 = TOCEntry(source_id=s.id, title="Chapter 1", url=None, level=0, sort_order=0, is_article=False)
+    ch2 = TOCEntry(source_id=s.id, title="Chapter 2", url=None, level=0, sort_order=3, is_article=False)
+    db_session.add_all([ch1, ch2]); db_session.flush()
+    arts = []
+    for ci, ch in enumerate((ch1, ch2)):
+        for j in range(2):
+            t = TOCEntry(source_id=s.id, title=f"c{ci}a{j}", url=f"https://m.com/{ci}/{j}",
+                         level=1, sort_order=ci * 10 + j + 1, is_article=True, parent_id=ch.id)
+            db_session.add(t); db_session.flush()
+            arts.append(Article(
+                source_id=s.id, toc_entry_id=t.id, title=f"c{ci}a{j}",
+                source_url=f"https://m.com/{ci}/{j}", content_markdown=f"# c{ci}a{j}\n\nbody",
+                sort_order=ci * 10 + j + 1, estimated_tokens=50, content_size_bytes=200,
+            ))
+    db_session.add_all(arts); db_session.commit()
+
+    engine = ExportEngine()
+    result = engine.export_sync(db_session, source_id=s.id, format="pdf")
+    export_dir = os.path.join(engine.export_dir, str(result["export_id"]))
+    pdfs = [f for f in os.listdir(export_dir) if f.endswith(".pdf")]
+    assert len(pdfs) == 1
+    reader = PdfReader(os.path.join(export_dir, pdfs[0]))
+    # Merged from a header page + 2 chapter chunks -> at least 3 pages, and valid.
+    assert len(reader.pages) >= 3
+    # No leftover temp chapter PDFs.
+    assert not any(f.startswith("_chunk") for f in os.listdir(export_dir))
 
 
 # ── Firecrawl Service Tests ──
