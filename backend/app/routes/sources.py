@@ -97,6 +97,15 @@ async def update_source(
         source.name = body.name
     if body.base_url is not None:
         source.base_url = body.base_url
+    if body.platform is not None:
+        # "" / "auto" clears the override so detection runs again next extraction.
+        source.platform = None if body.platform in ("", "auto") else body.platform
+
+    if body.refresh_profile and source.profile_config:
+        # Drop the cached LLM-derived spec so the next extraction re-derives it.
+        # New-dict assignment so SQLAlchemy detects the JSONB change.
+        remaining = {k: v for k, v in source.profile_config.items() if k != "llm_spec"}
+        source.profile_config = remaining or None
 
     await db.commit()
     await db.refresh(source)

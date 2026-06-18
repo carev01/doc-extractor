@@ -669,17 +669,16 @@ def test_firecrawl_service_available():
     assert firecrawl_service is not None
     assert hasattr(firecrawl_service, "extract_source")
     assert hasattr(firecrawl_service, "_firecrawl_request")
-    assert hasattr(firecrawl_service, "_scrape_nav_html")
     assert hasattr(firecrawl_service, "_scrape_article")
-    assert hasattr(firecrawl_service, "_build_toc_recursive")
-    assert hasattr(firecrawl_service, "_parse_nav_items")
     assert hasattr(firecrawl_service, "_download_image")
+    # TOC discovery now lives in per-platform profiles, resolved per source.
+    assert hasattr(firecrawl_service, "_resolve_profile")
 
 
 def test_nav_item_parsing():
-    """_parse_nav_items extracts ordered items from a nav <ul>."""
+    """The Commvault profile parses ordered items from a nav <ul>."""
     from bs4 import BeautifulSoup
-    from app.services.firecrawl import firecrawl_service
+    from app.services.profiles.commvault import CommvaultProfile
 
     html = """
     <ul class="nav-group nav-group-root">
@@ -697,7 +696,7 @@ def test_nav_item_parsing():
     """
     soup = BeautifulSoup(html, "html.parser")
     ul = soup.find("ul")
-    items = firecrawl_service._parse_nav_items(ul)
+    items = CommvaultProfile()._parse_nav_items(ul)
 
     assert len(items) == 2
     assert items[0]["title"] == "Section A"

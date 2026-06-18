@@ -115,7 +115,10 @@ async def firecrawl_webhook(
         for attempt in range(firecrawl_service.EMPTY_CONTENT_RETRIES):
             import asyncio
             await asyncio.sleep(firecrawl_service.EMPTY_CONTENT_RETRY_DELAY)
-            markdown, html = await firecrawl_service._scrape_article(url)
+            markdown, html, _cs, _dt = await firecrawl_service._scrape_article(
+                url,
+                content_config=firecrawl_service._content_config_by_source.get(source_id),
+            )
             if markdown.strip():
                 break
             logger.warning(

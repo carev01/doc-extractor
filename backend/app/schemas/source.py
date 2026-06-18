@@ -17,6 +17,8 @@ class SourceCreate(BaseModel):
 class SourceUpdate(BaseModel):
     name: str | None = None
     base_url: str | None = None
+    platform: str | None = None
+    refresh_profile: bool | None = None
 
 
 class SourceResponse(BaseModel):
@@ -27,6 +29,7 @@ class SourceResponse(BaseModel):
     name: str
     base_url: str
     status: SourceStatus
+    platform: str | None
     last_extracted_at: datetime | None
     error_message: str | None
     created_at: datetime
