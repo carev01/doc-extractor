@@ -35,6 +35,38 @@ services:
       postgres:
         condition: service_healthy
 
+  worker:
+    build: ./backend
+    command: ["python", "-m", "app.worker"]
+    environment:
+      DOCEXTRACTOR_DATABASE_URL: postgresql+asyncpg://docextractor:docextractor_dev@postgres:5432/docextractor
+      DOCEXTRACTOR_DATABASE_URL_SYNC: postgresql+psycopg2://docextractor:docextractor_dev@postgres:5432/docextractor
+      DOCEXTRACTOR_FIRECRAWL_API_URL: http://firecrawl.k3s.home.lan
+      DOCEXTRACTOR_FIRECRAWL_API_KEY: fc-bf48f20724d6459cbdda97aef48a41fb
+      DOCEXTRACTOR_WEBHOOK_BASE_URL: http://172.16.255.190:8000
+    volumes:
+      - exports_data:/app/exports
+      - media_data:/app/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_started
+
+  scheduler:
+    build: ./backend
+    command: ["python", "-m", "app.scheduler"]
+    environment:
+      DOCEXTRACTOR_DATABASE_URL: postgresql+asyncpg://docextractor:docextractor_dev@postgres:5432/docextractor
+      DOCEXTRACTOR_DATABASE_URL_SYNC: postgresql+psycopg2://docextractor:docextractor_dev@postgres:5432/docextractor
+      DOCEXTRACTOR_FIRECRAWL_API_URL: http://firecrawl.k3s.home.lan
+      DOCEXTRACTOR_FIRECRAWL_API_KEY: fc-bf48f20724d6459cbdda97aef48a41fb
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_started
+
   frontend:
     build:
       context: ./frontend
