@@ -1,0 +1,61 @@
+{{- if .Values.postgres.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-postgres
+  labels:
+    {{- include "docextractor.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "docextractor.postgresServiceName" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "docextractor.selectorLabels" (dict "ctx" . "component" "postgres") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "docextractor.selectorLabels" (dict "ctx" . "component" "postgres") | nindent 8 }}
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.database | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.user | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secret
+                  key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "{{ .Values.postgres.user }}"] }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec: { command: ["pg_isready", "-U", "{{ .Values.postgres.user }}"] }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.resources.postgres | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.postgres.storageClassName }}
+        storageClassName: {{ .Values.postgres.storageClassName }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.storageSize }}
+{{- end }}
