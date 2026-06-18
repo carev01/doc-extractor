@@ -54,11 +54,36 @@ async def sidebar_tree_toc(
     return out
 
 
+def _element_title(element, title_selector: str | None) -> str:
+    """Extract a clean title from *element*.
+
+    When *title_selector* is given, find the first matching sub-element and
+    return its text.  Falls back to the element's own full text if the
+    sub-element is not found.  When *title_selector* is None, returns the
+    element's full text (original behaviour).
+    """
+    if title_selector:
+        sub = element.select_one(title_selector)
+        if sub:
+            return sub.get_text(strip=True)
+    return element.get_text(strip=True)
+
+
 async def hubspoke_toc(
     scraper, root_url: str, *, category_link_selector: str, article_link_selector: str,
     section_link_selector: str | None = None,
+    category_title_selector: str | None = None,
+    article_title_selector: str | None = None,
 ) -> list[TocEntry]:
-    """Crawl a help-center hub: root -> categories -> (optional sections) -> articles."""
+    """Crawl a help-center hub: root -> categories -> (optional sections) -> articles.
+
+    *category_title_selector* and *article_title_selector* are optional CSS
+    selectors scoped to the matched link element.  When provided, the title is
+    extracted from the first matching sub-element instead of the link's full
+    text.  This avoids description-concatenation issues (e.g. Intercom, where
+    ``get_text`` on a collection anchor yields "Title + Description + count").
+    Defaults are None, which preserves the original behaviour.
+    """
     root = BeautifulSoup(await scraper.get_html(root_url), "html.parser")
     out: list[TocEntry] = []
     seen: set[str] = set()
@@ -69,7 +94,8 @@ async def hubspoke_toc(
         if cat_url in seen:
             continue
         seen.add(cat_url)
-        out.append(TocEntry(cat.get_text(strip=True), cat_url, 0, False, None))
+        cat_title = _element_title(cat, category_title_selector)
+        out.append(TocEntry(cat_title, cat_url, 0, False, None))
         cat_soup = BeautifulSoup(await scraper.get_html(cat_url), "html.parser")
 
         if section_link_selector:
@@ -95,7 +121,8 @@ async def hubspoke_toc(
                 if art_url in seen:
                     continue
                 seen.add(art_url)
-                out.append(TocEntry(art.get_text(strip=True), art_url, alevel, True, parent))
+                art_title = _element_title(art, article_title_selector)
+                out.append(TocEntry(art_title, art_url, alevel, True, parent))
     return out
 
 

@@ -42,6 +42,86 @@ async def test_hubspoke_order_and_hierarchy():
     ]
 
 
+# Hub fixture with title+description concatenation (mirrors Intercom layout).
+HUB_WITH_DESC = {
+    "https://x/": (
+        '<a class="cat" href="https://x/c1">'
+        '  <span data-testid="cat-name">Clean Cat1</span>'
+        '  <p>This is the description for Cat1</p>'
+        '</a>'
+        '<a class="cat" href="https://x/c2">'
+        '  <span data-testid="cat-name">Clean Cat2</span>'
+        '  <p>Description for Cat2</p>'
+        '</a>'
+    ),
+    "https://x/c1": (
+        '<a class="art" href="https://x/c1/a">'
+        '  <span class="title">Art A</span>'
+        '  <span data-testid="art-desc">Description A</span>'
+        '</a>'
+        '<a class="art" href="https://x/c1/b">'
+        '  <span class="title">Art B</span>'
+        '  <span data-testid="art-desc">Description B</span>'
+        '</a>'
+    ),
+    "https://x/c2": (
+        '<a class="art" href="https://x/c2/a">'
+        '  <span class="title">Art C</span>'
+        '  <span data-testid="art-desc">Description C</span>'
+        '</a>'
+    ),
+}
+
+
+@pytest.mark.asyncio
+async def test_hubspoke_category_title_selector_extracts_clean_title():
+    """Regression: category_title_selector must extract the title sub-element
+    and avoid concatenating description text."""
+    toc = await hubspoke_toc(
+        FakeScraper(HUB_WITH_DESC), "https://x/",
+        category_link_selector="a.cat",
+        article_link_selector="a.art",
+        category_title_selector='[data-testid="cat-name"]',
+    )
+    cat_titles = [e.title for e in toc if e.level == 0]
+    assert cat_titles == ["Clean Cat1", "Clean Cat2"]
+    # Ensure description text did NOT bleed into title
+    for title in cat_titles:
+        assert "description" not in title.lower()
+
+
+@pytest.mark.asyncio
+async def test_hubspoke_article_title_selector_extracts_clean_title():
+    """Regression: article_title_selector must extract the title sub-element
+    and avoid concatenating description text."""
+    toc = await hubspoke_toc(
+        FakeScraper(HUB_WITH_DESC), "https://x/",
+        category_link_selector="a.cat",
+        article_link_selector="a.art",
+        article_title_selector="span:not([data-testid])",
+    )
+    art_titles = [e.title for e in toc if e.is_article]
+    assert art_titles == ["Art A", "Art B", "Art C"]
+    for title in art_titles:
+        assert "description" not in title.lower()
+
+
+@pytest.mark.asyncio
+async def test_hubspoke_title_selector_fallback_when_subelement_missing():
+    """Regression: when the title sub-element is absent, fall back to full
+    link text (preserving original behaviour for non-matching profiles)."""
+    toc = await hubspoke_toc(
+        FakeScraper(HUB), "https://x/",
+        category_link_selector="a.cat",
+        article_link_selector="a.art",
+        # Selector that won't match anything in HUB's plain-text anchors
+        category_title_selector='[data-testid="no-such-element"]',
+    )
+    cat_titles = [e.title for e in toc if e.level == 0]
+    # Fallback: full anchor text
+    assert cat_titles == ["Cat1", "Cat2"]
+
+
 UL_AS_ROOT = """<html><body>
 <ul id="m"><li><a href="/x">X</a></li><li><a href="/y">Y</a></li></ul>
 </body></html>"""
