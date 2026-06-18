@@ -32,6 +32,17 @@ class Article(Base):
         nullable=True,
     )
 
+    # Removal tracking — stamped when the page first drops out of the rebuilt
+    # TOC, cleared if it returns. Drives the changelog "removed" events.
+    removed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    removal_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("extraction_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     # Content
     title: Mapped[str] = mapped_column(String(1024), nullable=False)
     source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
