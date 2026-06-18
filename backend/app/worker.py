@@ -65,44 +65,50 @@ async def run_one(claim_session_factory=None, work_session_factory=None) -> bool
     claim_session_factory = claim_session_factory or async_session
     work_session_factory = work_session_factory or async_session
 
+    # 1) Try to claim an extraction run — open, claim, close.
     async with claim_session_factory() as db:
         run = await claim_next_run(db, WORKER_ID)
-        if run is None:
-            # No extraction run available — try an export job.
-            async with claim_session_factory() as db:
-                job = await claim_next_export(db, WORKER_ID)
-                if job is None:
-                    return False
-                job_id = job.id
+        run_id = run.id if run else None
+        source_id = run.source_id if run else None
+    # claim session is now closed.
 
-            hb = asyncio.create_task(_heartbeat_export(job_id, work_session_factory))
-            try:
-                # Generation is synchronous; run it off the event loop.
-                await asyncio.to_thread(run_export_job_sync, job_id)
-            finally:
-                hb.cancel()
-            return True
-        run_id, source_id = run.id, run.source_id
-
-    hb = asyncio.create_task(_heartbeat(run_id, work_session_factory))
-    try:
-        async with work_session_factory() as db:
-            await firecrawl_service.extract_source(db, source_id, run_id=run_id)
-            await db.commit()
-    except Exception as exc:
-        logger.exception("Run %s failed", run_id)
-        async with work_session_factory() as db:
-            res = await db.execute(
-                select(ExtractionRun).where(ExtractionRun.id == run_id)
-            )
-            run = res.scalar_one_or_none()
-            if run is not None and run.status not in (
-                RunStatus.COMPLETED, RunStatus.FAILED,
-            ):
-                run.status = RunStatus.FAILED
-                run.error_message = str(exc)[:4096]
-                run.completed_at = datetime.now(timezone.utc)
+    if run_id is not None:
+        hb = asyncio.create_task(_heartbeat(run_id, work_session_factory))
+        try:
+            async with work_session_factory() as db:
+                await firecrawl_service.extract_source(db, source_id, run_id=run_id)
                 await db.commit()
+        except Exception as exc:
+            logger.exception("Run %s failed", run_id)
+            async with work_session_factory() as db:
+                res = await db.execute(
+                    select(ExtractionRun).where(ExtractionRun.id == run_id)
+                )
+                r = res.scalar_one_or_none()
+                if r is not None and r.status not in (
+                    RunStatus.COMPLETED, RunStatus.FAILED,
+                ):
+                    r.status = RunStatus.FAILED
+                    r.error_message = str(exc)[:4096]
+                    r.completed_at = datetime.now(timezone.utc)
+                    await db.commit()
+        finally:
+            hb.cancel()
+        return True
+
+    # 2) No extraction run — try an export job — open, claim, close.
+    async with claim_session_factory() as db:
+        job = await claim_next_export(db, WORKER_ID)
+        job_id = job.id if job else None
+    # claim session is now closed.
+
+    if job_id is None:
+        return False
+
+    hb = asyncio.create_task(_heartbeat_export(job_id, work_session_factory))
+    try:
+        # Generation is synchronous; run it off the event loop.
+        await asyncio.to_thread(run_export_job_sync, job_id)
     finally:
         hb.cancel()
     return True

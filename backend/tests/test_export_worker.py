@@ -1,5 +1,6 @@
 import os, sys, uuid
 import pytest
+from unittest.mock import patch
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -42,4 +43,25 @@ def test_run_export_job_completes(db):
     assert job.export_id is not None
     export_dir = os.path.join(export_engine.export_dir, str(job.export_id))
     assert any(f.endswith(".zip") for f in os.listdir(export_dir))
+    db2.close()
+
+
+def test_run_export_job_fails_on_generation_error(db):
+    """run_export_job_sync must mark the job FAILED when export_engine.export_sync raises."""
+    v = Vendor(name="EJFail"); db.add(v); db.flush()
+    s = DocumentationSource(vendor_id=v.id, name="EJFailSrc", base_url="https://ejfail.com")
+    db.add(s); db.flush()
+    job = ExportJob(source_id=s.id, request={"source_id": str(s.id), "format": "markdown"},
+                    status=ExportStatus.RUNNING)
+    db.add(job); db.commit()
+    jid = job.id
+
+    with patch("app.services.export_runner.export_engine.export_sync",
+               side_effect=RuntimeError("simulated generation failure")):
+        run_export_job_sync(jid, session_factory=SyncS)
+
+    db2 = SyncS()
+    job = db2.execute(select(ExportJob).where(ExportJob.id == jid)).scalar_one()
+    assert job.status == ExportStatus.FAILED
+    assert job.error_message  # non-empty
     db2.close()

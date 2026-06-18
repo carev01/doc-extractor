@@ -43,8 +43,8 @@ def db_session():
 
 # ── Defect 1: Models registered in Base.metadata ──
 
-def test_defect1_all_six_tables_in_metadata():
-    """After importing app.models, Base.metadata must contain all expected tables.
+def test_defect1_all_nine_tables_in_metadata():
+    """After importing app.models, Base.metadata must contain all 9 expected tables.
 
     This was the root cause: main.py did `Base.metadata.create_all` without
     importing the model modules first, so no tables were created.
@@ -67,7 +67,7 @@ def test_defect1_all_six_tables_in_metadata():
 
 
 def test_defect1_tables_created_on_startup(db_session):
-    """Verify that all 6 tables exist and are usable after create_all."""
+    """Verify that all 9 tables exist and are usable after create_all."""
     # If we got here, create_all worked. Let's confirm by inserting and
     # querying a vendor.
     v = Vendor(name="TableCheckVendor")
