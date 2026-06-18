@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import Enum
 
 from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, String, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -36,6 +36,11 @@ class DocumentationSource(Base):
         DateTime(timezone=True), nullable=True
     )
     error_message: Mapped[str | None] = mapped_column(String(4096), nullable=True)
+    # Extraction platform profile (e.g. "commvault", "docusaurus", "intercom").
+    # NULL = not yet detected; "generic" = sitemap fallback. Set by detection or UI override.
+    platform: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Optional per-source overrides / LLM-derived selectors for the profile.
+    profile_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

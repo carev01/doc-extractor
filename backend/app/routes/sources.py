@@ -97,6 +97,9 @@ async def update_source(
         source.name = body.name
     if body.base_url is not None:
         source.base_url = body.base_url
+    if body.platform is not None:
+        # "" / "auto" clears the override so detection runs again next extraction.
+        source.platform = None if body.platform in ("", "auto") else body.platform
 
     await db.commit()
     await db.refresh(source)
