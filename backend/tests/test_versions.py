@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -561,3 +561,85 @@ async def test_extracted_at_tracks_last_scrape_created_at_is_first(client):
     assert created3 == created1            # still first-seen
     assert extracted3 > extracted2         # unchanged re-scrape still bumps scrape time
     assert hash3 == hash2
+
+
+async def test_unchanged_paths_relink_rebuilt_toc(client):
+    """Each run deletes+rebuilds TOC entries (new ids), nulling articles.toc_entry_id
+    via SET NULL. The unchanged fast paths ('same' and hash-match) must re-link the
+    article to the freshly-built toc entry — otherwise every unchanged article orphans
+    on incremental runs and the browser renders nothing."""
+    client, TestSession = client
+    async with TestSession() as s:
+        vendor = Vendor(name="RelinkVendor")
+        s.add(vendor)
+        await s.flush()
+        source = DocumentationSource(
+            vendor_id=vendor.id, name="RelinkSrc", base_url="https://d.rl.com"
+        )
+        s.add(source)
+        await s.flush()
+        run = ExtractionRun(source_id=source.id, status=RunStatus.RUNNING)
+        s.add(run)
+        await s.flush()
+        toc_a = TOCEntry(
+            source_id=source.id, title="Page", url="https://d.rl.com/p",
+            level=0, sort_order=0, is_article=True,
+        )
+        s.add(toc_a)
+        await s.commit()
+        source_id, run_id, toc_a_id = source.id, run.id, toc_a.id
+
+    url = "https://d.rl.com/p"
+
+    async def fetch():
+        async with TestSession() as s:
+            row = (
+                await s.execute(select(Article).where(Article.source_url == url))
+            ).scalar_one()
+            return row.toc_entry_id, row.sort_order
+
+    async def rebuild_toc(new_sort_order: int):
+        """Drop the TOC (orphans the article via SET NULL) and create a new entry."""
+        async with TestSession() as s:
+            await s.execute(delete(TOCEntry).where(TOCEntry.source_id == source_id))
+            toc = TOCEntry(
+                source_id=source_id, title="Page", url=url,
+                level=0, sort_order=new_sort_order, is_article=True,
+            )
+            s.add(toc)
+            await s.commit()
+            return toc.id
+
+    # First extraction: article created and linked to toc_a.
+    async with TestSession() as s:
+        outcome = await firecrawl_service.process_article_result(
+            db=s, source_id=source_id, run_id=run_id, url=url,
+            markdown_content="stable body", doc_html="", toc_entry_id=toc_a_id,
+            sort_order=0, title="Page", change_status="new",
+        )
+    assert outcome in ("new", "updated")
+    assert (await fetch())[0] == toc_a_id
+
+    # Rebuild → article orphaned → 'same' fast path must re-link + refresh sort_order.
+    toc_b_id = await rebuild_toc(new_sort_order=7)
+    assert (await fetch())[0] is None
+    async with TestSession() as s:
+        outcome = await firecrawl_service.process_article_result(
+            db=s, source_id=source_id, run_id=run_id, url=url,
+            markdown_content="stable body", doc_html="", toc_entry_id=toc_b_id,
+            sort_order=7, title="Page", change_status="same",
+        )
+    assert outcome == "unchanged"
+    assert await fetch() == (toc_b_id, 7)
+
+    # Rebuild again → orphaned → hash-match path (change_status None) must also re-link.
+    toc_c_id = await rebuild_toc(new_sort_order=3)
+    assert (await fetch())[0] is None
+    async with TestSession() as s:
+        outcome = await firecrawl_service.process_article_result(
+            db=s, source_id=source_id, run_id=run_id, url=url,
+            markdown_content="stable body", doc_html="", toc_entry_id=toc_c_id,
+            sort_order=3, title="Page", change_status=None,
+        )
+    assert outcome == "unchanged"
+    assert await fetch() == (toc_c_id, 3)

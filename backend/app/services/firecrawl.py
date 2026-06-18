@@ -277,10 +277,19 @@ class FirecrawlService:
         # Content is untouched, but we still scraped the page this run — bump
         # extracted_at so it reflects the last scrape, not the last change.
         if change_status == "same":
+            # The TOC is deleted and rebuilt every run (new entry ids), so the
+            # article's toc_entry_id was just NULLed by SET NULL. Re-link it (and
+            # refresh the TOC-derived sort_order/title) even though the content is
+            # unchanged — otherwise the page orphans and the browser hides it.
             await db.execute(
                 update(Article)
                 .where(Article.source_id == source_id, Article.source_url == url)
-                .values(extracted_at=datetime.now(timezone.utc))
+                .values(
+                    extracted_at=datetime.now(timezone.utc),
+                    toc_entry_id=toc_entry_id,
+                    sort_order=sort_order,
+                    title=title,
+                )
             )
             await db.execute(
                 update(ExtractionRun)
@@ -305,8 +314,13 @@ class FirecrawlService:
         # prior snapshot for this tag yet, but our DB may already have the article).
         if change_status in (None, "new"):
             if existing_article is not None and existing_article.content_hash == content_hash:
-                # Unchanged content, but scraped this run — record the scrape time.
+                # Unchanged content, but scraped this run — record the scrape time
+                # and re-link to the freshly-rebuilt TOC entry (the prior link was
+                # NULLed when the TOC was rebuilt) so the page isn't orphaned.
                 existing_article.extracted_at = datetime.now(timezone.utc)
+                existing_article.toc_entry_id = toc_entry_id
+                existing_article.sort_order = sort_order
+                existing_article.title = title
                 await db.execute(
                     update(ExtractionRun)
                     .where(ExtractionRun.id == run_id)
