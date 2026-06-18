@@ -91,8 +91,7 @@ class FirecrawlService:
         2. Auto-detection — scrape the root URL once and iterate registered
            profiles' ``detect()`` methods.  If a match is found, store it on
            ``source.platform`` so the caller can persist it with a DB commit.
-        3. Default — fall back to the Commvault profile (preserves prior
-           behaviour until a generic fallback profile is implemented).
+        3. Default — fall back to the generic sitemap profile.
         """
         if source.platform:
             p = profile_registry.get(source.platform)

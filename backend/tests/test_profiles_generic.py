@@ -137,6 +137,31 @@ async def test_build_toc_all_entries_are_articles():
     assert all(e.is_article for e in toc)
 
 
+@pytest.mark.asyncio
+async def test_build_toc_levels_file_tailed_root():
+    """File-tailed root URL (e.g. /docs/index.html) must use /docs/ as the
+    baseline, so /docs/a is level 1 and /docs/a/b is level 2 (not 0/1)."""
+    file_root = "https://x/docs/index.html"
+    urls = [
+        file_root,              # root itself
+        "https://x/docs/a",    # should be level 1
+        "https://x/docs/a/b",  # should be level 2
+    ]
+    scraper = FakeScraper(html_by_url={}, urls=urls)
+    toc = await GenericProfile().build_toc(file_root, scraper)
+    by_url = {e.url: e for e in toc}
+
+    assert "https://x/docs/a" in by_url, "https://x/docs/a missing from TOC"
+    assert by_url["https://x/docs/a"].level == 1, (
+        f"expected level 1, got {by_url['https://x/docs/a'].level}"
+    )
+
+    assert "https://x/docs/a/b" in by_url, "https://x/docs/a/b missing from TOC"
+    assert by_url["https://x/docs/a/b"].level == 2, (
+        f"expected level 2, got {by_url['https://x/docs/a/b'].level}"
+    )
+
+
 # ── content_config ───────────────────────────────────────────────────────────
 
 def test_content_config_only_main_content():

@@ -63,6 +63,12 @@ class GenericProfile:
             # Drop the last component (filename / slug) to get the dir prefix
             root_path = root_path.rsplit("/", 1)[0] + "/"
 
+        # Derive the baseline depth from the *normalised* directory prefix so
+        # that a file-tailed root (e.g. /docs/index.html → dir /docs/) gives the
+        # same baseline as a slash-terminated root (/docs/).  Using root_segs
+        # (the raw URL segments) would over-count by one for file-tailed roots.
+        root_dir_depth = len([s for s in root_path.split("/") if s])
+
         # Build the kept set (for parent_url lookup) and deduplicated list
         kept_ordered: list[str] = []
         kept_set: set[str] = set()
@@ -80,13 +86,13 @@ class GenericProfile:
         toc: list[TocEntry] = []
         for url in kept_ordered:
             url_segs = _path_segments(url)
-            level = max(0, len(url_segs) - len(root_segs))
+            level = max(0, len(url_segs) - root_dir_depth)
 
             # Parent = same URL with last path segment dropped, if in kept set.
             # Check both the slash-terminated form (/docs/a/) and the bare form
             # (/docs/a) because sitemaps may list URLs either way.
             parent_url: str | None = None
-            if url_segs and len(url_segs) > len(root_segs):
+            if url_segs and len(url_segs) > root_dir_depth:
                 parsed_url = urlparse(url)
                 scheme_host = f"{parsed_url.scheme}://{parsed_url.netloc}"
                 parent_path_bare = "/" + "/".join(url_segs[:-1])
