@@ -384,6 +384,7 @@ class FirecrawlService:
             article = Article(
                 source_id=source_id,
                 extraction_run_id=run_id,
+                created_run_id=run_id,
                 toc_entry_id=toc_entry_id,
                 title=title,
                 source_url=url,

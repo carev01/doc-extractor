@@ -9,6 +9,7 @@ interface Props {
 }
 
 const BADGE: Record<ChangelogEntry["change_type"], string> = {
+  initial: "INITIAL",
   added: "ADDED",
   changed: "CHANGED",
   removed: "REMOVED",
@@ -55,6 +56,7 @@ export default function ChangelogPanel({ source }: Props) {
   }, [entries]);
 
   const openEntry = async (e: ChangelogEntry) => {
+    if (!e.article_id) return; // 'initial' summary has no article to open
     setError("");
     try {
       const detail = await getArticle(e.article_id);
@@ -93,13 +95,20 @@ export default function ChangelogPanel({ source }: Props) {
           <ul className="timeline-list">
             {evs.map((e, i) => (
               <li
-                key={`${e.change_type}-${e.version_id ?? e.article_id}-${i}`}
+                key={`${e.change_type}-${e.version_id ?? e.article_id ?? "x"}-${i}`}
                 className="timeline-row"
               >
-                <button className="timeline-event" onClick={() => openEntry(e)}>
-                  <span className={`badge-${e.change_type}`}>{BADGE[e.change_type]}</span>
-                  <span className="timeline-title">{e.title}</span>
-                </button>
+                {e.change_type === "initial" ? (
+                  <div className="timeline-event timeline-initial">
+                    <span className="badge-initial">{BADGE.initial}</span>
+                    <span className="timeline-title">{e.title}</span>
+                  </div>
+                ) : (
+                  <button className="timeline-event" onClick={() => openEntry(e)}>
+                    <span className={`badge-${e.change_type}`}>{BADGE[e.change_type]}</span>
+                    <span className="timeline-title">{e.title}</span>
+                  </button>
+                )}
               </li>
             ))}
           </ul>

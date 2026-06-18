@@ -39,9 +39,10 @@ class VersionDiffResponse(BaseModel):
 
 
 class ChangelogEntry(BaseModel):
-    article_id: uuid.UUID
+    # article_id is None for the synthetic "initial" baseline-run summary entry.
+    article_id: uuid.UUID | None
     title: str
-    change_type: str  # "added" | "changed" | "removed"
+    change_type: str  # "initial" | "added" | "changed" | "removed"
     timestamp: datetime
     version_id: uuid.UUID | None
     extraction_run_id: uuid.UUID | None

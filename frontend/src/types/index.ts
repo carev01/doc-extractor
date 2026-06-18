@@ -174,10 +174,10 @@ export interface VersionDiff {
   computed: boolean;
 }
 
-export type ChangeType = "added" | "changed" | "removed";
+export type ChangeType = "initial" | "added" | "changed" | "removed";
 
 export interface ChangelogEntry {
-  article_id: string;
+  article_id: string | null;
   title: string;
   change_type: ChangeType;
   timestamp: string;

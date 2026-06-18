@@ -136,21 +136,56 @@ async def get_source_changelog(
     if result.scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="Source not found")
 
-    # A typed NULL (cast to the version-id UUID type) so all three union branches
-    # agree on the column type — an untyped NULL can trip Postgres' UNION type
-    # resolution.
-    null_version_id = literal(None).cast(ArticleVersion.id.type)
+    # The baseline run is the earliest run that actually created articles for this
+    # source (a failed first run that created nothing is skipped). Its pages are
+    # collapsed into a single "initial" summary instead of one "added" per page.
+    baseline_row = (
+        await db.execute(
+            select(
+                Article.created_run_id,
+                ExtractionRun.started_at,
+                ExtractionRun.completed_at,
+            )
+            .join(ExtractionRun, ExtractionRun.id == Article.created_run_id)
+            .where(Article.source_id == source_id)
+            .order_by(ExtractionRun.started_at.asc())
+            .limit(1)
+        )
+    ).first()
+    baseline_run_id = baseline_row.created_run_id if baseline_row else None
+    baseline_time = (
+        (baseline_row.completed_at or baseline_row.started_at) if baseline_row else None
+    )
+    baseline_count = 0
+    if baseline_run_id is not None:
+        baseline_count = (
+            await db.execute(
+                select(func.count())
+                .select_from(Article)
+                .where(
+                    Article.source_id == source_id,
+                    Article.created_run_id == baseline_run_id,
+                )
+            )
+        ).scalar()
 
-    # Three event streams sharing one column shape, merged newest-first.
+    # Typed NULLs so all union branches agree on column types (an untyped NULL
+    # can trip Postgres' UNION type resolution).
+    null_version_id = literal(None).cast(ArticleVersion.id.type)
+    null_article_id = literal(None).cast(Article.id.type)
+
+    # 'added' — only pages added AFTER the baseline run (baseline is summarised).
     added = select(
         Article.id.label("article_id"),
         Article.title.label("title"),
         literal("added").label("change_type"),
         Article.created_at.label("timestamp"),
         null_version_id.label("version_id"),
-        Article.extraction_run_id.label("extraction_run_id"),
+        Article.created_run_id.label("extraction_run_id"),
         literal(False).label("has_diff"),
-    ).where(Article.source_id == source_id)
+    ).where(Article.source_id == source_id, Article.created_run_id.isnot(None))
+    if baseline_run_id is not None:
+        added = added.where(Article.created_run_id != baseline_run_id)
 
     changed = select(
         ArticleVersion.article_id.label("article_id"),
@@ -174,7 +209,23 @@ async def get_source_changelog(
         literal(False).label("has_diff"),
     ).where(Article.source_id == source_id, Article.removed_at.isnot(None))
 
-    events = union_all(added, changed, removed).subquery()
+    parts = [added, changed, removed]
+    if baseline_run_id is not None and baseline_count > 0:
+        # One synthetic summary row for the baseline extraction.
+        initial = select(
+            null_article_id.label("article_id"),
+            literal(
+                f"Initial extraction — {baseline_count} articles added"
+            ).label("title"),
+            literal("initial").label("change_type"),
+            literal(baseline_time).cast(Article.created_at.type).label("timestamp"),
+            null_version_id.label("version_id"),
+            literal(baseline_run_id).cast(Article.id.type).label("extraction_run_id"),
+            literal(False).label("has_diff"),
+        )
+        parts.append(initial)
+
+    events = union_all(*parts).subquery()
     total = (await db.execute(select(func.count()).select_from(events))).scalar()
 
     rows = await db.execute(

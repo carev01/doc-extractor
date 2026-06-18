@@ -26,6 +26,13 @@ class Article(Base):
         ForeignKey("extraction_runs.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # The run that first created this article — distinguishes the baseline
+    # (first) extraction from later incremental additions in the changelog.
+    created_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("extraction_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     toc_entry_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("toc_entries.id", ondelete="SET NULL"),

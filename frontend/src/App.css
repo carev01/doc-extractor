@@ -1493,6 +1493,31 @@ a.btn-primary {
   border-color: rgba(234, 165, 61, 0.35);
 }
 
+.badge-initial {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  border: 1px solid var(--line);
+  background: var(--ink-2);
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+/* The baseline summary row is informational, not clickable. */
+.timeline-initial {
+  cursor: default;
+  opacity: 0.85;
+}
+
+.timeline-initial:hover {
+  border-color: var(--line);
+  background: var(--ink-1);
+}
+
 /* The REMOVED badge in the timeline reuses .badge-removed but needs the
    timeline's flex layout to not shrink it. */
 .timeline-event .badge-removed {

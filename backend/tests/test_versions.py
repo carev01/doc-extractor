@@ -263,9 +263,9 @@ async def test_source_changelog_newest_first_across_articles(client):
     resp = await client.get(f"/api/sources/{source_id}/changelog")
     assert resp.status_code == 200
     body = resp.json()
-    # Timeline now also emits one "added" event per article (created_at), so the
-    # total includes those alongside the 3 content-change ("changed") events.
-    assert body["total"] == 5  # 2 added + 3 changed
+    # These articles have no created_run_id, so they produce no 'added'/'initial'
+    # events — only the 3 content-change ("changed") events appear.
+    assert body["total"] == 3
     changed = [e for e in body["entries"] if e["change_type"] == "changed"]
     assert len(changed) == 3
     # Among content changes: most recent (Second Article @ day2) first, oldest last.
@@ -718,13 +718,13 @@ async def test_reconcile_removals_stamps_clears_and_pins(client):
     assert g_removed3 is None and g_run3 is None
 
 
-async def test_changelog_timeline_merges_added_changed_removed(client):
-    """Changelog returns added (per article), changed (per version) and removed
-    (per removed_at) events, newest-first, with the right discriminators."""
+async def test_changelog_collapses_baseline_and_merges_events(client):
+    """The baseline (first) run collapses to one 'initial' summary entry; later
+    runs emit per-page added/changed/removed events, newest-first."""
     client, TestSession = client
-    T_OLD = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    T_MID = datetime(2026, 3, 1, tzinfo=timezone.utc)
-    T_NEW = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    T_OLD = datetime(2026, 1, 1, tzinfo=timezone.utc)   # baseline run
+    T_MID = datetime(2026, 3, 1, tzinfo=timezone.utc)   # A changed
+    T_NEW = datetime(2026, 6, 1, tzinfo=timezone.utc)   # incremental run
     async with TestSession() as s:
         vendor = Vendor(name="ClVendor")
         s.add(vendor)
@@ -734,43 +734,48 @@ async def test_changelog_timeline_merges_added_changed_removed(client):
         )
         s.add(source)
         await s.flush()
-        run = ExtractionRun(source_id=source.id, status=RunStatus.COMPLETED)
-        s.add(run)
+        run1 = ExtractionRun(source_id=source.id, status=RunStatus.COMPLETED, started_at=T_OLD)
+        run2 = ExtractionRun(source_id=source.id, status=RunStatus.COMPLETED, started_at=T_NEW)
+        s.add_all([run1, run2])
         await s.flush()
-        # Article A: added T_OLD, changed T_MID (one version snapshot).
+        # Baseline articles A and B (created in run1). A is later changed; B removed.
         a = Article(
-            source_id=source.id, toc_entry_id=None, title="Page A",
+            source_id=source.id, toc_entry_id=None, created_run_id=run1.id, title="Page A",
             source_url="https://cl.com/a", content_markdown="now", content_hash="h2",
             sort_order=0, estimated_tokens=1, content_size_bytes=1, created_at=T_OLD,
         )
-        s.add(a)
-        await s.flush()
-        ver = ArticleVersion(
-            article_id=a.id, extraction_run_id=run.id, content_markdown="old",
-            content_hash="h1", diff_text="@@ -1 +1 @@", extracted_at=T_MID,
-        )
-        s.add(ver)
-        # Article B: added T_OLD, removed T_NEW.
         b = Article(
-            source_id=source.id, toc_entry_id=None, title="Page B",
+            source_id=source.id, toc_entry_id=None, created_run_id=run1.id, title="Page B",
             source_url="https://cl.com/b", content_markdown="x", content_hash="h",
             sort_order=0, estimated_tokens=1, content_size_bytes=1,
-            created_at=T_OLD, removed_at=T_NEW, removal_run_id=run.id,
+            created_at=T_OLD, removed_at=T_NEW, removal_run_id=run2.id,
         )
-        s.add(b)
+        # New article C, added in the incremental run2 → per-page 'added' event.
+        c = Article(
+            source_id=source.id, toc_entry_id=None, created_run_id=run2.id, title="New C",
+            source_url="https://cl.com/c", content_markdown="c", content_hash="hc",
+            sort_order=0, estimated_tokens=1, content_size_bytes=1, created_at=T_NEW,
+        )
+        s.add_all([a, b, c])
+        await s.flush()
+        s.add(ArticleVersion(
+            article_id=a.id, extraction_run_id=run2.id, content_markdown="old",
+            content_hash="h1", diff_text="@@ -1 +1 @@", extracted_at=T_MID,
+        ))
         await s.commit()
         source_id = source.id
 
     r = await client.get(f"/api/sources/{source_id}/changelog")
     assert r.status_code == 200
     data = r.json()
-    assert data["total"] == 4  # 2 added + 1 changed + 1 removed
-    types = [e["change_type"] for e in data["entries"]]
-    # Newest-first: removed(T_NEW), changed(T_MID), then the two added(T_OLD).
-    assert types[0] == "removed"
-    assert types[1] == "changed"
-    assert sorted(types[2:]) == ["added", "added"]
-    removed = data["entries"][0]
-    assert removed["version_id"] is None
-    changed = data["entries"][1]
-    assert changed["version_id"] is not None and changed["has_diff"] is True
+    # 1 initial (baseline collapses A+B) + 1 added (C) + 1 changed (A) + 1 removed (B).
+    assert data["total"] == 4
+    by_type = {e["change_type"]: e for e in data["entries"]}
+    assert set(by_type) == {"initial", "added", "changed", "removed"}
+    assert by_type["initial"]["article_id"] is None
+    assert "2 articles" in by_type["initial"]["title"]
+    assert by_type["added"]["title"] == "New C"
+    assert by_type["changed"]["version_id"] is not None and by_type["changed"]["has_diff"] is True
+    assert by_type["removed"]["version_id"] is None
+    # The initial summary is the oldest event (baseline run time).
+    assert data["entries"][-1]["change_type"] == "initial"
