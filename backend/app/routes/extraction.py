@@ -2,19 +2,19 @@
 
 import logging
 import uuid
-from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.extraction_run import ExtractionRun
-from app.models.source import DocumentationSource, SourceStatus
+from app.models.source import DocumentationSource
 from app.models.toc import TOCEntry
 from app.schemas.export import ExtractionTriggerResponse
 from app.services.firecrawl import firecrawl_service
+from app.services.queue import enqueue_run, ActiveRunExists
 
 logger = logging.getLogger(__name__)
 
@@ -24,15 +24,12 @@ router = APIRouter(prefix="/api/extraction", tags=["extraction"])
 @router.post("/trigger/{source_id}", response_model=ExtractionTriggerResponse)
 async def trigger_extraction(
     source_id: uuid.UUID,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
-    """Trigger a full extraction for a documentation source.
+    """Queue a full extraction for a source. A worker picks it up.
 
-    The extraction runs in the background. Poll /api/extraction/runs/{run_id}
-    for status updates.
+    Poll /api/extraction/runs/{run_id} for status (pending -> running -> completed).
     """
-    # Verify source exists and isn't already extracting
     result = await db.execute(
         select(DocumentationSource).where(DocumentationSource.id == source_id)
     )
@@ -40,83 +37,20 @@ async def trigger_extraction(
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
 
-    if source.status == SourceStatus.EXTRACTING:
+    try:
+        run = await enqueue_run(db, source_id, trigger="manual")
+    except ActiveRunExists:
         raise HTTPException(
             status_code=409,
-            detail="Extraction already in progress for this source",
+            detail="Extraction already queued or running for this source",
         )
-
-    # Create a run record synchronously
-    run = ExtractionRun(
-        source_id=source_id,
-        status="running",
-    )
-    db.add(run)
-    source.status = SourceStatus.EXTRACTING
-    await db.commit()
-    await db.refresh(run)
-
-    # Schedule the actual extraction as a background task
-    # Pass run_id so the background task updates the SAME run row
-    # instead of creating a duplicate.
-    background_tasks.add_task(
-        _run_extraction_background, source_id, run.id
-    )
 
     return ExtractionTriggerResponse(
         run_id=run.id,
         source_id=source_id,
-        status="running",
-        message="Extraction started. Poll /api/extraction/runs/{run_id} for progress.",
+        status="pending",
+        message="Extraction queued. Poll /api/extraction/runs/{run_id} for progress.",
     )
-
-
-async def _run_extraction_background(source_id: uuid.UUID, run_id: uuid.UUID):
-    """Background task: execute extraction and update run status.
-
-    Uses the pre-created run row (identified by run_id) so the
-    extraction ledger stays consistent — no orphaned 'running' rows.
-    """
-    from app.core.database import async_session
-
-    async with async_session() as db:
-        try:
-            await firecrawl_service.extract_source(db, source_id, run_id=run_id)
-            await db.commit()
-        except Exception as e:
-            # Ensure the DB is rolled back so we don't leave partial data.
-            await db.rollback()
-            logger.error(
-                "Extraction failed for source_id=%s run_id=%s: %s",
-                source_id, run_id, e,
-            )
-            # The run/source status should already be FAILED inside
-            # extract_source, but as a safety net, check and set it here.
-            try:
-                run_result = await db.execute(
-                    select(ExtractionRun).where(ExtractionRun.id == run_id)
-                )
-                run = run_result.scalar_one_or_none()
-                if run and run.status == "running":
-                    run.status = "failed"
-                    run.error_message = f"Background task error: {e}"[:4096]
-                    run.completed_at = datetime.now(timezone.utc)
-
-                    src_result = await db.execute(
-                        select(DocumentationSource).where(
-                            DocumentationSource.id == source_id
-                        )
-                    )
-                    src = src_result.scalar_one_or_none()
-                    if src and src.status == SourceStatus.EXTRACTING:
-                        src.status = SourceStatus.FAILED
-                        src.error_message = f"Extraction failed: {e}"[:4096]
-
-                    await db.commit()
-            except Exception as nested:
-                logger.exception(
-                    "Failed to update run status after error: %s", nested
-                )
 
 
 @router.post("/webhook/{run_id}", include_in_schema=False)
@@ -218,6 +152,7 @@ async def get_run_status(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         "id": run.id,
         "source_id": run.source_id,
         "status": run.status,
+        "trigger": run.trigger,
         "current_phase": run.current_phase,
         "firecrawl_job_id": run.firecrawl_job_id,
         "articles_extracted": run.articles_extracted,
@@ -250,6 +185,7 @@ async def list_runs(
                 "id": r.id,
                 "source_id": r.source_id,
                 "status": r.status,
+                "trigger": r.trigger,
                 "current_phase": r.current_phase,
                 "firecrawl_job_id": r.firecrawl_job_id,
                 "articles_extracted": r.articles_extracted,
