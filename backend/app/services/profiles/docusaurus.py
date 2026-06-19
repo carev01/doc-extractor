@@ -30,6 +30,13 @@ class DocusaurusProfile:
     def content_config(self) -> dict:
         return {
             "includeTags": [".theme-doc-markdown"],
+            # Docusaurus theme chrome: edit-this-page, prev/next pager,
+            # breadcrumbs, tags/last-updated footer. Mostly outside the markdown
+            # body, excluded explicitly as defence-in-depth.
+            "excludeTags": [
+                ".theme-edit-this-page", ".pagination-nav",
+                ".theme-doc-footer", ".theme-doc-breadcrumbs", ".theme-last-updated",
+            ],
             "onlyMainContent": False,
             "waitFor": 1500,
         }

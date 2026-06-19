@@ -54,6 +54,10 @@ class FreshdeskProfile:
 
     def content_config(self) -> dict:
         return {
+            # No includeTags (onlyMainContent heuristic), so drop Freshdesk
+            # article chrome explicitly: the "Did you find it helpful?" vote
+            # widget and the related-articles block. No-op when absent.
+            "excludeTags": [".article-votes", ".vote-options", ".related-articles"],
             "onlyMainContent": True,
             "waitFor": 1500,
         }
