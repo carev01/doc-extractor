@@ -14,3 +14,5 @@ data:
   DOCEXTRACTOR_LLM_BASE_URL: {{ .Values.llm.baseUrl | quote }}
   DOCEXTRACTOR_LLM_MODEL: {{ .Values.llm.model | quote }}
   DOCEXTRACTOR_LLM_MAX_TOKENS: {{ .Values.llm.maxTokens | quote }}
+  DOCEXTRACTOR_EXPORT_RETENTION_DAYS: {{ .Values.export.retentionDays | quote }}
+  DOCEXTRACTOR_EXPORT_MAX_TOTAL_BYTES: {{ .Values.export.maxTotalBytes | quote }}

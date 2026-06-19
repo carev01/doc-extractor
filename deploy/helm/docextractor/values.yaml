@@ -28,6 +28,12 @@ storage:
   exportsSize: 5Gi
   mediaSize: 5Gi
 
+# -- Export retention (scheduler purges old exports so the exports PVC can't fill)
+export:
+  retentionDays: 7                # purge exports older than this (0 disables age sweep)
+  maxTotalBytes: "3221225472"     # 3 GiB (quoted so Helm keeps it an integer, not 3.2e+09);
+                                  # evict oldest-first above this (keep < exportsSize)
+
 # -- Firecrawl (external, already in the cluster)
 firecrawl:
   apiUrl: http://firecrawl.k3s.home.lan

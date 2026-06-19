@@ -7,7 +7,16 @@ promoted to a spec/plan when picked up.
 
 ## Export file lifecycle: retention/cleanup + persistent access to past exports
 
-**Status:** Open · **Priority:** High (operational risk) · **Filed:** 2026-06-19
+**Status:** Phases 1 & 2 DONE (commit `5831c4d`, deployed) · Phase 3 stretch open ·
+**Priority:** High (operational risk) · **Filed:** 2026-06-19
+
+> **Implemented 2026-06-19:** scheduler hourly retention sweep (age + size cap,
+> `DOCEXTRACTOR_EXPORT_RETENTION_DAYS=7`, `DOCEXTRACTOR_EXPORT_MAX_TOTAL_BYTES=3 GiB`,
+> both exposed in the Helm chart); `/api/export/list` enriched with source/format/
+> created/expires/size and backed by `export_jobs`; Export page now shows a persistent
+> "Recent Exports" list. Decision taken: purge deletes the dir **and** the `export_jobs`
+> row (no tombstone). **Still open (Phase 3):** manual delete endpoint/button; object-
+> storage backend for export artifacts.
 
 ### Problem
 
