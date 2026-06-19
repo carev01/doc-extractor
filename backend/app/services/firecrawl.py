@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
@@ -32,6 +33,14 @@ _LEGACY_CONTENT = {"includeTags": ["#doc"], "onlyMainContent": False, "waitFor":
 # Browser User-Agent so bot-gated sites (e.g. Confluence Cloud) render real
 # content instead of a JS "unsupported browser" shell.
 _BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+
+# Decorative theme/skin images that are not documentation content — e.g. MadCap
+# Flare skin assets, system images (the copy/feedback/chat icons), and spacer
+# GIFs. They repeat on every page, so downloading them per-article is pure
+# overhead. Matched by URL path; conservative, so non-Flare sites are unaffected.
+_BOILERPLATE_IMG_RE = re.compile(
+    r"/_SystemImages/|/Skins/|/transparent\.gif$", re.IGNORECASE
+)
 
 
 def compute_content_hash(content: str) -> str:
@@ -509,6 +518,11 @@ class FirecrawlService:
             img_soup = BeautifulSoup(doc_html, "html.parser")
             article_img_dir = os.path.join(media_root, str(article.id))
 
+            # Collect the content images to fetch, skipping decorative skin/system
+            # images (Flare chrome that repeats on every page) and de-duplicating
+            # within the page so each distinct image is fetched once.
+            to_fetch: list[tuple[int, str, str]] = []  # (sort_order, raw_src, full_src)
+            seen_src: set[str] = set()
             for j, img in enumerate(img_soup.find_all("img")):
                 src = img.get("src", "")
                 if not src:
@@ -516,8 +530,21 @@ class FirecrawlService:
                 full_src = urljoin(url, src)
                 if not full_src.startswith(("http://", "https://")):
                     continue
+                if _BOILERPLATE_IMG_RE.search(full_src):
+                    continue
+                if full_src in seen_src:
+                    continue
+                seen_src.add(full_src)
+                to_fetch.append((j, src, img.get("alt", ""), full_src))
 
-                local_filename = await self._download_image(full_src, article_img_dir)
+            # Download all of a page's images concurrently rather than one-by-one
+            # (the sequential round-trips dominated per-page processing time).
+            filenames = await asyncio.gather(
+                *(self._download_image(full_src, article_img_dir)
+                  for (_, _, _, full_src) in to_fetch)
+            )
+
+            for (j, src, alt, full_src), local_filename in zip(to_fetch, filenames):
                 if local_filename:
                     served_url = (
                         f"{settings.media_url_prefix}/{article.id}/{local_filename}"
@@ -527,7 +554,7 @@ class FirecrawlService:
                         original_url=full_src,
                         local_filename=local_filename,
                         local_path=served_url,
-                        alt_text=img.get("alt", ""),
+                        alt_text=alt,
                         sort_order=j,
                     ))
                     # Replace the resolved absolute URL first. Only fall back to
