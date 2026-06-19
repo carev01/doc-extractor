@@ -15,7 +15,6 @@ COPY . .
 
 EXPOSE 8000
 
-# Run migrations then start the server.
-# For Kubernetes, replace this with an init container for the migration step
-# so only one pod runs `alembic upgrade head` per deploy.
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+# Migrations run as a separate step (docker-compose still runs them inline via
+# its own command override; Kubernetes runs them as a Helm pre-upgrade Job).
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

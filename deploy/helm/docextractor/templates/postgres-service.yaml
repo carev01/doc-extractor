@@ -1,0 +1,16 @@
+{{- if .Values.postgres.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "docextractor.postgresServiceName" . }}
+  labels:
+    {{- include "docextractor.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "docextractor.selectorLabels" (dict "ctx" . "component" "postgres") | nindent 4 }}
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+{{- end }}

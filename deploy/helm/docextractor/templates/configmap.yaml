@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  labels:
+    {{- include "docextractor.labels" . | nindent 4 }}
+data:
+  DOCEXTRACTOR_FIRECRAWL_API_URL: {{ .Values.firecrawl.apiUrl | quote }}
+  DOCEXTRACTOR_WEBHOOK_BASE_URL: "http://{{ include "docextractor.backendServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:8000"
+  # pydantic-settings JSON-parses list[str] env values, so this must be a JSON array string.
+  DOCEXTRACTOR_CORS_ORIGINS: {{ printf "[%q%s]" (printf "http://%s" .Values.ingress.host) (ternary (printf ",%q" (printf "https://%s" .Values.ingress.host)) "" .Values.ingress.tls.enabled) | quote }}
+  DOCEXTRACTOR_LLM_FALLBACK_ENABLED: {{ .Values.llm.fallbackEnabled | quote }}
+  DOCEXTRACTOR_LLM_PROVIDER: {{ .Values.llm.provider | quote }}
+  DOCEXTRACTOR_LLM_BASE_URL: {{ .Values.llm.baseUrl | quote }}
+  DOCEXTRACTOR_LLM_MODEL: {{ .Values.llm.model | quote }}

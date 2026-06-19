@@ -1,0 +1,65 @@
+# -- Image settings (ghcr; public packages so no pull secret needed)
+image:
+  backend:
+    repository: ghcr.io/carev01/doc-extractor-backend
+    tag: latest
+  frontend:
+    repository: ghcr.io/carev01/doc-extractor-frontend
+    tag: latest
+  pullPolicy: IfNotPresent
+imagePullSecrets: []   # e.g. [{ name: ghcr-creds }] if packages are private
+
+# -- In-cluster PostgreSQL (set enabled=false to use an external DB)
+postgres:
+  enabled: true
+  image: postgres:16-alpine
+  user: docextractor
+  password: docextractor_dev      # OVERRIDE in values-homelab / --set
+  database: docextractor
+  storageClassName: ""            # "" = cluster default; set your VMware CSI class
+  storageSize: 10Gi
+externalDatabaseUrl: ""           # used only when postgres.enabled=false
+externalDatabaseUrlSync: ""
+
+# -- Shared RWO storage for exports + media (written by worker, served by backend)
+storage:
+  storageClassName: ""            # your VMware CSI (RWO) class; "" = default
+  accessMode: ReadWriteOnce       # RWX later -> ReadWriteMany (then drop worker podAffinity)
+  exportsSize: 5Gi
+  mediaSize: 5Gi
+
+# -- Firecrawl (external, already in the cluster)
+firecrawl:
+  apiUrl: http://firecrawl.k3s.home.lan
+  apiKey: ""                      # OVERRIDE
+
+# -- LLM fallback (off by default)
+llm:
+  fallbackEnabled: false
+  provider: anthropic
+  baseUrl: ""
+  model: ""
+  apiKey: ""
+
+# -- Ingress (Traefik)
+ingress:
+  enabled: true
+  className: traefik
+  host: docextractor.k3s.home.lan
+  tls:
+    enabled: false
+    secretName: docextractor-tls
+
+# -- Replicas (backend/worker pinned to 1 due to RWO; see storage)
+replicas:
+  backend: 1
+  worker: 1
+  scheduler: 1
+  frontend: 1
+
+resources:
+  backend:   { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: "1", memory: 1Gi } }
+  worker:    { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: "1", memory: 1Gi } }
+  scheduler: { requests: { cpu: 50m,  memory: 128Mi }, limits: { cpu: 250m, memory: 256Mi } }
+  frontend:  { requests: { cpu: 25m,  memory: 32Mi },  limits: { cpu: 100m, memory: 128Mi } }
+  postgres:  { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: "1", memory: 1Gi } }

@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-worker
+  labels:
+    {{- include "docextractor.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas.worker }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "docextractor.selectorLabels" (dict "ctx" . "component" "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "docextractor.selectorLabels" (dict "ctx" . "component" "worker") | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "docextractor.selectorLabels" (dict "ctx" . "component" "backend") | nindent 18 }}
+              topologyKey: kubernetes.io/hostname
+      initContainers:
+        # Wait for the backend to be healthy — the backend's init container runs the
+        # DB migrations, so a ready backend implies the schema exists.
+        - name: wait-for-backend
+          image: "{{ .Values.image.backend.repository }}:{{ .Values.image.backend.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - python
+            - -c
+            - |
+              import time, urllib.request
+              url = "http://{{ include "docextractor.backendServiceName" . }}:8000/api/health"
+              while True:
+                  try:
+                      urllib.request.urlopen(url, timeout=3)
+                      break
+                  except Exception as e:
+                      print("waiting for backend:", e, flush=True)
+                      time.sleep(3)
+          resources:
+            {{- toYaml .Values.resources.scheduler | nindent 12 }}
+      containers:
+        - name: worker
+          image: "{{ .Values.image.backend.repository }}:{{ .Values.image.backend.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "app.worker"]
+          envFrom:
+            - configMapRef: { name: {{ .Release.Name }}-config }
+            - secretRef: { name: {{ .Release.Name }}-secret }
+          livenessProbe:
+            exec: { command: ["sh", "-c", "pgrep -f 'app.worker' >/dev/null"] }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.resources.worker | nindent 12 }}
+          volumeMounts:
+            - { name: exports, mountPath: /app/exports }
+            - { name: media, mountPath: /app/media }
+      volumes:
+        - name: exports
+          persistentVolumeClaim: { claimName: {{ .Release.Name }}-exports }
+        - name: media
+          persistentVolumeClaim: { claimName: {{ .Release.Name }}-media }

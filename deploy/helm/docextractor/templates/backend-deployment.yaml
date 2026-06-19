@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-backend
+  labels:
+    {{- include "docextractor.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas.backend }}
+  strategy:
+    type: Recreate   # RWO volume can attach to only one pod-set at a time
+  selector:
+    matchLabels:
+      {{- include "docextractor.selectorLabels" (dict "ctx" . "component" "backend") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "docextractor.selectorLabels" (dict "ctx" . "component" "backend") | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        # Runs Alembic before the app starts. If Postgres is not yet reachable the
+        # connection fails, the init container exits non-zero, and the kubelet retries
+        # it (with backoff) until Postgres is ready — so this needs no explicit wait
+        # loop and no Helm hook ordering. The app's startup create_all() is a no-op
+        # once Alembic has built the schema (checkfirst).
+        - name: migrate
+          image: "{{ .Values.image.backend.repository }}:{{ .Values.image.backend.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef: { name: {{ .Release.Name }}-config }
+            - secretRef: { name: {{ .Release.Name }}-secret }
+          resources:
+            {{- toYaml .Values.resources.scheduler | nindent 12 }}
+      containers:
+        - name: backend
+          image: "{{ .Values.image.backend.repository }}:{{ .Values.image.backend.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          envFrom:
+            - configMapRef: { name: {{ .Release.Name }}-config }
+            - secretRef: { name: {{ .Release.Name }}-secret }
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet: { path: /api/health, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/health, port: 8000 }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.resources.backend | nindent 12 }}
+          volumeMounts:
+            - { name: exports, mountPath: /app/exports }
+            - { name: media, mountPath: /app/media }
+      volumes:
+        - name: exports
+          persistentVolumeClaim: { claimName: {{ .Release.Name }}-exports }
+        - name: media
+          persistentVolumeClaim: { claimName: {{ .Release.Name }}-media }
