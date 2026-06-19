@@ -58,6 +58,25 @@ async def test_builds_hierarchical_toc_from_data_files():
 
 
 @pytest.mark.asyncio
+async def test_resolves_root_for_default_htm_at_help_root():
+    """WebHelp/TriPane entry (default.htm) sits AT the help root, not in Content/.
+
+    The data files must be found via the document's own directory (./), not its
+    parent (../). Regression for Arcserve-style WebHelp finding 0 pages.
+    """
+    root = "https://h.example.com/Bookshelf/HTML/SolG/default.htm"
+    sol = "https://h.example.com/Bookshelf/HTML/SolG/"
+    raw = {
+        sol + "Data/HelpSystem.xml": '<WebHelpSystem Toc="Data/Tocs/G.js" />',
+        sol + "Data/Tocs/G.js": "define({numchunks:1,prefix:'G_Chunk',tree:{n:[{i:7,c:0}]}})",
+        sol + "Data/Tocs/G_Chunk0.js": "define({'/Topic_A.htm':{i:[7],t:['Topic A'],b:['']}})",
+    }
+    scraper = FakeScraper({}, raw_by_url=raw)
+    toc = await flare_helpsystem_toc(scraper, root)
+    assert [(e.title, e.url) for e in toc] == [("Topic A", sol + "Topic_A.htm")]
+
+
+@pytest.mark.asyncio
 async def test_returns_empty_when_data_files_absent():
     # No raw files served -> get_raw raises -> graceful [] so callers can fall back.
     scraper = FakeScraper({}, raw_by_url={})

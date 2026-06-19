@@ -211,9 +211,18 @@ async def flare_helpsystem_toc(scraper, root_url: str) -> list[TocEntry]:
     Returns [] when the data files aren't web-served (older/server-side Flare
     outputs), so callers can fall back to parsing the rendered nav.
     """
-    # Help-system root = parent of the Content/ directory holding the topic.
-    help_root = urljoin(root_url, "../")
-    hs_xml = await _try_get_raw(scraper, urljoin(help_root, "Data/HelpSystem.xml"))
+    # Locate the help-system root, which holds Data/HelpSystem.xml. Layout varies:
+    #   - HTML5 Side Nav: the topic is Content/Foo.htm, so the root is one level up.
+    #   - WebHelp/TriPane: the entry is default.htm sitting AT the root.
+    # Try the document's own directory first, then its parent.
+    help_root = None
+    hs_xml = None
+    for rel in ("./", "../"):
+        candidate = urljoin(root_url, rel)
+        xml = await _try_get_raw(scraper, urljoin(candidate, "Data/HelpSystem.xml"))
+        if xml:
+            help_root, hs_xml = candidate, xml
+            break
     if not hs_xml:
         return []
     m = re.search(r'\bToc="([^"]+)"', hs_xml)
