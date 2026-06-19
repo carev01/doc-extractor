@@ -20,14 +20,15 @@ HELPSYSTEM_XML = (
 MASTER_TOC = (
     "define({numchunks:1,prefix:'OnlineMasterTOC_Chunk',"
     "chunkstart:['/Content/a.htm'],"
-    "tree:{n:[{i:0,c:0},{i:1,c:0,n:[{i:2,c:0},{i:3,c:0}]}]}})"
+    "tree:{n:[{i:0,c:0},{i:1,c:0,n:[{i:2,c:0},{i:3,c:0}]},{i:4,c:0}]}})"
 )
 CHUNK0 = (
     "define({"
     "'/Content/a.htm':{i:[0],t:['Alpha'],b:['']},"
     "'/Content/b.htm':{i:[1],t:['Beta: the second'],b:['']},"
     "'/Content/b1.htm':{i:[2],t:['Beta One'],b:['']},"
-    "'/Content/b2.htm':{i:[3],t:['What\\'s next'],b:['']}"
+    "'/Content/b2.htm':{i:[3],t:['What\\'s next'],b:['']},"
+    "'/Content/b3.htm':{i:[4],t:['Datto\\u0027s infra'],b:['']}"
     "})"
 )
 
@@ -48,7 +49,8 @@ async def test_builds_hierarchical_toc_from_data_files():
         ("Alpha", 0, True, HELP + "Content/a.htm"),
         ("Beta: the second", 0, False, HELP + "Content/b.htm"),  # has children -> section
         ("Beta One", 1, True, HELP + "Content/b1.htm"),
-        ("What's next", 1, True, HELP + "Content/b2.htm"),       # JS-escaped apostrophe
+        ("What's next", 1, True, HELP + "Content/b2.htm"),       # JS-escaped apostrophe (\')
+        ("Datto's infra", 0, True, HELP + "Content/b3.htm"),     # \\uXXXX-escaped apostrophe
     ]
     # children are linked to their parent
     assert toc[2].parent_url == HELP + "Content/b.htm"

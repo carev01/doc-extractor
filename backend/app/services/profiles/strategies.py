@@ -140,7 +140,14 @@ async def _try_get_raw(scraper, url: str) -> str | None:
 
 
 def _js_unescape(s: str) -> str:
-    return s.replace("\\'", "'").replace('\\"', '"').replace("\\\\", "\\")
+    """Decode JS string-literal escapes (\\uXXXX, \\', \\", \\\\, \\n, …) in one pass."""
+    def repl(m: "re.Match") -> str:
+        esc = m.group(1)
+        if esc[0] == "u":
+            return chr(int(esc[1:], 16))
+        return {"n": "\n", "t": "\t", "r": "\r"}.get(esc, esc)
+
+    return re.sub(r"\\(u[0-9a-fA-F]{4}|.)", repl, s)
 
 
 def _parse_flare_tree(master: str) -> dict | None:
