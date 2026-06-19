@@ -55,6 +55,13 @@ class IntercomProfile:
 
     def content_config(self) -> dict:
         return {
+            # No includeTags (onlyMainContent heuristic), so drop Intercom Help
+            # Center chrome explicitly: the article reaction/feedback widget and
+            # the related-articles block. No-op when absent.
+            "excludeTags": [
+                ".intercom-interblocks-article-reactions",
+                ".intercom-interblocks-related-articles",
+            ],
             "onlyMainContent": True,
             "waitFor": 1500,
         }

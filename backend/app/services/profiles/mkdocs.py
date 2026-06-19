@@ -35,6 +35,10 @@ class MkDocsProfile:
     def content_config(self) -> dict:
         return {
             "includeTags": ["article.md-content__inner"],
+            # Material for MkDocs renders its "Was this page helpful?" widget
+            # (.md-feedback) and the source/edit buttons INSIDE the article body,
+            # so they must be excluded explicitly (includeTags alone keeps them).
+            "excludeTags": [".md-feedback", ".md-source-file", ".md-content__button"],
             "onlyMainContent": False,
             "waitFor": 1500,
         }

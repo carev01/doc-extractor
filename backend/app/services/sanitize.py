@@ -1,9 +1,11 @@
 """Post-process sanitisation of scraped article markdown.
 
-Removes recurring site chrome/boilerplate that adds no documentation value —
-"Was this article helpful?" feedback widgets, back-to-top anchors, copyright
-footers, feedback-link tables, leading marketing banners — while staying
-conservative:
+Removes recurring site chrome/boilerplate that adds no documentation value,
+across documentation platforms — "Was this page helpful?" / "Did this answer
+your question?" feedback widgets and their Yes/No / vote-tally / "Thanks for
+your feedback" responses, "Edit this page" / "Edit on GitHub" links, back-to-top
+anchors, copyright footers, feedback-link tables, and leading marketing banners
+— while staying conservative:
 
 * Rules are anchored to the document head/tail and match specific boilerplate
   signatures, never generic prose.
@@ -29,12 +31,38 @@ _BACK_TO_TOP_RE = re.compile(r"^\s*\[\^?\]\([^)]*#Top\)\s*$", re.IGNORECASE)
 
 # A standalone "Was this article helpful?" / "Is this useful?" widget heading.
 _HELPFUL_RE = re.compile(
-    r"^\s*\**\s*(?:was|is)\s+this\s+(?:article\s+)?(?:helpful|useful)\s*\?*\s*\**\s*$",
+    r"^\s*\**\s*(?:"
+    # "Was this {page|article|doc|section|information} helpful/useful?"
+    r"(?:was|is)\s+this\s+(?:\w+\s+)?(?:helpful|useful)"
+    # "Did this answer your question?"
+    r"|did\s+this\s+(?:\w+\s+)?answer\s+your\s+question"
+    # "Did you find this/it helpful/useful?"
+    r"|did\s+you\s+find\s+(?:this|it)\s+(?:\w+\s+)?(?:helpful|useful)"
+    r")\s*\?*\s*\**\s*$",
     re.IGNORECASE,
 )
 
-# The Yes/No answer line that follows the widget (NBSP-separated in Flare).
-_YESNO_RE = re.compile(r"^\s*(?:yes\s*no|yes|no)\s*$", re.IGNORECASE)
+# The answer/response lines that accompany the widget: "Yes No", thumbs, or the
+# post-vote "Thanks for your feedback!" toast.
+_YESNO_RE = re.compile(r"^\s*(?:yes\s*/?\s*no|yes|no|👍\s*👎)\s*$", re.IGNORECASE)
+_FEEDBACK_THANKS_RE = re.compile(
+    r"^\s*\**\s*thanks?\s+for\s+(?:your\s+)?feedback!?\s*\**\s*$", re.IGNORECASE
+)
+
+# Vote tallies help centres show: "12 out of 15 found this helpful",
+# "3 people found this useful", "80% found this helpful".
+_FOUND_HELPFUL_RE = re.compile(
+    r"^\s*\**\s*\d+%?(?:\s+(?:out\s+)?of\s+\d+)?\s+(?:people\s+|users\s+)?"
+    r"found\s+this\s+(?:article\s+|page\s+)?(?:helpful|useful)\b.*$",
+    re.IGNORECASE,
+)
+
+# A standalone "Edit this page" / "Edit on GitHub" markdown link (Docusaurus,
+# GitBook, mkdocs) — chrome, never documentation content.
+_EDIT_LINK_RE = re.compile(
+    r"^\s*\[[^\]]*\bedit\s+(?:this\s+)?(?:page|article|on\s+github)[^\]]*\]\(\S+\)\s*$",
+    re.IGNORECASE,
+)
 
 # Copyright footer line (kept tail-anchored — see _strip_copyright_footer).
 # An optional leading "|" handles landing pages where Flare renders the footer
@@ -67,11 +95,15 @@ def _strip_helpful_widget(lines: list[str]) -> list[str]:
     i = 0
     while i < len(lines):
         if _HELPFUL_RE.match(_norm(lines[i])):
-            # Drop the heading, then a nearby Yes/No answer line (skipping blanks).
+            # Drop the heading, then a nearby Yes/No (or thanks-for-feedback)
+            # answer line if present, skipping intervening blanks.
             j = i + 1
             while j < len(lines) and not _norm(lines[j]).strip():
                 j += 1
-            if j < len(lines) and _YESNO_RE.match(_norm(lines[j])):
+            if j < len(lines) and (
+                _YESNO_RE.match(_norm(lines[j]))
+                or _FEEDBACK_THANKS_RE.match(_norm(lines[j]))
+            ):
                 i = j + 1
                 continue
             i += 1
@@ -79,6 +111,19 @@ def _strip_helpful_widget(lines: list[str]) -> list[str]:
         out.append(lines[i])
         i += 1
     return out
+
+
+def _strip_vote_tally(lines: list[str]) -> list[str]:
+    """Drop standalone vote-tally / post-vote toast lines (full-line matches)."""
+    return [
+        ln for ln in lines
+        if not (_FOUND_HELPFUL_RE.match(_norm(ln)) or _FEEDBACK_THANKS_RE.match(_norm(ln)))
+    ]
+
+
+def _strip_edit_links(lines: list[str]) -> list[str]:
+    """Drop standalone 'Edit this page' / 'Edit on GitHub' chrome links."""
+    return [ln for ln in lines if not _EDIT_LINK_RE.match(_norm(ln))]
 
 
 def _strip_copyright_footer(lines: list[str]) -> list[str]:
@@ -146,6 +191,8 @@ _RULES = (
     _strip_lead_promo_banner,
     _strip_feedback_table,
     _strip_helpful_widget,
+    _strip_vote_tally,
+    _strip_edit_links,
     _strip_back_to_top,
     _strip_copyright_footer,
 )

@@ -130,6 +130,56 @@ def test_real_table_above_footer_is_preserved():
     assert "Retention" in out
 
 
+def test_removes_helpful_widget_variants():
+    """Other platforms phrase the feedback widget differently."""
+    for heading, answer in [
+        ("Was this page helpful?", "Yes No"),
+        ("Was this article helpful?", "Yes / No"),
+        ("Did this answer your question?", "Yes No"),
+        ("Did you find this helpful?", "👍 👎"),
+        ("**Was this doc helpful?**", "Thanks for your feedback!"),
+    ]:
+        md = f"Title\n=====\n\nReal content here.\n\n{heading}\n\n{answer}\n"
+        out = sanitize_markdown(md)
+        assert "Real content here." in out
+        assert "helpful" not in out.lower() and "answer your question" not in out.lower()
+
+
+def test_removes_vote_tally_and_thanks():
+    md = (
+        "Guide\n=====\n\nUseful body.\n\n"
+        "Was this helpful?\n\n"
+        "12 out of 15 found this helpful\n\n"
+        "Thanks for your feedback!\n"
+    )
+    out = sanitize_markdown(md)
+    assert "Useful body." in out
+    assert "found this helpful" not in out
+    assert "Thanks for your feedback" not in out
+
+
+def test_removes_edit_this_page_links():
+    md = (
+        "Topic\n=====\n\nReal documentation.\n\n"
+        "[Edit this page](https://github.com/org/repo/edit/main/docs/topic.md)\n"
+    )
+    out = sanitize_markdown(md)
+    assert "Real documentation." in out
+    assert "Edit this page" not in out
+
+
+def test_prose_mentioning_helpful_is_kept():
+    """A real sentence that merely contains 'helpful' must not be dropped."""
+    md = (
+        "Tips\n====\n\n"
+        "This setting is helpful when you have many tenants to manage.\n"
+        "Was this configuration applied? Check the status page.\n"
+    )
+    out = sanitize_markdown(md)
+    assert "helpful when you have many tenants" in out
+    assert "Was this configuration applied?" in out
+
+
 def test_idempotent():
     once = sanitize_markdown(DATTO_TAIL)
     twice = sanitize_markdown(once)

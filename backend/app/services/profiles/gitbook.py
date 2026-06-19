@@ -101,6 +101,13 @@ class GitBookProfile:
 
     def content_config(self) -> dict:
         return {
+            # No includeTags (onlyMainContent heuristic), so drop GitBook's
+            # in-page chrome explicitly: the "Was this helpful?" widget and the
+            # prev/next page footer navigation. No-op when absent.
+            "excludeTags": [
+                "[data-testid='page-feedback']",
+                "[data-testid='page-footer-navigation']",
+            ],
             "onlyMainContent": True,
             "waitFor": 3000,
         }
