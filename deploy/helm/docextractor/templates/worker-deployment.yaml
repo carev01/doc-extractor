@@ -26,6 +26,27 @@ spec:
                 matchLabels:
                   {{- include "docextractor.selectorLabels" (dict "ctx" . "component" "backend") | nindent 18 }}
               topologyKey: kubernetes.io/hostname
+      initContainers:
+        # Wait for the backend to be healthy — the backend's init container runs the
+        # DB migrations, so a ready backend implies the schema exists.
+        - name: wait-for-backend
+          image: "{{ .Values.image.backend.repository }}:{{ .Values.image.backend.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - python
+            - -c
+            - |
+              import time, urllib.request
+              url = "http://{{ include "docextractor.backendServiceName" . }}:8000/api/health"
+              while True:
+                  try:
+                      urllib.request.urlopen(url, timeout=3)
+                      break
+                  except Exception as e:
+                      print("waiting for backend:", e, flush=True)
+                      time.sleep(3)
+          resources:
+            {{- toYaml .Values.resources.scheduler | nindent 12 }}
       containers:
         - name: worker
           image: "{{ .Values.image.backend.repository }}:{{ .Values.image.backend.tag }}"

@@ -12,4 +12,6 @@ Check status:
   kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }}
   kubectl logs deploy/{{ .Release.Name }}-worker
 
-Migrations ran via the pre-upgrade Job {{ .Release.Name }}-migrate.
+Migrations run automatically in the backend pod's `migrate` init container
+(`alembic upgrade head`) before the app starts:
+  kubectl logs deploy/{{ .Release.Name }}-backend -c migrate

@@ -28,7 +28,10 @@ Add the host to DNS / `/etc/hosts` → the Traefik ingress IP:
   (podAffinity) so they share the `exports`/`media` volumes. To scale them, switch
   to an RWX StorageClass (`--set storage.accessMode=ReadWriteMany --set storage.storageClassName=<rwx>`)
   and the co-location is no longer required.
-- Migrations run automatically via the `*-migrate` pre-upgrade hook Job.
+- Migrations run automatically in the backend pod's `migrate` init container
+  (`alembic upgrade head`) before the app container starts. If Postgres is not yet
+  reachable the init container retries until it is, so no install ordering is required.
+  Inspect with `kubectl logs deploy/<release>-backend -c migrate`.
 - Enable the LLM fallback with `--set llm.fallbackEnabled=true --set llm.provider=openai
   --set llm.apiKey=... --set llm.model=... [--set llm.baseUrl=...]`.
 - Enable TLS later with `--set ingress.tls.enabled=true` (provide `ingress.tls.secretName`).
@@ -43,14 +46,8 @@ curl -H 'Host: docextractor.k3s.home.lan' http://<traefik-ip>/api/health
 ```bash
 helm uninstall docextractor --namespace docextractor
 ```
-> **Note:** The ConfigMap (`docextractor-config`) and Secret (`docextractor-secret`) are
-> Helm hook resources (needed so the pre-install migration Job has its env before the
-> main Deployments start). Because of this, `helm uninstall` leaves them behind.
-> Clean them up manually if you are removing the namespace:
-> ```bash
-> kubectl -n docextractor delete configmap docextractor-config docextractor-frontend-nginx \
->   secret docextractor-secret
-> # or simply:
-> kubectl delete namespace docextractor
-> ```
-> A re-install handles them automatically via the `before-hook-creation` delete policy.
+> **Note:** `helm uninstall` deletes the chart's resources, **including** the `docextractor-exports`
+> and `docextractor-media` PVCs (their contents are lost). The Postgres `data-*` PVC is created from
+> the StatefulSet `volumeClaimTemplate`, which Helm never deletes, so the database survives an
+> uninstall/re-install. To reclaim it too, delete the PVC manually or `kubectl delete namespace
+> docextractor`.

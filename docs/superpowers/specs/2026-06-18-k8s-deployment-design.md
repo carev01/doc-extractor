@@ -24,7 +24,7 @@ Shared `exports/` + `media/` are written by the **worker** and served by the **b
 | Images | **ghcr.io/carev01/doc-extractor-{backend,frontend}**, built+pushed by a **GitHub Actions** workflow. Repo public → anonymous pulls (no imagePullSecret by default). |
 | Ingress | **Traefik, HTTP** on `docextractor.k3s.home.lan`; `tls` is a values-toggle for later. |
 | Secrets | Plain k8s **Secret** driven by values (swappable for sealed/external-secrets later — noted, not built). |
-| Migrations | **Helm pre-install/pre-upgrade hook Job** runs `alembic upgrade head` once per deploy. |
+| Migrations | **Backend `migrate` init container** runs `alembic upgrade head` before the app container starts (see Migrations §, amended). |
 
 ## Chart structure
 
@@ -51,7 +51,6 @@ deploy/
       ingress.yaml             # Traefik, host, tls toggle
       pvc-exports.yaml         # RWO
       pvc-media.yaml           # RWO
-      migrate-job.yaml         # Helm hook: alembic upgrade head
       NOTES.txt
   rendered/                    # `helm template -f values-homelab.yaml` output (committed reference)
   README.md                    # install/upgrade runbook
@@ -79,7 +78,21 @@ deploy/
 
 ## Migrations
 
-`migrate-job.yaml` — a Job annotated `helm.sh/hook: pre-install,pre-upgrade` + `hook-weight` + `hook-delete-policy: before-hook-creation,hook-succeeded`. Uses the backend image, the same env (needs `DOCEXTRACTOR_DATABASE_URL_SYNC`), command `alembic upgrade head`. Ensures exactly one migration run per deploy before the app pods roll. Backend Dockerfile `CMD` is changed to uvicorn-only.
+> **Amended during implementation.** The original plan used a Helm `pre-install,pre-upgrade` hook
+> Job. That fails a *fresh* install: hook resources run before non-hook resources, so the migrate
+> Job runs before the (non-hook) Postgres StatefulSet exists and aborts the install. Rather than make
+> Postgres a hook (which breaks upgrade/uninstall lifecycle), migrations moved into a backend pod
+> **init container**.
+
+The backend Deployment has an init container `migrate` (backend image, same `envFrom` config+secret,
+command `alembic upgrade head`) that runs before the `backend` container. If Postgres is not yet
+reachable the init container exits non-zero and the kubelet retries it with backoff until Postgres is
+ready — so no Helm hook ordering or explicit wait loop is needed, on either install or upgrade. The
+app's startup `create_all()` is a no-op once Alembic has built the schema (`checkfirst`). The worker
+and scheduler Deployments get a `wait-for-backend` init container (HTTP-polls the backend
+`/api/health`) so they only start once the schema exists. With no hook resources left, the ConfigMap
+and Secret are plain release resources (cleaned up on `helm uninstall`). Backend Dockerfile `CMD` is
+uvicorn-only.
 
 ## Images & CI
 

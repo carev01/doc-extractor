@@ -19,6 +19,21 @@ spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets: {{- toYaml . | nindent 8 }}
       {{- end }}
+      initContainers:
+        # Runs Alembic before the app starts. If Postgres is not yet reachable the
+        # connection fails, the init container exits non-zero, and the kubelet retries
+        # it (with backoff) until Postgres is ready — so this needs no explicit wait
+        # loop and no Helm hook ordering. The app's startup create_all() is a no-op
+        # once Alembic has built the schema (checkfirst).
+        - name: migrate
+          image: "{{ .Values.image.backend.repository }}:{{ .Values.image.backend.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef: { name: {{ .Release.Name }}-config }
+            - secretRef: { name: {{ .Release.Name }}-secret }
+          resources:
+            {{- toYaml .Values.resources.scheduler | nindent 12 }}
       containers:
         - name: backend
           image: "{{ .Values.image.backend.repository }}:{{ .Values.image.backend.tag }}"
