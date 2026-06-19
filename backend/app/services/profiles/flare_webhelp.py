@@ -40,12 +40,13 @@ STATIC / RENDER LIMITATION — lazy TOC nesting:
     is a known best-effort limitation for this frame-based skin.
 
 CONTENT SCOPING:
-    Topic pages must be scraped directly (never the frameset shell).  We follow
-    the same config shape as the HTML5 skin — ``includeTags:
-    [data-mc-content-body]`` — even though the older WebHelp topics on the
-    reference host render a bare ``<body>`` without that attribute; in that case
-    ``includeTags`` is a no-op and Firecrawl returns the page body, which is the
-    desired best-effort behaviour.
+    Topic pages must be scraped directly (never the frameset shell).  Older
+    WebHelp/TriPane topics wrap their body in ``<div id="mc-main-content">``
+    rather than the HTML5 skin's ``[data-mc-content-body]`` attribute — and when
+    ``includeTags`` matches nothing, Firecrawl returns *empty* content (not the
+    page body), so a single selector silently drops every page.  We therefore
+    include both selectors; they don't co-occur on a given topic, so whichever
+    exists is the one that's scoped.
 """
 
 from urllib.parse import urljoin
@@ -137,8 +138,12 @@ class FlareWebHelpProfile:
         return urljoin(help_root, topic_path)
 
     def content_config(self) -> dict:
+        # WebHelp/TriPane topics scope their body in #mc-main-content; the HTML5
+        # skin uses [data-mc-content-body]. They don't co-occur on one topic, so
+        # listing both lets Firecrawl scope whichever exists. (A non-matching
+        # includeTags yields empty content, so a single selector drops pages.)
         return {
-            "includeTags": ["[data-mc-content-body]"],
+            "includeTags": ["[data-mc-content-body]", "#mc-main-content"],
             "onlyMainContent": False,
             "waitFor": 1500,
         }

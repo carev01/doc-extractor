@@ -19,7 +19,7 @@ Key invariants verified:
   - build_toc() parses the inline tree into an ordered, non-empty TOC with
     clean titles, absolute topic URLs (hash + ?TocPath stripped), and
     leaf/section classification.
-  - content_config() targets [data-mc-content-body].
+  - content_config() targets [data-mc-content-body] and #mc-main-content.
 """
 
 import os
@@ -95,7 +95,10 @@ def test_detect_rejects_gitbook():
 
 def test_content_config_include_tags():
     cfg = FlareWebHelpProfile().content_config()
-    assert cfg["includeTags"] == ["[data-mc-content-body]"]
+    # Both the HTML5 attribute and the WebHelp/TriPane #mc-main-content selector,
+    # so Firecrawl scopes whichever the topic actually uses (non-matching
+    # includeTags returns empty content, which would drop the page).
+    assert cfg["includeTags"] == ["[data-mc-content-body]", "#mc-main-content"]
 
 
 def test_content_config_only_main_content_false():
