@@ -37,7 +37,9 @@ _HELPFUL_RE = re.compile(
 _YESNO_RE = re.compile(r"^\s*(?:yes\s*no|yes|no)\s*$", re.IGNORECASE)
 
 # Copyright footer line (kept tail-anchored — see _strip_copyright_footer).
-_COPYRIGHT_RE = re.compile(r"^\s*Copyright\s*(?:©|\(c\))", re.IGNORECASE)
+# An optional leading "|" handles landing pages where Flare renders the footer
+# inside a markdown table cell ("| Copyright © … |") rather than as plain text.
+_COPYRIGHT_RE = re.compile(r"^\s*\|?\s*Copyright\s*(?:©|\(c\))", re.IGNORECASE)
 
 # Leading marketing banner signatures.
 _PROMO_RE = re.compile(r"product innovations are live|\[Explore now\]\(", re.IGNORECASE)
@@ -89,7 +91,15 @@ def _strip_copyright_footer(lines: list[str]) -> list[str]:
     start = max(0, len(lines) - tail_window)
     for idx in range(len(lines) - 1, start - 1, -1):
         if _COPYRIGHT_RE.match(_norm(lines[idx])):
-            return lines[:idx]
+            cut = idx
+            # When the footer is a markdown table ("| Copyright © … |"), also
+            # drop the contiguous table scaffolding above it (the "|   |   |"
+            # header and "| --- |" separator) so no empty table is left behind.
+            # Stops at the first non-table line, so a real table separated by a
+            # blank line is never consumed.
+            while cut - 1 >= 0 and _TABLE_LINE_RE.match(lines[cut - 1]):
+                cut -= 1
+            return lines[:cut]
     return lines
 
 
