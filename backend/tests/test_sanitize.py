@@ -84,6 +84,52 @@ def test_removes_leading_promo_banner():
     assert "Filter by any of the following categories" in out
 
 
+def test_removes_table_form_copyright_footer():
+    """Landing/home pages render the footer inside a markdown table cell."""
+    md = (
+        "Welcome to Datto SaaS Protection\n"
+        "================================\n"
+        "\n"
+        "The Online Help provides the information you need.\n"
+        "\n"
+        "[Datto SaaS Protection Release Notes](https://saasprotection.datto.com/help/Content/release-landing/saas-protection-rn.htm)\n"
+        "\n"
+        "|     |     |\n"
+        "| --- | --- | \n"
+        "| Copyright © 2026 Kaseya \\| [Privacy Policy](https://www.kaseya.com/legal/kaseya-privacy-statement/)<br> \\| [Cookies Settings](https://x#)<br> \\| [Website Terms of Use](https://www.kaseya.com/legal/website-terms-of-use/) |     |\n"
+    )
+    out = sanitize_markdown(md)
+    assert "Copyright ©" not in out
+    assert "Website Terms of Use" not in out
+    assert "Privacy Policy" not in out
+    # The whole footer table is gone — no dangling empty table rows.
+    assert "| --- |" not in out
+    assert "|     |     |" not in out
+    # Real content above the footer is preserved.
+    assert "Welcome to Datto SaaS Protection" in out
+    assert "Release Notes]" in out
+
+
+def test_real_table_above_footer_is_preserved():
+    """A genuine data table separated from the footer must not be consumed."""
+    md = (
+        "Specs\n"
+        "=====\n"
+        "\n"
+        "| Feature | Value |\n"
+        "| --- | --- |\n"
+        "| Retention | 1 year |\n"
+        "\n"
+        "|     |     |\n"
+        "| --- | --- |\n"
+        "| Copyright © 2026 Kaseya \\| [Privacy Policy](https://x) |     |\n"
+    )
+    out = sanitize_markdown(md)
+    assert "Copyright ©" not in out
+    assert "| Feature | Value |" in out
+    assert "Retention" in out
+
+
 def test_idempotent():
     once = sanitize_markdown(DATTO_TAIL)
     twice = sanitize_markdown(once)
