@@ -645,44 +645,53 @@ class FirecrawlService:
                     processed_urls.add(url)
                     continue
 
-                # Retry empty-content responses individually (preserves changeTracking)
-                if not markdown.strip():
-                    logger.warning(
-                        "Empty content for %s from batch — retrying individually", url
-                    )
-                    for attempt in range(self.EMPTY_CONTENT_RETRIES):
-                        await asyncio.sleep(self.EMPTY_CONTENT_RETRY_DELAY)
-                        markdown, html, change_status, diff_text = await self._scrape_article(
-                            url, tag=batch_tag, content_config=content_config
-                        )
-                        if markdown.strip():
-                            break
+                # Process each page defensively: a single page's failure (e.g. a
+                # Firecrawl 500 on an individual retry, or a parse/DB error) must not
+                # abort the whole run after other pages have succeeded. Mark it
+                # processed regardless so it isn't retried into the same failure.
+                try:
+                    # Retry empty-content responses individually (preserves changeTracking)
+                    if not markdown.strip():
                         logger.warning(
-                            "Still empty for %s (retry %d/%d)",
-                            url, attempt + 1, self.EMPTY_CONTENT_RETRIES,
+                            "Empty content for %s from batch — retrying individually", url
                         )
+                        for attempt in range(self.EMPTY_CONTENT_RETRIES):
+                            await asyncio.sleep(self.EMPTY_CONTENT_RETRY_DELAY)
+                            markdown, html, change_status, diff_text = await self._scrape_article(
+                                url, tag=batch_tag, content_config=content_config
+                            )
+                            if markdown.strip():
+                                break
+                            logger.warning(
+                                "Still empty for %s (retry %d/%d)",
+                                url, attempt + 1, self.EMPTY_CONTENT_RETRIES,
+                            )
 
-                if change_status:
-                    logger.info(
-                        "[%d/%d] %s (%s): %s",
-                        completed, total, url, change_status, entry["title"],
+                    if change_status:
+                        logger.info(
+                            "[%d/%d] %s (%s): %s",
+                            completed, total, url, change_status, entry["title"],
+                        )
+                    else:
+                        logger.info("[%d/%d] Processing: %s", completed, total, url)
+                    await self.process_article_result(
+                        db=db,
+                        source_id=source_id,
+                        run_id=run_id,
+                        url=url,
+                        markdown_content=markdown,
+                        doc_html=html,
+                        toc_entry_id=entry.get("toc_entry_id"),
+                        sort_order=entry.get("sort_order", 0),
+                        title=entry["title"],
+                        change_status=change_status,
+                        diff_text=diff_text,
                     )
-                else:
-                    logger.info("[%d/%d] Processing: %s", completed, total, url)
-                await self.process_article_result(
-                    db=db,
-                    source_id=source_id,
-                    run_id=run_id,
-                    url=url,
-                    markdown_content=markdown,
-                    doc_html=html,
-                    toc_entry_id=entry.get("toc_entry_id"),
-                    sort_order=entry.get("sort_order", 0),
-                    title=entry["title"],
-                    change_status=change_status,
-                    diff_text=diff_text,
-                )
-                processed_urls.add(url)
+                except Exception as exc:
+                    logger.warning("Failed to process %s — skipping: %s", url, exc)
+                    await db.rollback()
+                finally:
+                    processed_urls.add(url)
 
             skip += len(pages)
 
