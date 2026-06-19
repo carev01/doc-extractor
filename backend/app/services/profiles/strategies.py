@@ -153,8 +153,11 @@ def _js_unescape(s: str) -> str:
 def _parse_flare_tree(master: str) -> dict | None:
     """Extract the numeric ``tree:{...}`` object from a Flare master TOC.
 
-    The tree holds only integers and the keys i/c/n (no strings), so it can be
-    safely JSON-ified by quoting those keys.
+    Nodes use bare keys — ``i`` (index), ``c`` (chunk), ``n`` (children) plus
+    build-specific extras some Flare versions add (``w``, and ``f`` whose value
+    is a single-quoted string like ``'_self'``). We JSON-ify by converting
+    single-quoted string values to double-quoted and quoting every bare key; the
+    walk only reads i/c/n, so the extras are harmless once it parses.
     """
     i = master.find("tree:")
     if i == -1:
@@ -174,29 +177,41 @@ def _parse_flare_tree(master: str) -> dict | None:
                 break
     if blob is None:
         return None
-    jsonish = re.sub(r'([{,\[])\s*([icn])\s*:', r'\1"\2":', blob)
+    def _to_json_str(m: "re.Match") -> str:
+        s = _js_unescape(m.group(1))
+        return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    # JS → JSON: single-quoted string values → double-quoted, then quote bare keys.
+    jsonish = re.sub(r"'((?:[^'\\]|\\.)*)'", _to_json_str, blob)
+    jsonish = re.sub(r'([{,\[])\s*([A-Za-z_]\w*)\s*:', r'\1"\2":', jsonish)
     try:
         return json.loads(jsonish)
     except (ValueError, TypeError):
         return None
 
 
-def _parse_flare_chunk(text: str) -> dict[int, tuple[str, str]]:
-    """Parse a Flare TOC chunk: ``'<href>':{i:[idx,...],t:['<title>'],...}``.
+_CHUNK_ENTRY_RE = re.compile(
+    r"'((?:[^'\\]|\\.)*)'\s*:\s*\{i:\[([\d,\s]+)\]\s*,\s*"
+    r"t:\[((?:'(?:[^'\\]|\\.)*'\s*,?\s*)+)\]"
+)
+_CHUNK_TITLE_RE = re.compile(r"'((?:[^'\\]|\\.)*)'")
 
-    Returns {tree_index: (href, title)}.
+
+def _parse_flare_chunk(text: str) -> dict[int, tuple[str, str]]:
+    """Parse a Flare TOC chunk: ``'<href>':{i:[idx,...],t:['<title>',...],...}``.
+
+    A page that appears at several TOC positions carries parallel index/title
+    lists (``i:[679,724],t:['A','B']``), so each index maps to its matching
+    title. Returns {tree_index: (href, title)}.
     """
     out: dict[int, tuple[str, str]] = {}
-    pat = re.compile(
-        r"'((?:[^'\\]|\\.)*)'\s*:\s*\{i:\[([\d,\s]+)\]\s*,\s*t:\['((?:[^'\\]|\\.)*)'\]"
-    )
-    for m in pat.finditer(text):
+    for m in _CHUNK_ENTRY_RE.finditer(text):
         href = _js_unescape(m.group(1))
-        title = _js_unescape(m.group(3))
-        for idx in m.group(2).split(","):
-            idx = idx.strip()
-            if idx.isdigit():
-                out[int(idx)] = (href, title)
+        indices = [int(x) for x in m.group(2).split(",") if x.strip().isdigit()]
+        titles = [_js_unescape(t) for t in _CHUNK_TITLE_RE.findall(m.group(3))]
+        for k, idx in enumerate(indices):
+            title = titles[k] if k < len(titles) else (titles[0] if titles else "")
+            out[idx] = (href, title)
     return out
 
 
@@ -212,13 +227,24 @@ async def flare_helpsystem_toc(scraper, root_url: str) -> list[TocEntry]:
     outputs), so callers can fall back to parsing the rendered nav.
     """
     # Locate the help-system root, which holds Data/HelpSystem.xml. Layout varies:
-    #   - HTML5 Side Nav: the topic is Content/Foo.htm, so the root is one level up.
+    #   - HTML5 Side Nav: topics live under <root>/Content/… (often nested
+    #     several levels deep, e.g. Content/kb/siris-alto-nas/foo.htm), so the
+    #     root is the path up to "/Content/", NOT just one directory up.
     #   - WebHelp/TriPane: the entry is default.htm sitting AT the root.
-    # Try the document's own directory first, then its parent.
+    # Try the Content-split root first, then the document's own dir and parent.
+    candidates: list[str] = []
+    low = root_url.lower()
+    idx = low.find("/content/")
+    if idx != -1:
+        candidates.append(root_url[:idx + 1])  # ".../help/" (parent of /Content/)
+    for rel in ("./", "../"):
+        cand = urljoin(root_url, rel)
+        if cand not in candidates:
+            candidates.append(cand)
+
     help_root = None
     hs_xml = None
-    for rel in ("./", "../"):
-        candidate = urljoin(root_url, rel)
+    for candidate in candidates:
         xml = await _try_get_raw(scraper, urljoin(candidate, "Data/HelpSystem.xml"))
         if xml:
             help_root, hs_xml = candidate, xml

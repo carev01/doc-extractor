@@ -58,6 +58,57 @@ async def test_builds_hierarchical_toc_from_data_files():
 
 
 @pytest.mark.asyncio
+async def test_resolves_root_for_topic_nested_deep_under_content():
+    """HTML5 topics can sit several levels below /Content/ (e.g. Datto Continuity
+    Content/kb/siris-alto-nas/foo.htm). The help root is the path up to
+    "/Content/", not one directory up — regression for finding only 1 page."""
+    root = "https://continuity.datto.com/help/Content/kb/siris-alto-nas/applianceLanding.htm"
+    help_ = "https://continuity.datto.com/help/"
+    raw = {
+        help_ + "Data/HelpSystem.xml":
+            '<WebHelpSystem Toc="Data/Tocs/OnlineMasterTOC.js" />',
+        help_ + "Data/Tocs/OnlineMasterTOC.js":
+            "define({numchunks:1,prefix:'OnlineMasterTOC_Chunk',"
+            "tree:{n:[{i:0,c:0},{i:1,c:0}]}})",
+        help_ + "Data/Tocs/OnlineMasterTOC_Chunk0.js":
+            "define({'/Content/kb/siris-alto-nas/applianceLanding.htm':{i:[0],t:['Appliance'],b:['']},"
+            "'/Content/kb/siris-alto-nas/setup.htm':{i:[1],t:['Setup'],b:['']}})",
+    }
+    scraper = FakeScraper({}, raw_by_url=raw)
+    toc = await flare_helpsystem_toc(scraper, root)
+    assert [(e.title, e.url) for e in toc] == [
+        ("Appliance", help_ + "Content/kb/siris-alto-nas/applianceLanding.htm"),
+        ("Setup", help_ + "Content/kb/siris-alto-nas/setup.htm"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_handles_extra_tree_keys_and_multi_position_pages():
+    """Some Flare builds add extra bare keys to tree nodes (e.g. ``w``), and list
+    a page at multiple TOC positions via parallel i/t lists
+    (``i:[0,2],t:['A first','A again']``). Regression for the Datto Continuity
+    bookshelf returning 0 entries (tree JSON parse failed on the ``w`` key)."""
+    root = "https://c.example.com/help/Content/kb/x/foo.htm"
+    help_ = "https://c.example.com/help/"
+    raw = {
+        help_ + "Data/HelpSystem.xml": '<WebHelpSystem Toc="Data/Tocs/M.js" />',
+        help_ + "Data/Tocs/M.js":
+            "define({numchunks:1,prefix:'M_Chunk',"
+            "tree:{n:[{i:0,c:0,w:1},{i:1,c:0,f:'_self'},{i:2,c:0,w:1}]}})",
+        help_ + "Data/Tocs/M_Chunk0.js":
+            "define({'/Content/a.htm':{i:[0,2],t:['A first','A again'],b:['','']},"
+            "'/Content/b.htm':{i:[1],t:['B'],b:['']}})",
+    }
+    scraper = FakeScraper({}, raw_by_url=raw)
+    toc = await flare_helpsystem_toc(scraper, root)
+    assert [(e.title, e.url) for e in toc] == [
+        ("A first", help_ + "Content/a.htm"),
+        ("B", help_ + "Content/b.htm"),
+        ("A again", help_ + "Content/a.htm"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_resolves_root_for_default_htm_at_help_root():
     """WebHelp/TriPane entry (default.htm) sits AT the help root, not in Content/.
 
