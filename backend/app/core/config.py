@@ -43,11 +43,15 @@ class Settings(BaseSettings):
     #   DOCEXTRACTOR_LLM_BASE_URL   — override endpoint (blank → provider default)
     #   DOCEXTRACTOR_LLM_API_KEY    — API key (Anthropic sk-ant-... or OpenAI sk-...)
     #   DOCEXTRACTOR_LLM_MODEL      — model name (blank → provider default)
+    #   DOCEXTRACTOR_LLM_MAX_TOKENS — response token budget for spec derivation.
+    #     Reasoning models (e.g. gpt-oss) spend tokens thinking before emitting
+    #     the JSON spec, so this needs headroom above the raw spec size.
     llm_fallback_enabled: bool = False
     llm_provider: str = "anthropic"   # "anthropic" | "openai"
     llm_base_url: str = ""            # blank → provider default
     llm_api_key: str = ""
     llm_model: str = ""               # blank → provider default
+    llm_max_tokens: int = 2048
 
     model_config = {
         "env_prefix": "DOCEXTRACTOR_",

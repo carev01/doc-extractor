@@ -40,6 +40,7 @@ llm:
   baseUrl: ""
   model: ""
   apiKey: ""
+  maxTokens: 2048   # response token budget for spec derivation (reasoning models need headroom)
 
 # -- Ingress (Traefik)
 ingress:

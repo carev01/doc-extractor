@@ -128,7 +128,7 @@ async def derive_spec(html: str, root_url: str) -> "dict | None":
                 }
                 body = {
                     "model": model,
-                    "max_tokens": 512,
+                    "max_tokens": settings.llm_max_tokens,
                     "system": _SYSTEM_PROMPT,
                     "messages": [
                         {
@@ -150,7 +150,7 @@ async def derive_spec(html: str, root_url: str) -> "dict | None":
                 }
                 body = {
                     "model": model,
-                    "max_tokens": 512,
+                    "max_tokens": settings.llm_max_tokens,
                     "messages": [
                         {"role": "system", "content": _SYSTEM_PROMPT},
                         {

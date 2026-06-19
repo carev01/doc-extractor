@@ -89,7 +89,7 @@ async def test_derive_spec_anthropic_request_shape(monkeypatch):
     assert captured["headers"]["x-api-key"] == "test-key-ant"
     assert captured["headers"]["anthropic-version"] == "2023-06-01"
     assert captured["body"]["model"] == "claude-haiku-4-5"
-    assert captured["body"]["max_tokens"] == 512
+    assert captured["body"]["max_tokens"] == settings.llm_max_tokens
 
 
 async def test_derive_spec_anthropic_html_truncated(monkeypatch):
@@ -187,6 +187,36 @@ async def test_derive_spec_openai_custom_base_url(monkeypatch):
     await derive_spec("<html/>", ROOT)
 
     assert captured["url"] == "https://my-local-llm/v1/chat"
+
+
+async def test_derive_spec_max_tokens_configurable(monkeypatch):
+    """The request max_tokens follows settings.llm_max_tokens (not a hardcoded value)."""
+    monkeypatch.setattr(settings, "llm_provider", "openai")
+    monkeypatch.setattr(settings, "llm_api_key", "k")
+    monkeypatch.setattr(settings, "llm_model", "")
+    monkeypatch.setattr(settings, "llm_base_url", "")
+    monkeypatch.setattr(settings, "llm_max_tokens", 4096)
+
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self): pass
+        def json(self):
+            return {"choices": [{"message": {"content": "{}"}}]}
+
+    class FakeAsyncClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def post(self, url, headers=None, json=None, **kwargs):
+            captured["body"] = json
+            return FakeResponse()
+
+    import httpx
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: FakeAsyncClient())
+
+    await derive_spec("<html/>", ROOT)
+
+    assert captured["body"]["max_tokens"] == 4096
 
 
 # ── derive_spec — error / missing key ───────────────────────────────────────
