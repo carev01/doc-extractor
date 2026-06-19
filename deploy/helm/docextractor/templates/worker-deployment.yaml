@@ -56,7 +56,13 @@ spec:
             - configMapRef: { name: {{ .Release.Name }}-config }
             - secretRef: { name: {{ .Release.Name }}-secret }
           livenessProbe:
-            exec: { command: ["sh", "-c", "pgrep -f 'app.worker' >/dev/null"] }
+            # The worker is PID 1; verify it's still the running process. (No pgrep
+            # in the slim image — python is guaranteed present.)
+            exec:
+              command:
+                - python
+                - -c
+                - "import pathlib,sys; sys.exit(0 if b'app.worker' in pathlib.Path('/proc/1/cmdline').read_bytes() else 1)"
             initialDelaySeconds: 30
             periodSeconds: 30
           resources:
