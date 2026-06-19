@@ -226,6 +226,19 @@ class FirecrawlService:
             logger.warning("Sitemap fallback also failed for %s: %s", root_url, exc)
             return []
 
+    async def fetch_raw(self, url: str) -> str:
+        """Plain GET of a static asset, bypassing Firecrawl's HTML cleaning.
+
+        Used for non-HTML resources a profile needs verbatim — e.g. MadCap Flare's
+        ``Data/*.xml``/``Data/Tocs/*.js`` TOC files, which Firecrawl would strip or
+        mangle. Sends a browser UA; raises on HTTP error.
+        """
+        resp = await self.client.get(
+            url, headers={"User-Agent": _BROWSER_UA}, follow_redirects=True
+        )
+        resp.raise_for_status()
+        return resp.text
+
     async def _firecrawl_request(self, url: str, payload: dict) -> dict:
         """Make a Firecrawl v2 scrape request and return the data dict."""
         # Inject a browser UA so bot-gated sites render real content. A

@@ -54,6 +54,7 @@ from bs4 import BeautifulSoup
 
 from app.services.profiles import registry
 from app.services.profiles.base import TocEntry
+from app.services.profiles.strategies import flare_helpsystem_toc
 
 
 class FlareWebHelpProfile:
@@ -84,7 +85,15 @@ class FlareWebHelpProfile:
         href is hash-routed; we take the fragment as the topic path and resolve
         it against the help root (the index URL with ``default.htm`` stripped),
         discarding the ``?TocPath`` routing query.
+
+        Prefer the full TOC from Flare's static ``Data/`` files when web-served;
+        fall back to the inline top-level tree otherwise (e.g. hosts that 404 the
+        Data files).
         """
+        entries = await flare_helpsystem_toc(scraper, root_url)
+        if entries:
+            return entries
+
         html = await scraper.get_html(root_url, 1500)
         soup = BeautifulSoup(html, "html.parser")
         # Help root = the directory containing default.htm (e.g. .../SolG/).

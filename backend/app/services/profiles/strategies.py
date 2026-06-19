@@ -3,8 +3,12 @@
 - sidebar_tree_toc: parse a nested <ul>/<li><a> nav into an ordered TOC.
 - hubspoke_toc: crawl root -> categories -> (sections) -> articles (help centers).
 - sitemap_urls: enumerate URLs from sitemap.xml in document order.
+- flare_helpsystem_toc: build a MadCap Flare TOC from its Data/ files (the TOC is
+  rendered client-side and never present in the page HTML).
 """
 
+import json
+import re
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
@@ -123,6 +127,131 @@ async def hubspoke_toc(
                 seen.add(art_url)
                 art_title = _element_title(art, article_title_selector)
                 out.append(TocEntry(art_title, art_url, alevel, True, parent))
+    return out
+
+
+async def _try_get_raw(scraper, url: str) -> str | None:
+    """Best-effort verbatim GET; None on any error (incl. 404)."""
+    try:
+        txt = await scraper.get_raw(url)
+        return txt or None
+    except Exception:
+        return None
+
+
+def _js_unescape(s: str) -> str:
+    return s.replace("\\'", "'").replace('\\"', '"').replace("\\\\", "\\")
+
+
+def _parse_flare_tree(master: str) -> dict | None:
+    """Extract the numeric ``tree:{...}`` object from a Flare master TOC.
+
+    The tree holds only integers and the keys i/c/n (no strings), so it can be
+    safely JSON-ified by quoting those keys.
+    """
+    i = master.find("tree:")
+    if i == -1:
+        return None
+    j = master.find("{", i)
+    if j == -1:
+        return None
+    depth = 0
+    blob = None
+    for k in range(j, len(master)):
+        if master[k] == "{":
+            depth += 1
+        elif master[k] == "}":
+            depth -= 1
+            if depth == 0:
+                blob = master[j:k + 1]
+                break
+    if blob is None:
+        return None
+    jsonish = re.sub(r'([{,\[])\s*([icn])\s*:', r'\1"\2":', blob)
+    try:
+        return json.loads(jsonish)
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_flare_chunk(text: str) -> dict[int, tuple[str, str]]:
+    """Parse a Flare TOC chunk: ``'<href>':{i:[idx,...],t:['<title>'],...}``.
+
+    Returns {tree_index: (href, title)}.
+    """
+    out: dict[int, tuple[str, str]] = {}
+    pat = re.compile(
+        r"'((?:[^'\\]|\\.)*)'\s*:\s*\{i:\[([\d,\s]+)\]\s*,\s*t:\['((?:[^'\\]|\\.)*)'\]"
+    )
+    for m in pat.finditer(text):
+        href = _js_unescape(m.group(1))
+        title = _js_unescape(m.group(3))
+        for idx in m.group(2).split(","):
+            idx = idx.strip()
+            if idx.isdigit():
+                out[int(idx)] = (href, title)
+    return out
+
+
+async def flare_helpsystem_toc(scraper, root_url: str) -> list[TocEntry]:
+    """Build a MadCap Flare TOC from its static ``Data/`` files.
+
+    Flare renders the TOC client-side from data files (``Data/HelpSystem.xml``
+    names the TOC; the master TOC defines the tree and references chunk files
+    holding each entry's href+title), so the TOC never appears in the page HTML.
+    We fetch and resolve those files into an ordered, hierarchical TOC.
+
+    Returns [] when the data files aren't web-served (older/server-side Flare
+    outputs), so callers can fall back to parsing the rendered nav.
+    """
+    # Help-system root = parent of the Content/ directory holding the topic.
+    help_root = urljoin(root_url, "../")
+    hs_xml = await _try_get_raw(scraper, urljoin(help_root, "Data/HelpSystem.xml"))
+    if not hs_xml:
+        return []
+    m = re.search(r'\bToc="([^"]+)"', hs_xml)
+    if not m:
+        return []
+    master_url = urljoin(help_root, m.group(1))
+    master = await _try_get_raw(scraper, master_url)
+    if not master:
+        return []
+
+    tree = _parse_flare_tree(master)
+    prefix_m = re.search(r"prefix:'([^']*)'", master)
+    if tree is None or not prefix_m:
+        return []
+    prefix = prefix_m.group(1)
+    numchunks_m = re.search(r"numchunks:(\d+)", master)
+    numchunks = int(numchunks_m.group(1)) if numchunks_m else 1
+
+    chunks: dict[int, dict[int, tuple[str, str]]] = {}
+    for c in range(numchunks):
+        txt = await _try_get_raw(scraper, urljoin(master_url, f"{prefix}{c}.js"))
+        chunks[c] = _parse_flare_chunk(txt) if txt else {}
+
+    out: list[TocEntry] = []
+
+    def walk(nodes: list, level: int, parent_url: str | None) -> None:
+        for node in nodes:
+            idx = node.get("i")
+            entry = chunks.get(node.get("c", 0), {}).get(idx)
+            kids = node.get("n")
+            if entry is None:
+                # Container with no resolvable entry: descend, keep the parent.
+                if kids:
+                    walk(kids, level, parent_url)
+                continue
+            href, title = entry
+            url = urljoin(help_root, href.lstrip("/"))
+            out.append(TocEntry(
+                title=title, url=url, level=level,
+                is_article=not kids, parent_url=parent_url,
+            ))
+            if kids:
+                walk(kids, level + 1, url)
+
+    walk(tree.get("n", []), 0, None)
     return out
 
 

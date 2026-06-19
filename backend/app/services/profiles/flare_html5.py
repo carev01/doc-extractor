@@ -30,7 +30,7 @@ from bs4 import BeautifulSoup
 
 from app.services.profiles import registry
 from app.services.profiles.base import TocEntry
-from app.services.profiles.strategies import sidebar_tree_toc
+from app.services.profiles.strategies import flare_helpsystem_toc, sidebar_tree_toc
 
 
 class FlareHtml5Profile:
@@ -59,10 +59,15 @@ class FlareHtml5Profile:
         that duplicates the visible text (used for accessibility toggle buttons).
         We strip those spans before walking the tree so titles are clean.
 
-        NOTE: Only the top-level (and any statically expanded) entries are
-        available in the initial HTML.  Deeper branches require JS execution
-        to trigger lazy Toc.xml chunk loads — this is a known limitation.
+        Prefer the full TOC from Flare's static ``Data/`` files (HelpSystem.xml ->
+        master TOC -> chunks); the rendered sidenav holds only top-level entries
+        because deeper branches lazy-load via JS. Fall back to parsing the sidenav
+        when those data files aren't web-served (older/server-side Flare outputs).
         """
+        entries = await flare_helpsystem_toc(scraper, root_url)
+        if entries:
+            return entries
+
         html = await scraper.get_html(root_url, 1500)
         # Remove invisible-label spans that Flare injects inside <a> tags to
         # duplicate the link text for screen-reader toggle buttons.
