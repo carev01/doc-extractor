@@ -5,6 +5,40 @@ promoted to a spec/plan when picked up.
 
 ---
 
+## Extraction run counter: `articles_new` under-reports newly-added pages
+
+**Status:** Open · **Priority:** Low (cosmetic) · **Filed:** 2026-06-19
+
+### Problem
+
+When an incremental run discovers and stores brand-new pages (e.g. the Confluence
+REST-hierarchy fix grew Barracuda BCCB from 22 → 44 articles), the run summary
+does not reflect them: `articles_new` comes back `null` and `articles_extracted`
+only counts the re-processed pre-existing pages. Observed on run
+`efba75c1-40f5-4d75-8108-d27b750bd107`: TOC = 44, stored articles = 44 (all with
+content), yet the run reported `updated=3, unchanged=19, new=null` (= 22, the old
+set only).
+
+The stored **data is correct** — this is purely a reporting/counter inaccuracy in
+the run record, so the UI's "N articles extracted" figure understates newly-added
+pages on hierarchy-changing runs.
+
+### Likely cause / where to look
+
+`process_article_result` / the content-scraping loop in
+`backend/app/services/firecrawl.py` — the `articles_new` increment path is not hit
+(or not initialised) for pages created during this flow. Confirm whether the
+"new" branch increments `ExtractionRun.articles_new`, and why it stays `null`
+rather than `0`/`22`.
+
+### Done when
+
+- A run that creates K new articles reports `articles_new == K`.
+- `articles_extracted` reconciles with new + updated + unchanged.
+- Regression test asserts the counter on a mixed new/updated/unchanged run.
+
+---
+
 ## Export file lifecycle: retention/cleanup + persistent access to past exports
 
 **Status:** Phases 1 & 2 DONE (commit `5831c4d`, deployed) · Phase 3 stretch open ·

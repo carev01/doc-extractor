@@ -144,6 +144,10 @@ class FlareWebHelpProfile:
         # includeTags yields empty content, so a single selector drops pages.)
         return {
             "includeTags": ["[data-mc-content-body]", "#mc-main-content"],
+            # Drop Flare skin chrome before markdown conversion (back-to-top,
+            # feedback buttons, MadCap-marked non-content). Textual residue is
+            # cleaned post-conversion in services/sanitize.py.
+            "excludeTags": [".GoToTop", ".feedback-button", ".nocontent"],
             "onlyMainContent": False,
             "waitFor": 1500,
         }
