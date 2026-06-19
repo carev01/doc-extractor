@@ -146,7 +146,7 @@ export interface ExportResponse {
   file_count: number;
   total_articles: number;
   total_size_bytes: number;
-  zip_filename: string;
+  zip_filename: string | null;
   files: ExportFileInfo[];
 }
 

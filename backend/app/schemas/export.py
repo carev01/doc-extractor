@@ -47,7 +47,7 @@ class ExportResponse(BaseModel):
     file_count: int
     total_articles: int
     total_size_bytes: int
-    zip_filename: str  # self-contained bundle (markdown + images)
+    zip_filename: str | None = None  # markdown/image bundle; None for PDF (self-contained)
     files: list["ExportFileInfo"]
 
 

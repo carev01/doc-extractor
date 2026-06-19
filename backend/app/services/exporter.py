@@ -446,12 +446,17 @@ class ExportEngine:
                 "first_article_title": group[0].title, "last_article_title": group[-1].title,
             })
 
-        # Bundle everything into a single self-contained zip.
-        zip_filename = f"{base_name}.zip"
-        zip_path = os.path.join(export_subdir, zip_filename)
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            for abs_path, arcname in archive_members:
-                zf.write(abs_path, arcname)
+        # Bundle into a single self-contained zip only when it adds value. Markdown
+        # exports have loose image files alongside the .md, so they need bundling. A
+        # PDF is already self-contained (images embedded), so wrapping it in a zip
+        # just produces a redundant download the user never asked for.
+        zip_filename = None
+        if format != "pdf":
+            zip_filename = f"{base_name}.zip"
+            zip_path = os.path.join(export_subdir, zip_filename)
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for abs_path, arcname in archive_members:
+                    zf.write(abs_path, arcname)
 
         return {
             "export_id": export_id, "source_id": source_id, "file_count": len(files_info),

@@ -42,7 +42,10 @@ def test_run_export_job_completes(db):
     assert job.status == ExportStatus.COMPLETED
     assert job.export_id is not None
     export_dir = os.path.join(export_engine.export_dir, str(job.export_id))
-    assert any(f.endswith(".zip") for f in os.listdir(export_dir))
+    files = os.listdir(export_dir)
+    # PDF export delivers the self-contained PDF, not a redundant zip wrapping it.
+    assert any(f.endswith(".pdf") for f in files), files
+    assert not any(f.endswith(".zip") for f in files), files
     db2.close()
 
 

@@ -83,9 +83,10 @@ async def download_export_file(export_id: uuid.UUID, filename: str):
     if not real_path.startswith(real_export_dir):
         raise HTTPException(status_code=403, detail="Access denied")
 
+    media_type = "application/pdf" if filename.lower().endswith(".pdf") else "text/markdown"
     return FileResponse(
         real_path,
-        media_type="text/markdown",
+        media_type=media_type,
         filename=filename,
     )
 

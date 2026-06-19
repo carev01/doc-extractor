@@ -315,19 +315,24 @@ export default function ExportPanel({ source }: Props) {
             file(s) —{" "}
             {(exportResult.total_size_bytes / 1024).toFixed(1)} KB total
           </p>
-          <p>
-            <a
-              className="btn-primary"
-              href={getZipDownloadUrl(exportResult.export_id)}
-              download
-            >
-              Download ZIP (markdown + images)
-            </a>
-          </p>
+          {exportResult.zip_filename && (
+            <p>
+              <a
+                className="btn-primary"
+                href={getZipDownloadUrl(exportResult.export_id)}
+                download
+              >
+                Download ZIP (markdown + images)
+              </a>
+            </p>
+          )}
           <ul>
-            {exportResult.files.map((f) => (
+            {exportResult.files.map((f, i) => (
               <li key={f.filename}>
                 <a
+                  className={
+                    !exportResult.zip_filename && i === 0 ? "btn-primary" : undefined
+                  }
                   href={getDownloadUrl(exportResult.export_id, f.filename)}
                   download
                 >
