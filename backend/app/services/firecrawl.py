@@ -352,7 +352,7 @@ class FirecrawlService:
             # article's toc_entry_id was just NULLed by SET NULL. Re-link it (and
             # refresh the TOC-derived sort_order/title) even though the content is
             # unchanged — otherwise the page orphans and the browser hides it.
-            await db.execute(
+            result = await db.execute(
                 update(Article)
                 .where(Article.source_id == source_id, Article.source_url == url)
                 .values(
@@ -362,13 +362,23 @@ class FirecrawlService:
                     title=title,
                 )
             )
-            await db.execute(
-                update(ExtractionRun)
-                .where(ExtractionRun.id == run_id)
-                .values(articles_unchanged=ExtractionRun.articles_unchanged + 1)
+            if result.rowcount:
+                await db.execute(
+                    update(ExtractionRun)
+                    .where(ExtractionRun.id == run_id)
+                    .values(articles_unchanged=ExtractionRun.articles_unchanged + 1)
+                )
+                await db.commit()
+                return "unchanged"
+            # Firecrawl says "same" but we have no stored copy. This happens when an
+            # earlier run seeded Firecrawl's changeTracking baseline (keyed by the
+            # shared source tag) but failed before persisting the page to our DB.
+            # Don't trust "same" as "already stored" — fall through and persist the
+            # content scraped this run, otherwise the page is lost forever (Firecrawl
+            # keeps reporting "same" on every subsequent run).
+            logger.info(
+                "change_status 'same' but no stored article for %s — persisting", url
             )
-            await db.commit()
-            return "unchanged"
 
         content_hash = compute_content_hash(markdown_content)
 

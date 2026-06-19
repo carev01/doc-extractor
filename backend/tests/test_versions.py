@@ -648,6 +648,60 @@ async def test_unchanged_paths_relink_rebuilt_toc(client):
     assert await fetch() == (toc_c_id, 3)
 
 
+async def test_same_status_persists_when_article_missing(client):
+    """Firecrawl can report change_status='same' for a URL we have never stored —
+    e.g. a prior run scraped it (seeding Firecrawl's changeTracking baseline under
+    the shared source tag) but died before persisting to our DB. The 'same' fast
+    path must NOT silently drop it: it must persist the content Firecrawl returned
+    this run, otherwise the article is lost forever (Firecrawl keeps saying 'same')."""
+    client, TestSession = client
+    async with TestSession() as s:
+        vendor = Vendor(name="SameVendor")
+        s.add(vendor)
+        await s.flush()
+        source = DocumentationSource(
+            vendor_id=vendor.id, name="SameSrc", base_url="https://d.sm.com"
+        )
+        s.add(source)
+        await s.flush()
+        run = ExtractionRun(source_id=source.id, status=RunStatus.RUNNING)
+        s.add(run)
+        await s.flush()
+        toc = TOCEntry(
+            source_id=source.id, title="Athena", url="https://d.sm.com/athena",
+            level=0, sort_order=5, is_article=True,
+        )
+        s.add(toc)
+        await s.commit()
+        source_id, run_id, toc_id = source.id, run.id, toc.id
+
+    url = "https://d.sm.com/athena"
+
+    # No Article row exists for this URL, yet Firecrawl says "same".
+    async with TestSession() as s:
+        exists = (
+            await s.execute(select(Article).where(Article.source_url == url))
+        ).scalar_one_or_none()
+        assert exists is None
+
+    async with TestSession() as s:
+        outcome = await firecrawl_service.process_article_result(
+            db=s, source_id=source_id, run_id=run_id, url=url,
+            markdown_content="# Athena\nreal athena content", doc_html="",
+            toc_entry_id=toc_id, sort_order=5, title="Athena", change_status="same",
+        )
+
+    # The article must now exist with the scraped content, linked to its TOC entry.
+    async with TestSession() as s:
+        row = (
+            await s.execute(select(Article).where(Article.source_url == url))
+        ).scalar_one_or_none()
+    assert row is not None, "article was silently dropped on change_status='same'"
+    assert row.content_markdown == "# Athena\nreal athena content"
+    assert row.toc_entry_id == toc_id
+    assert outcome == "new"
+
+
 async def test_reconcile_removals_stamps_clears_and_pins(client):
     """Newly orphaned articles get removed_at/removal_run_id; the timestamp is
     pinned on later runs; a re-added page is cleared; linked pages stay NULL."""
