@@ -14,6 +14,7 @@ import type {
   ExportRequest,
   ExportJobCreated,
   ExportJobStatus,
+  ExportListResponse,
   ArticleVersionList,
   ArticleVersionDetail,
   VersionDiff,
@@ -172,6 +173,12 @@ export function getDownloadUrl(exportId: string, filename: string): string {
 /** URL of the self-contained zip bundle (markdown + images) for an export. */
 export function getZipDownloadUrl(exportId: string): string {
   return `${API_BASE}/api/export/download/${exportId}`;
+}
+
+/** List recent (non-expired) completed exports with metadata. */
+export async function listExports(): Promise<ExportListResponse> {
+  const { data } = await api.get<ExportListResponse>("/export/list");
+  return data;
 }
 
 /** Resolve a served /media image path to an absolute backend URL. */

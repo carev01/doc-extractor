@@ -3,6 +3,7 @@ import type {
   DocumentationSource,
   TOCEntry,
   ExportResponse,
+  ExportListItem,
 } from "../types";
 import {
   getTOC,
@@ -10,6 +11,7 @@ import {
   getExportJob,
   getDownloadUrl,
   getZipDownloadUrl,
+  listExports,
 } from "../api/client";
 
 interface Props {
@@ -29,6 +31,7 @@ export default function ExportPanel({ source }: Props) {
   const [exportResult, setExportResult] = useState<ExportResponse | null>(null);
   const [error, setError] = useState("");
   const [mode, setMode] = useState<"full" | "chapters" | "topic">("full");
+  const [recentExports, setRecentExports] = useState<ExportListItem[]>([]);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -36,6 +39,21 @@ export default function ExportPanel({ source }: Props) {
       loadTOC();
     }
   }, [source.id, source.status]);
+
+  // Recent exports persist on the server, so reload them whenever the panel
+  // mounts — the download links survive navigating away and back.
+  useEffect(() => {
+    loadRecentExports();
+  }, []);
+
+  async function loadRecentExports() {
+    try {
+      const res = await listExports();
+      setRecentExports(res.exports);
+    } catch {
+      /* non-fatal: the recent-exports list is supplementary */
+    }
+  }
 
   useEffect(() => {
     return () => {
@@ -125,6 +143,7 @@ export default function ExportPanel({ source }: Props) {
             zip_filename: job.zip_filename ?? "",
             files: job.files ?? [],
           });
+          loadRecentExports();
         } else if (job.status === "failed" || job.status === "cancelled") {
           stopPolling();
           setJobStatusMsg(null);
@@ -342,6 +361,49 @@ export default function ExportPanel({ source }: Props) {
                   ({f.article_count} articles,{" "}
                   {(f.size_bytes / 1024).toFixed(1)} KB)
                 </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {recentExports.length > 0 && (
+        <div className="recent-exports">
+          <h3>Recent Exports</h3>
+          <p className="sub">
+            Kept on the server for a limited time, then automatically removed.
+          </p>
+          <ul>
+            {recentExports.map((ex) => (
+              <li key={ex.export_id}>
+                <div>
+                  <strong>{ex.source_name}</strong>{" "}
+                  <span className="sub">
+                    · {ex.format.toUpperCase()} · {ex.file_count} file(s) ·{" "}
+                    {(ex.total_size_bytes / 1024).toFixed(0)} KB ·{" "}
+                    {new Date(ex.created_at).toLocaleString()}
+                    {ex.expires_at && (
+                      <> · expires {new Date(ex.expires_at).toLocaleDateString()}</>
+                    )}
+                  </span>
+                </div>
+                <div className="export-links">
+                  {ex.zip_filename ? (
+                    <a href={getZipDownloadUrl(ex.export_id)} download>
+                      Download ZIP
+                    </a>
+                  ) : (
+                    ex.files.map((f) => (
+                      <a
+                        key={f}
+                        href={getDownloadUrl(ex.export_id, f)}
+                        download
+                      >
+                        {f}
+                      </a>
+                    ))
+                  )}
+                </div>
               </li>
             ))}
           </ul>

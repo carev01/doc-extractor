@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     max_articles_per_file: int = 50
     max_file_size_bytes: int = 10 * 1024 * 1024  # 10 MB
     max_tokens_per_file: int = 100_000
+    # Export retention — generated export dirs are purged once older than this many
+    # days, and the total export footprint is capped (oldest-first eviction) so the
+    # exports volume can't fill from accumulation. 0 days disables the age sweep.
+    export_retention_days: int = 7
+    export_max_total_bytes: int = 3 * 1024 * 1024 * 1024  # 3 GiB
 
     # Image storage — canonical (source-of-truth) images live in media_dir,
     # kept separate from generated exports/. Served over HTTP at media_url_prefix

@@ -155,6 +155,23 @@ export interface ExportJobCreated {
   status: string;
 }
 
+export interface ExportListItem {
+  export_id: string;
+  source_id: string;
+  source_name: string;
+  format: "markdown" | "pdf";
+  created_at: string;
+  expires_at: string | null;
+  file_count: number;
+  files: string[];
+  zip_filename: string | null;
+  total_size_bytes: number;
+}
+
+export interface ExportListResponse {
+  exports: ExportListItem[];
+}
+
 export interface ExportJobStatus {
   id: string;
   source_id: string;

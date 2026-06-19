@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.models.export_job import ExportJob, ExportStatus
 from app.models.source import DocumentationSource
@@ -93,29 +94,49 @@ async def download_export_file(export_id: uuid.UUID, filename: str):
 
 @router.get("/list")
 async def list_exports(db: AsyncSession = Depends(get_db)):
-    """List recent exports (metadata only — files are on disk)."""
-    export_dir = export_engine.export_dir
-    if not os.path.isdir(export_dir):
-        return {"exports": []}
+    """List recent (non-expired) completed exports with metadata, newest first.
 
+    Backed by export_jobs (the source of truth) so the listing survives page
+    navigation and includes timestamp/source/format. Retention purges old exports;
+    rows whose on-disk directory is gone are skipped.
+    """
+    from datetime import timedelta
+
+    rows = (
+        await db.execute(
+            select(ExportJob, DocumentationSource.name)
+            .join(DocumentationSource, ExportJob.source_id == DocumentationSource.id)
+            .where(
+                ExportJob.status == ExportStatus.COMPLETED,
+                ExportJob.export_id.isnot(None),
+            )
+            .order_by(ExportJob.created_at.desc())
+            .limit(20)
+        )
+    ).all()
+
+    retention_days = settings.export_retention_days
     exports = []
-    for entry in sorted(
-        os.scandir(export_dir), key=lambda e: e.name, reverse=True
-    ):
-        if entry.is_dir():
-            try:
-                export_uuid = uuid.UUID(entry.name)
-                files = [
-                    f.name
-                    for f in os.scandir(entry.path)
-                    if f.is_file() and f.name.endswith((".md", ".pdf"))
-                ]
-                exports.append({
-                    "export_id": str(export_uuid),
-                    "file_count": len(files),
-                    "files": sorted(files),
-                })
-            except ValueError:
-                continue
+    for job, source_name in rows:
+        subdir = os.path.join(export_engine.export_dir, str(job.export_id))
+        if not os.path.isdir(subdir):
+            continue  # purged out-of-band
+        result = job.result or {}
+        expires_at = (
+            (job.created_at + timedelta(days=retention_days)).isoformat()
+            if retention_days > 0 else None
+        )
+        exports.append({
+            "export_id": str(job.export_id),
+            "source_id": str(job.source_id),
+            "source_name": source_name,
+            "format": (job.request or {}).get("format", "markdown"),
+            "created_at": job.created_at.isoformat(),
+            "expires_at": expires_at,
+            "file_count": result.get("file_count", 0),
+            "files": [f["filename"] for f in result.get("files", [])],
+            "zip_filename": result.get("zip_filename"),
+            "total_size_bytes": result.get("total_size_bytes", 0),
+        })
 
-    return {"exports": exports[:20]}
+    return {"exports": exports}
