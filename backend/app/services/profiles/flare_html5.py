@@ -85,6 +85,11 @@ class FlareHtml5Profile:
     def content_config(self) -> dict:
         return {
             "includeTags": ["[data-mc-content-body]"],
+            # Drop Flare skin chrome before markdown conversion: the back-to-top
+            # button, the "Was this article helpful?" feedback buttons, and any
+            # element MadCap explicitly marks non-content. Post-processing
+            # (services/sanitize.py) mops up textual residue like the footer.
+            "excludeTags": [".GoToTop", ".feedback-button", ".nocontent"],
             "onlyMainContent": False,
             "waitFor": 1500,
         }

@@ -101,6 +101,11 @@ def test_content_config_include_tags():
     assert cfg["includeTags"] == ["[data-mc-content-body]", "#mc-main-content"]
 
 
+def test_content_config_excludes_skin_chrome():
+    cfg = FlareWebHelpProfile().content_config()
+    assert cfg["excludeTags"] == [".GoToTop", ".feedback-button", ".nocontent"]
+
+
 def test_content_config_only_main_content_false():
     cfg = FlareWebHelpProfile().content_config()
     assert cfg["onlyMainContent"] is False

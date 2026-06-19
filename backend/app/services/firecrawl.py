@@ -24,6 +24,7 @@ from app.services.profiles import registry as profile_registry
 from app.services.profiles.detector import detect_platform
 import app.services.profiles.llm as llm_mod
 from app.services.profiles.scraper import Scraper
+from app.services.sanitize import sanitize_markdown
 
 # Default content scrape options when no profile config is supplied (legacy Commvault).
 _LEGACY_CONTENT = {"includeTags": ["#doc"], "onlyMainContent": False, "waitFor": 1500}
@@ -356,6 +357,12 @@ class FirecrawlService:
         if not markdown_content.strip():
             logger.warning("Empty content from %s — skipping", url)
             return "empty"
+
+        # Strip recurring site chrome (feedback widgets, back-to-top anchors,
+        # copyright footers, …) before hashing/persisting so stored content is
+        # clean and boilerplate churn (e.g. a yearly copyright bump) doesn't
+        # register as a change. Conservative — see services/sanitize.py.
+        markdown_content = sanitize_markdown(markdown_content)
 
         # Fast-path: Firecrawl has a prior snapshot and confirms no change.
         # Content is untouched, but we still scraped the page this run — bump
