@@ -5,6 +5,42 @@ promoted to a spec/plan when picked up.
 
 ---
 
+## Backfill: re-sanitize already-stored articles
+
+**Status:** Open · **Priority:** Medium · **Filed:** 2026-06-19
+
+### Problem
+
+Content sanitization (`app/services/sanitize.py`) runs at **write time**, inside
+`process_article_result`. But Firecrawl's changeTracking reports unchanged pages
+as `"same"`, and that fast-path skips re-storing — so existing articles never get
+re-sanitized when the *sanitizer* improves (only when the *source* changes).
+
+Concretely: after the table-form copyright-footer fix (commit `f913986`), a full
+Datto re-extraction reported 0 updated / 119 unchanged, so stale pages kept their
+old footers. The HOME article (`2b397927…`, `SaaS_Protection_Home.htm`) has no
+skin chrome and effectively never changes, so it will keep its boilerplate footer
+indefinitely without an explicit re-store.
+
+### Options (decide when picked up)
+
+1. **One-time backfill endpoint** — e.g. `POST /api/extraction/resanitize/{source_id}`
+   that loads stored articles, re-applies `sanitize_markdown`, and updates the ones
+   that changed. Explicit, re-runnable, keeps the hot path untouched. (Leaning here.)
+2. **Auto-heal in the `"same"` path** — compare freshly-sanitized content to stored
+   and re-store on difference, so future sanitizer changes propagate on the next run.
+   Self-maintaining but touches the change-tracking hot path and creates new
+   `ArticleVersion` rows.
+
+### Done when
+
+- A maintainer can heal a source's existing articles without changing the source.
+- Re-sanitizing is idempotent (no spurious versions once content is already clean).
+- Decision recorded on whether healing creates an `ArticleVersion` (audit trail) or
+  updates content in place.
+
+---
+
 ## Extraction run counter: `articles_new` under-reports newly-added pages
 
 **Status:** Open · **Priority:** Low (cosmetic) · **Filed:** 2026-06-19
