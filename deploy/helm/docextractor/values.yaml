@@ -39,6 +39,14 @@ firecrawl:
   apiUrl: http://firecrawl.k3s.home.lan
   apiKey: ""                      # OVERRIDE
 
+# -- Browserless (real Chrome) — used for shadow-DOM platforms (e.g. Salesforce
+# Help) whose content Firecrawl can't serialize. Token is REQUIRED for those.
+browserless:
+  url: http://browserless.browserless.svc.cluster.local:3000
+  token: ""                       # OVERRIDE (same token the Firecrawl adapter uses)
+  waitMs: 9000
+  concurrency: 4
+
 # -- LLM fallback (off by default)
 llm:
   fallbackEnabled: false

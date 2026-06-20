@@ -30,8 +30,6 @@ supported platform fixtures.
 import re
 from urllib.parse import urljoin
 
-from bs4 import BeautifulSoup
-
 from app.services.profiles import registry
 from app.services.profiles.base import TocEntry
 
@@ -48,6 +46,11 @@ def _article_id(href: str) -> str | None:
 
 class SalesforceProfile:
     name = "salesforce"
+    # Salesforce Help renders its nav tree AND article body inside shadow DOM
+    # (Lightning Web Components), which Firecrawl can't serialise. Both TOC
+    # discovery and content scraping therefore go through Browserless, which can
+    # run JS in the page to pierce shadow DOM.
+    render_engine = "browserless"
 
     def detect(self, root_html: str, root_url: str) -> bool:
         """Return True when the page is Salesforce Help.
@@ -58,77 +61,48 @@ class SalesforceProfile:
         return "slds-" in root_html and "articleView" in root_html
 
     async def build_toc(self, root_url: str, scraper) -> list[TocEntry]:
-        """Parse the SLDS aria-level tree into an ordered TOC.
+        """Build the ordered TOC from the shadow-DOM nav tree via Browserless.
 
-        Steps:
-        1. Scrape with a 9-second waitFor (the Lightning SPA needs time).
-        2. Select all ``li[role=treeitem]`` inside ``ul.tree`` in document order.
-        3. For each: extract the ``<a>`` that links to an articleView URL,
-           compute level = aria-level - 1 (so the root node is level 0),
-           assign parent_url via a level stack.
-        4. Deduplicate by article id (``id=<KEY>`` query param), keeping the
-           first occurrence.
+        ``scraper.render`` returns the SLDS tree items (extracted through shadow
+        DOM) as ``{title, href, level}`` in document order. We:
+        1. Deduplicate by article id (``id=<KEY>`` query param), keeping the
+           first occurrence (the active article repeats at the top).
+        2. Convert aria-level (1-based) to a 0-based depth.
+        3. Assign parent_url via a level stack.
         """
-        html = await scraper.get_html(root_url, wait_ms=9000)
-        if not html:
-            return []
-
-        soup = BeautifulSoup(html, "html.parser")
-
-        # Scope to the SLDS tree container if present; fall back to the whole doc.
-        tree_ul = soup.select_one("ul.tree")
-        container = tree_ul if tree_ul else soup
-
-        items = container.select("li[role=treeitem]")
+        data = await scraper.render(root_url)
+        items = (data or {}).get("toc") or []
 
         entries: list[TocEntry] = []
         seen_ids: set[str] = set()          # article key strings
         level_stack: dict[int, str] = {}    # level -> last url at that level
 
-        for li in items:
-            # Find the <a> whose href contains "articleView"
-            a = li.find("a", href=lambda h: h and "articleView" in h)
-            if not a:
-                continue
-
-            href = a.get("href", "")
+        for item in items:
+            href = item.get("href") or ""
             art_id = _article_id(href)
-            if not art_id:
+            if not art_id or art_id in seen_ids:
                 continue
 
-            # Deduplicate by article id — keep first occurrence.
-            if art_id in seen_ids:
+            title = (item.get("title") or "").strip()
+            if not title:
                 continue
             seen_ids.add(art_id)
 
-            title = a.get_text(strip=True)
-            if not title:
-                continue
-
             url = urljoin(root_url, href)
 
-            # Compute 0-based level from aria-level attribute.
             try:
-                raw_level = int(li.get("aria-level", 1))
+                raw_level = int(item.get("level", 1))
             except (ValueError, TypeError):
                 raw_level = 1
             level = max(0, raw_level - 1)
 
-            # Parent is the last URL recorded one level up.
             parent_url: str | None = level_stack.get(level - 1) if level > 0 else None
-
-            # Update level stack; invalidate deeper levels.
             level_stack[level] = url
-            for k in list(level_stack.keys()):
-                if k > level:
-                    del level_stack[k]
+            for k in [k for k in level_stack if k > level]:
+                del level_stack[k]
 
             entries.append(TocEntry(
-                title=title,
-                url=url,
-                level=level,
-                is_article=True,
-                parent_url=parent_url,
+                title=title, url=url, level=level, is_article=True, parent_url=parent_url,
             ))
 
         return entries
