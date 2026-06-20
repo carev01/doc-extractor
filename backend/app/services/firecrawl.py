@@ -69,6 +69,34 @@ def _dedupe_toc_entries(entries: list[dict]) -> list[dict]:
     return out
 
 
+def _resolve_toc_parents(entries: list[dict]) -> list[int | None]:
+    """Return, for each (deduped, ordered) entry, the index of its parent entry.
+
+    Prefers the profile's explicit ``parent_url`` (resolved to the entry with
+    that url) — this is robust to pages that appear at several TOC positions,
+    where dedup-by-url would otherwise break a level-adjacency assumption. Falls
+    back to "the most recent prior entry one level up" when no parent_url is
+    given (profiles that only carry depth). Entries are in DFS pre-order, so a
+    parent always precedes its children -> the returned index is always < i.
+    """
+    url_to_index: dict[str, int] = {}
+    level_to_index: dict[int, int] = {}
+    parents: list[int | None] = []
+    for idx, e in enumerate(entries):
+        purl = e.get("parent_url")
+        parent_idx = url_to_index.get(purl) if purl else None
+        if parent_idx is None and e.get("level", 0) > 0:
+            parent_idx = level_to_index.get(e["level"] - 1)
+        parents.append(parent_idx)
+
+        if e.get("url"):
+            url_to_index[e["url"]] = idx
+        level_to_index[e["level"]] = idx
+        for deeper in [lvl for lvl in level_to_index if lvl > e["level"]]:
+            del level_to_index[deeper]
+    return parents
+
+
 class FirecrawlUnavailableError(Exception):
     """Raised when the Firecrawl service is not reachable."""
     pass
@@ -856,7 +884,10 @@ class FirecrawlService:
             )
             toc_objs = await profile.build_toc(source.base_url, Scraper(self))
             toc_entries = [
-                {"title": e.title, "url": e.url, "level": e.level, "is_article": e.is_article}
+                {
+                    "title": e.title, "url": e.url, "level": e.level,
+                    "is_article": e.is_article, "parent_url": e.parent_url,
+                }
                 for e in toc_objs
             ]
 
@@ -880,14 +911,12 @@ class FirecrawlService:
             await db.flush()
 
             toc_db_map: dict[str, uuid.UUID] = {}
-            level_to_parent: dict[int, uuid.UUID] = {}
+            parent_idxs = _resolve_toc_parents(toc_entries)
+            entry_ids: list[uuid.UUID] = []
 
-            for td in toc_entries:
-                parent_id = (
-                    level_to_parent.get(td["level"] - 1)
-                    if td["level"] > 0
-                    else None
-                )
+            for i, td in enumerate(toc_entries):
+                pidx = parent_idxs[i]
+                parent_id = entry_ids[pidx] if pidx is not None else None
                 toc_entry = TOCEntry(
                     source_id=source_id,
                     title=td["title"],
@@ -899,12 +928,9 @@ class FirecrawlService:
                 )
                 db.add(toc_entry)
                 await db.flush()
-
+                entry_ids.append(toc_entry.id)
                 if td.get("url"):
                     toc_db_map[td["url"]] = toc_entry.id
-                level_to_parent[td["level"]] = toc_entry.id
-                for deeper in [k for k in level_to_parent if k > td["level"]]:
-                    del level_to_parent[deeper]
 
             # Enrich entries with their persisted TOCEntry IDs for use in Phase 2
             for entry in toc_entries:
