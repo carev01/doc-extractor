@@ -52,6 +52,19 @@ def test_parent_url_missing_target_falls_back_to_level():
     assert _resolve_toc_parents(entries) == [None, 0]
 
 
+def test_url_less_sections_nest_children_by_level():
+    """Structural sections (url=None, parent_url=None — e.g. MadCap placeholder
+    book nodes) keep children nested via level adjacency, even when two such
+    sections sit at the same level. /b1 must hang off Section B, not Section A."""
+    entries = [
+        {"url": None, "level": 0, "parent_url": None},    # Section A
+        {"url": "/a1", "level": 1, "parent_url": None},   # under A
+        {"url": None, "level": 0, "parent_url": None},    # Section B
+        {"url": "/b1", "level": 1, "parent_url": None},   # under B
+    ]
+    assert _resolve_toc_parents(entries) == [None, 0, None, 2]
+
+
 def test_parent_always_precedes_child():
     entries = [
         {"url": "/root", "level": 0, "parent_url": None},

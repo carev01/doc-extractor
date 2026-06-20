@@ -903,8 +903,15 @@ class FirecrawlService:
             # are always kept (never collapsed).
             toc_entries = _dedupe_toc_entries(toc_entries)
 
-            logger.info("TOC contains %d pages", len(toc_entries))
-            run.articles_total = len(toc_entries)
+            # Count only scrapable entries (those with a URL) — structural
+            # sections (e.g. MadCap placeholder "book" nodes) carry no page, so
+            # they shouldn't inflate the run's article total / progress.
+            scrapable_total = sum(1 for e in toc_entries if e.get("url"))
+            logger.info(
+                "TOC contains %d entries (%d scrapable pages)",
+                len(toc_entries), scrapable_total,
+            )
+            run.articles_total = scrapable_total
 
             # ── Persist TOC entries ─────────────────────────────────────────
             await db.execute(delete(TOCEntry).where(TOCEntry.source_id == source_id))
