@@ -58,6 +58,16 @@ class Settings(BaseSettings):
     llm_model: str = ""               # blank → provider default
     llm_max_tokens: int = 2048
 
+    # Browserless — a real Chrome with a JS-execution API, used by profiles that
+    # need shadow-DOM-rendered content Firecrawl can't serialize (e.g. Salesforce
+    # Help, a Lightning Web Components SPA). The in-cluster service is the default;
+    # the token is supplied at deploy (DOCEXTRACTOR_BROWSERLESS_TOKEN).
+    browserless_url: str = "http://browserless.browserless.svc.cluster.local:3000"
+    browserless_token: str = ""
+    # Per-article render budget (ms) and concurrency for browserless content scraping.
+    browserless_wait_ms: int = 9000
+    browserless_concurrency: int = 4
+
     model_config = {
         "env_prefix": "DOCEXTRACTOR_",
         "case_sensitive": False,

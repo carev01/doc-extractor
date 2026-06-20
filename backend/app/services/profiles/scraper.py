@@ -25,6 +25,16 @@ class Scraper:
     async def map_urls(self, root_url: str) -> list[str]:
         return await self._fc.map_urls(root_url)
 
+    async def render(self, url: str) -> dict:
+        """Render via Browserless (real Chrome) and extract shadow-DOM content.
+
+        Returns {toc, contentHtml, contentText, title} — used by profiles whose
+        content lives in shadow DOM (e.g. Salesforce Help) that Firecrawl can't
+        serialise.
+        """
+        from app.services.browserless import browserless_client
+        return await browserless_client.render(url)
+
 
 class FakeScraper:
     """Test double: serves canned HTML per URL and a canned URL list."""
@@ -34,10 +44,12 @@ class FakeScraper:
         html_by_url: dict[str, str],
         urls: list[str] | None = None,
         raw_by_url: dict[str, str] | None = None,
+        render_by_url: dict[str, dict] | None = None,
     ):
         self._h = html_by_url
         self._urls = urls or list(html_by_url)
         self._raw = raw_by_url or {}
+        self._render = render_by_url or {}
 
     async def get_html(self, url: str, wait_ms: int = 1500) -> str:
         return self._h.get(url, "")
@@ -49,3 +61,6 @@ class FakeScraper:
 
     async def map_urls(self, root_url: str) -> list[str]:
         return list(self._urls)
+
+    async def render(self, url: str) -> dict:
+        return self._render.get(url, {})

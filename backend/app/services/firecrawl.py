@@ -659,6 +659,67 @@ class FirecrawlService:
                 return
             await asyncio.sleep(self.BATCH_POLL_INTERVAL)
 
+    async def _scrape_via_browserless(
+        self,
+        db: AsyncSession,
+        source_id: uuid.UUID,
+        run_id: uuid.UUID,
+        url_to_entry: dict[str, dict],
+    ) -> None:
+        """Content scrape for shadow-DOM platforms: render each article in
+        Browserless (real Chrome) and persist the extracted body.
+
+        Articles are rendered in bounded-concurrency chunks (Browserless calls
+        are network-bound and slow — a full SPA render each), but persisted
+        sequentially since the DB session isn't concurrency-safe. Change
+        detection falls back to content hashing (change_status=None), as there
+        is no Firecrawl changeTracking baseline on this path.
+        """
+        from markdownify import markdownify
+
+        from app.services.browserless import BrowserlessError, browserless_client
+
+        items = list(url_to_entry.items())
+        total = len(items)
+        completed = 0
+        chunk_size = max(1, settings.browserless_concurrency)
+        client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0))
+
+        async def _render(url: str):
+            try:
+                return await browserless_client.render(url, client=client)
+            except BrowserlessError as exc:
+                logger.warning("Browserless render failed for %s: %s", url, exc)
+                return None
+
+        try:
+            for i in range(0, len(items), chunk_size):
+                chunk = items[i:i + chunk_size]
+                rendered = await asyncio.gather(*(_render(u) for u, _ in chunk))
+                for (url, entry), data in zip(chunk, rendered):
+                    if not data:
+                        continue
+                    html = data.get("contentHtml") or ""
+                    md = markdownify(html).strip() if html else (data.get("contentText") or "").strip()
+                    if not md:
+                        logger.warning("Empty content from %s — skipping", url)
+                        continue
+                    try:
+                        await self.process_article_result(
+                            db=db, source_id=source_id, run_id=run_id, url=url,
+                            markdown_content=md, doc_html=html,
+                            toc_entry_id=entry.get("toc_entry_id"),
+                            sort_order=entry.get("sort_order", 0),
+                            title=entry["title"], change_status=None,
+                        )
+                        completed += 1
+                    except Exception as exc:
+                        logger.warning("Failed to process %s — skipping: %s", url, exc)
+                        await db.rollback()
+                logger.info("Browserless content: %d/%d processed", completed, total)
+        finally:
+            await client.aclose()
+
     async def _poll_batch_and_process(
         self,
         db: AsyncSession,
@@ -953,17 +1014,25 @@ class FirecrawlService:
             # they complete. This is strictly faster than the old sequential loop
             # and gives the UI live per-page progress via the counters.
             url_to_entry = {e["url"]: e for e in toc_entries if e.get("url")}
-            batch_tag = f"src-{source_id}" if self.api_key else None
-            job_id = await self._submit_batch(
-                list(url_to_entry.keys()), source_id, content_config=content_cfg
-            )
-            run.firecrawl_job_id = job_id
-            await db.commit()
 
-            await self._poll_batch_and_process(
-                db, source_id, run.id, url_to_entry, job_id, batch_tag=batch_tag,
-                content_config=content_cfg,
-            )
+            if getattr(profile, "render_engine", None) == "browserless":
+                # Shadow-DOM platforms (e.g. Salesforce Help): Firecrawl can't
+                # serialise the content, so render each article in Browserless.
+                await self._scrape_via_browserless(db, source_id, run.id, url_to_entry)
+            else:
+                # Submit all TOC URLs in one batch job so Firecrawl can process
+                # them concurrently, then consume results via cursor pagination.
+                batch_tag = f"src-{source_id}" if self.api_key else None
+                job_id = await self._submit_batch(
+                    list(url_to_entry.keys()), source_id, content_config=content_cfg
+                )
+                run.firecrawl_job_id = job_id
+                await db.commit()
+
+                await self._poll_batch_and_process(
+                    db, source_id, run.id, url_to_entry, job_id, batch_tag=batch_tag,
+                    content_config=content_cfg,
+                )
 
             # Record removals (pages gone from the rebuilt TOC) before completing.
             await self._reconcile_removals(db, source_id, run.id)

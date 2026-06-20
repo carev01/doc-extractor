@@ -16,3 +16,6 @@ data:
   DOCEXTRACTOR_LLM_MAX_TOKENS: {{ .Values.llm.maxTokens | quote }}
   DOCEXTRACTOR_EXPORT_RETENTION_DAYS: {{ .Values.export.retentionDays | quote }}
   DOCEXTRACTOR_EXPORT_MAX_TOTAL_BYTES: {{ .Values.export.maxTotalBytes | quote }}
+  DOCEXTRACTOR_BROWSERLESS_URL: {{ .Values.browserless.url | quote }}
+  DOCEXTRACTOR_BROWSERLESS_WAIT_MS: {{ .Values.browserless.waitMs | quote }}
+  DOCEXTRACTOR_BROWSERLESS_CONCURRENCY: {{ .Values.browserless.concurrency | quote }}
