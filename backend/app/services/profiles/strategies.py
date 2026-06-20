@@ -285,10 +285,17 @@ async def flare_helpsystem_toc(scraper, root_url: str) -> list[TocEntry]:
                     walk(kids, level, parent_url)
                 continue
             href, title = entry
-            url = urljoin(help_root, href.lstrip("/"))
+            # MadCap uses an all-underscores placeholder href ("___") for
+            # container/"book" TOC nodes that have no page of their own. Treat
+            # them as structural sections: no URL, so they are never scraped and
+            # — crucially — never collapsed together by URL-dedup (otherwise
+            # every such section merges into one and the tree scrambles). Their
+            # children then link by level adjacency to the distinct section.
+            is_placeholder = (not href) or set(href) <= {"_"}
+            url = None if is_placeholder else urljoin(help_root, href.lstrip("/"))
             out.append(TocEntry(
                 title=title, url=url, level=level,
-                is_article=not kids, parent_url=parent_url,
+                is_article=bool(url) and not kids, parent_url=parent_url,
             ))
             if kids:
                 walk(kids, level + 1, url)

@@ -109,6 +109,35 @@ async def test_handles_extra_tree_keys_and_multi_position_pages():
 
 
 @pytest.mark.asyncio
+async def test_placeholder_book_nodes_become_url_less_sections():
+    """MadCap '___' book nodes have no page of their own. They must become
+    url-less sections (is_article=False) — NOT all collapse to one '/___' URL,
+    which scrambled the tree (Datto BCDR: 113 sections merged into one)."""
+    root = "https://c.example.com/help/Content/x/foo.htm"
+    help_ = "https://c.example.com/help/"
+    raw = {
+        help_ + "Data/HelpSystem.xml": '<WebHelpSystem Toc="Data/Tocs/M.js" />',
+        help_ + "Data/Tocs/M.js":
+            "define({numchunks:1,prefix:'M_Chunk',"
+            "tree:{n:[{i:0,c:0,n:[{i:1,c:0}]},{i:2,c:0,n:[{i:3,c:0}]}]}})",
+        help_ + "Data/Tocs/M_Chunk0.js":
+            # Two distinct sections share the '___' placeholder href (parallel
+            # i/t lists); the real pages carry proper hrefs.
+            "define({'___':{i:[0,2],t:['Section A','Section B'],b:['','']},"
+            "'/Content/a1.htm':{i:[1],t:['Page A1'],b:['']},"
+            "'/Content/b1.htm':{i:[3],t:['Page B1'],b:['']}})",
+    }
+    scraper = FakeScraper({}, raw_by_url=raw)
+    toc = await flare_helpsystem_toc(scraper, root)
+    assert [(e.title, e.level, e.url, e.is_article) for e in toc] == [
+        ("Section A", 0, None, False),
+        ("Page A1", 1, help_ + "Content/a1.htm", True),
+        ("Section B", 0, None, False),
+        ("Page B1", 1, help_ + "Content/b1.htm", True),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_resolves_root_for_default_htm_at_help_root():
     """WebHelp/TriPane entry (default.htm) sits AT the help root, not in Content/.
 
