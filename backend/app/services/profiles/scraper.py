@@ -35,6 +35,12 @@ class Scraper:
         from app.services.browserless import browserless_client
         return await browserless_client.render(url)
 
+    async def get_rendered_html(self, url: str, wait_for: str | None = None) -> str:
+        """Fully-rendered light-DOM HTML via Browserless, after ``wait_for``
+        appears — for navs/content built client-side (e.g. Commvault's #nav)."""
+        from app.services.browserless import browserless_client
+        return await browserless_client.render_html(url, wait_selector=wait_for)
+
 
 class FakeScraper:
     """Test double: serves canned HTML per URL and a canned URL list."""
@@ -45,11 +51,13 @@ class FakeScraper:
         urls: list[str] | None = None,
         raw_by_url: dict[str, str] | None = None,
         render_by_url: dict[str, dict] | None = None,
+        rendered_html_by_url: dict[str, str] | None = None,
     ):
         self._h = html_by_url
         self._urls = urls or list(html_by_url)
         self._raw = raw_by_url or {}
         self._render = render_by_url or {}
+        self._rendered_html = rendered_html_by_url or {}
 
     async def get_html(self, url: str, wait_ms: int = 1500) -> str:
         return self._h.get(url, "")
@@ -64,3 +72,6 @@ class FakeScraper:
 
     async def render(self, url: str) -> dict:
         return self._render.get(url, {})
+
+    async def get_rendered_html(self, url: str, wait_for: str | None = None) -> str:
+        return self._rendered_html.get(url, "")
