@@ -89,6 +89,87 @@ export default async function ({ page, context }) {
 """
 
 
+# Browserless /function that traverses a lazy-loaded sidebar tree depth-first,
+# clicking each parent's toggle to reveal its children, and returns the ordered
+# nodes with depth. Mirrors the proven Commvault Playwright approach. Selectors:
+# ul.nav-group-root (root) / ul.nav-group (children), li > div.nav-item with
+# data-is-parent, a.nav-text.fetch-doc (link), button.nav-parent-toggle (expand).
+_TOC_EXPAND_CODE = r"""
+export default async function ({ page, context }) {
+  const { url, sectionId } = context;
+  await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+  await page.waitForSelector('div#nav > ul.nav-group-root', { timeout: 30000 });
+
+  const out = [];
+  const expanded = new Set();
+
+  const readItems = (sel) => page.evaluate((s) => {
+    const list = document.querySelector(s);
+    if (!list) return [];
+    return Array.from(list.children).filter(el => el.tagName === 'LI').map(li => {
+      const navItem = li.querySelector(':scope > div.nav-item');
+      const link = navItem ? navItem.querySelector('a.nav-text.fetch-doc') : null;
+      return {
+        id: li.id || '',
+        href: link ? link.getAttribute('href') : null,
+        title: (link ? link.textContent : (navItem ? navItem.textContent : '')).trim(),
+        isParent: navItem ? navItem.hasAttribute('data-is-parent') : false,
+      };
+    });
+  }, sel);
+
+  // Top-level-only mode: list the root sections without expanding (the caller
+  // then expands each section in its own bounded call).
+  if (sectionId === '__TOP__') {
+    const tops = (await readItems('div#nav > ul.nav-group-root')).map(it => ({
+      id: it.id, href: it.href, title: it.title, level: 0, isParent: it.isParent,
+    }));
+    return { data: { toc: tops }, type: 'application/json' };
+  }
+
+  async function expand(id) {
+    if (!id || expanded.has(id)) return false;
+    expanded.add(id);
+    const liSel = `li[id="${id}"]`;
+    try {
+      await page.click(`${liSel} > div.nav-item button.nav-parent-toggle`);
+      await page.waitForSelector(`${liSel} > ul.nav-group > li`, { timeout: 6000 });
+      return true;
+    } catch (e) { return false; }
+  }
+
+  async function processList(sel, depth) {
+    for (const it of await readItems(sel)) {
+      out.push({ id: it.id, href: it.href, title: it.title, level: depth, isParent: it.isParent });
+      if (it.isParent && await expand(it.id)) {
+        await processList(`li[id="${it.id}"] > ul.nav-group`, depth + 1);
+      }
+    }
+  }
+
+  if (sectionId) {
+    const info = await page.evaluate((sid) => {
+      const li = document.getElementById(sid); if (!li) return null;
+      const ni = li.querySelector(':scope > div.nav-item');
+      const a = ni ? ni.querySelector('a.nav-text.fetch-doc') : null;
+      return { href: a ? a.getAttribute('href') : null,
+               title: (a ? a.textContent : (ni ? ni.textContent : '')).trim(),
+               isParent: ni ? ni.hasAttribute('data-is-parent') : false };
+    }, sectionId);
+    if (info) {
+      out.push({ id: sectionId, href: info.href, title: info.title, level: 0, isParent: info.isParent });
+      if (info.isParent && await expand(sectionId)) {
+        await processList(`li[id="${sectionId}"] > ul.nav-group`, 1);
+      }
+    }
+  } else {
+    await processList('div#nav > ul.nav-group-root', 0);
+  }
+  return { data: { toc: out }, type: 'application/json' };
+}
+"""
+
+
 class BrowserlessError(Exception):
     """Raised when Browserless is unreachable or returns an unusable response."""
 
@@ -102,15 +183,24 @@ class BrowserlessClient:
         self.wait_ms = wait_ms or settings.browserless_wait_ms
 
     async def _post(self, code: str, context: dict, target_url: str,
-                    client: httpx.AsyncClient | None = None) -> dict:
-        """POST a /function call and return its unwrapped data dict."""
+                    client: httpx.AsyncClient | None = None,
+                    session_timeout_ms: int | None = None,
+                    http_timeout_s: float = 120.0) -> dict:
+        """POST a /function call and return its unwrapped data dict.
+
+        ``session_timeout_ms`` caps the Browserless session (``?timeout=``) — raise
+        it for long jobs like full TOC expansion (lots of clicks). ``http_timeout_s``
+        must exceed it so the HTTP read doesn't give up first.
+        """
         endpoint = f"{self.url}/function"
+        if session_timeout_ms:
+            endpoint += f"?timeout={session_timeout_ms}"  # token stays in the header
         # Token as a Bearer header, not ?token=, so it doesn't leak into logs.
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else None
         payload = {"code": code, "context": context}
 
         owns = client is None
-        client = client or httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0))
+        client = client or httpx.AsyncClient(timeout=httpx.Timeout(http_timeout_s, connect=10.0))
         try:
             resp = await client.post(endpoint, headers=headers, json=payload)
             resp.raise_for_status()
@@ -147,6 +237,25 @@ class BrowserlessClient:
             target_url, client,
         )
         return data.get("html", "")
+
+    async def expand_toc(self, target_url: str, section_id: str | None = None,
+                         client: httpx.AsyncClient | None = None) -> list[dict]:
+        """Depth-first expand a lazy sidebar tree and return ordered nodes.
+
+        Each node is {href, title, level, isParent}. ``section_id`` scopes to one
+        section's ``<li id>`` (else the whole nav-group-root). Uses a long
+        Browserless session timeout since expansion clicks every parent.
+        """
+        timeout_ms = settings.browserless_toc_timeout_ms
+        data = await self._post(
+            _TOC_EXPAND_CODE,
+            {"url": target_url, "sectionId": section_id},
+            target_url, client,
+            session_timeout_ms=timeout_ms,
+            http_timeout_s=timeout_ms / 1000 + 30,
+        )
+        toc = data.get("toc")
+        return toc if isinstance(toc, list) else []
 
 
 browserless_client = BrowserlessClient()

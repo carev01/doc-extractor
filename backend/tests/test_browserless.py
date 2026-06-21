@@ -62,6 +62,21 @@ async def test_render_accepts_unwrapped_body():
 
 
 @pytest.mark.asyncio
+async def test_expand_toc_uses_long_session_timeout_and_returns_nodes():
+    cap = {}
+    nodes = [{"href": "a.html", "title": "A", "level": 0, "isParent": True},
+             {"href": None, "title": "Cat", "level": 1, "isParent": True}]
+    resp = _FakeResp(body={"data": {"toc": nodes}})
+    client = BrowserlessClient(url="http://bl:3000", token="tok")
+    out = await client.expand_toc("https://docs.example.com/index.html", client=_FakeClient(resp, cap))
+    # Session timeout passed via ?timeout= (token still header-only).
+    assert "?timeout=" in cap["url"] and "tok" not in cap["url"]
+    assert cap["headers"] == {"Authorization": "Bearer tok"}
+    assert cap["json"]["context"]["sectionId"] is None
+    assert out == nodes
+
+
+@pytest.mark.asyncio
 async def test_render_raises_on_non_dict_payload():
     cap = {}
     resp = _FakeResp(body=["not", "a", "dict"])

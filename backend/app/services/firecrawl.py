@@ -109,6 +109,9 @@ class FirecrawlService:
     EMPTY_CONTENT_RETRIES = 2
     EMPTY_CONTENT_RETRY_DELAY = 2.0
     BATCH_POLL_INTERVAL = 5.0
+    # Cap URLs per Firecrawl batch; large doc sets are scraped as sequential
+    # chunks so we don't overwhelm Firecrawl (503s on huge batches + retries).
+    MAX_BATCH_URLS = 100
 
     def __init__(self):
         self.base_url = settings.firecrawl_api_url.rstrip("/")
@@ -1020,19 +1023,23 @@ class FirecrawlService:
                 # serialise the content, so render each article in Browserless.
                 await self._scrape_via_browserless(db, source_id, run.id, url_to_entry)
             else:
-                # Submit all TOC URLs in one batch job so Firecrawl can process
-                # them concurrently, then consume results via cursor pagination.
+                # Submit in capped chunks (≤ MAX_BATCH_URLS) processed
+                # sequentially, so a huge doc set doesn't overwhelm Firecrawl
+                # (large single batches + empty-retry storms caused 503s).
                 batch_tag = f"src-{source_id}" if self.api_key else None
-                job_id = await self._submit_batch(
-                    list(url_to_entry.keys()), source_id, content_config=content_cfg
-                )
-                run.firecrawl_job_id = job_id
-                await db.commit()
-
-                await self._poll_batch_and_process(
-                    db, source_id, run.id, url_to_entry, job_id, batch_tag=batch_tag,
-                    content_config=content_cfg,
-                )
+                all_urls = list(url_to_entry.keys())
+                for i in range(0, len(all_urls), self.MAX_BATCH_URLS):
+                    chunk = all_urls[i:i + self.MAX_BATCH_URLS]
+                    chunk_map = {u: url_to_entry[u] for u in chunk}
+                    job_id = await self._submit_batch(
+                        chunk, source_id, content_config=content_cfg
+                    )
+                    run.firecrawl_job_id = job_id
+                    await db.commit()
+                    await self._poll_batch_and_process(
+                        db, source_id, run.id, chunk_map, job_id, batch_tag=batch_tag,
+                        content_config=content_cfg,
+                    )
 
             # Record removals (pages gone from the rebuilt TOC) before completing.
             await self._reconcile_removals(db, source_id, run.id)
