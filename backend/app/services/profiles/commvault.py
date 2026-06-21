@@ -33,7 +33,13 @@ class CommvaultProfile:
         return 'id="nav"' in root_html and "nav-group" in root_html
 
     def content_config(self) -> dict:
-        return {"includeTags": ["#doc"], "onlyMainContent": False, "waitFor": 1500}
+        # #doc holds the article, but starts with a ">" breadcrumb trail; drop it.
+        return {
+            "includeTags": ["#doc"],
+            "excludeTags": [".breadcrumbs"],
+            "onlyMainContent": False,
+            "waitFor": 1500,
+        }
 
     @staticmethod
     def _row_anchor(li):
