@@ -33,6 +33,46 @@ FULL_TOC = {
     ],
 }
 
+# Checkpoint (resumable) fixture: a top-level listing keyed by "__TOP__" plus
+# each section's subtree keyed by its <li id>. build_toc expands one section per
+# call and persists it, so the index can resume mid-build.
+CKPT_TOC = {
+    "__TOP__": [
+        {"id": GS, "href": "get_started_with_commvault.html", "title": "Get started", "level": 0, "isParent": True},
+        {"id": "nav__protect", "href": None, "title": "Protect", "level": 0, "isParent": True},
+    ],
+    GS: [
+        {"id": GS, "href": "get_started_with_commvault.html", "title": "Get started", "level": 0, "isParent": True},
+        {"id": "x1", "href": "deploy_infra.html", "title": "Deploy infrastructure", "level": 1, "isParent": False},
+        {"id": "x2", "href": "configure_network.html", "title": "Configure network", "level": 1, "isParent": False},
+    ],
+    "nav__protect": [
+        {"id": "nav__protect", "href": None, "title": "Protect", "level": 0, "isParent": True},
+        {"id": "x3", "href": "cloud_discovery.html", "title": "Cloud discovery", "level": 1, "isParent": False},
+    ],
+}
+
+
+class FakeCheckpoint:
+    """In-memory stand-in for TocBuildCheckpoint."""
+
+    def __init__(self, initial: dict | None = None):
+        self.data = dict(initial or {})
+        self.cleared = False
+
+    async def load(self) -> dict:
+        return dict(self.data)
+
+    async def save_top_level(self, tops):
+        self.data["top_level"] = tops
+
+    async def save_section(self, section_id, nodes):
+        self.data.setdefault("sections", {})[section_id] = nodes
+
+    async def clear(self):
+        self.cleared = True
+        self.data = {}
+
 
 # ── Detection ────────────────────────────────────────────────────────────────
 
@@ -110,9 +150,9 @@ async def test_section_id_derivation():
 
 
 @pytest.mark.asyncio
-async def test_index_root_expands_whole_tree_in_one_call():
-    """index.html → a single expand_toc call with section_id=None (one session
-    walks the whole tree), not a per-section fan-out."""
+async def test_index_root_no_checkpoint_expands_whole_tree_in_one_call():
+    """index.html without a checkpoint (e.g. tests) → a single expand_toc call
+    with section_id=None (one session walks the whole tree)."""
     captured = []
 
     class CapturingScraper(FakeScraper):
@@ -120,6 +160,68 @@ async def test_index_root_expands_whole_tree_in_one_call():
             captured.append(section_id)
             return await super().expand_toc(url, section_id)
 
-    sc = CapturingScraper({}, toc_by_url=FULL_TOC)
+    sc = CapturingScraper({}, toc_by_url=FULL_TOC)  # checkpoint defaults to None
     await CommvaultProfile().build_toc(INDEX_ROOT, sc)
     assert captured == [None]
+
+
+# ── FULL mode (index) with a checkpoint: resumable per-section expansion ─────
+
+class _CapturingScraper(FakeScraper):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.expanded = []
+
+    async def expand_toc(self, url, section_id=None):
+        self.expanded.append(section_id)
+        return await super().expand_toc(url, section_id)
+
+
+@pytest.mark.asyncio
+async def test_checkpointed_index_lists_top_then_expands_each_section():
+    ckpt = FakeCheckpoint()
+    sc = _CapturingScraper({}, toc_by_url=CKPT_TOC, checkpoint=ckpt)
+    toc = await CommvaultProfile().build_toc(INDEX_ROOT, sc)
+    # __TOP__ first, then one call per top-level section, in order.
+    assert sc.expanded == ["__TOP__", GS, "nav__protect"]
+    assert [(e.title, e.level) for e in toc] == [
+        ("Get started", 0), ("Deploy infrastructure", 1), ("Configure network", 1),
+        ("Protect", 0), ("Cloud discovery", 1),
+    ]
+    # Checkpoint cleared once the whole tree is assembled.
+    assert ckpt.cleared is True
+
+
+@pytest.mark.asyncio
+async def test_checkpointed_index_resumes_and_skips_done_sections():
+    # Resume state: top-level already read, "Get started" already expanded.
+    ckpt = FakeCheckpoint({
+        "top_level": CKPT_TOC["__TOP__"],
+        "sections": {GS: CKPT_TOC[GS]},
+    })
+    sc = _CapturingScraper({}, toc_by_url=CKPT_TOC, checkpoint=ckpt)
+    toc = await CommvaultProfile().build_toc(INDEX_ROOT, sc)
+    # Neither __TOP__ nor the done section is re-expanded — only "Protect".
+    assert sc.expanded == ["nav__protect"]
+    titles = [e.title for e in toc]
+    assert titles == ["Get started", "Deploy infrastructure", "Configure network",
+                      "Protect", "Cloud discovery"]
+    assert ckpt.cleared is True
+
+
+@pytest.mark.asyncio
+async def test_checkpointed_index_persists_each_section_as_it_completes():
+    ckpt = FakeCheckpoint()
+
+    saved = []
+    orig_save = ckpt.save_section
+
+    async def tracking_save(sid, nodes):
+        saved.append(sid)
+        await orig_save(sid, nodes)
+
+    ckpt.save_section = tracking_save
+    sc = _CapturingScraper({}, toc_by_url=CKPT_TOC, checkpoint=ckpt)
+    await CommvaultProfile().build_toc(INDEX_ROOT, sc)
+    # Each expanded section was persisted before the build finished.
+    assert saved == [GS, "nav__protect"]

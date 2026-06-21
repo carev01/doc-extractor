@@ -67,11 +67,12 @@ class Settings(BaseSettings):
     # Per-article render budget (ms) and concurrency for browserless content scraping.
     browserless_wait_ms: int = 9000
     browserless_concurrency: int = 4
-    # TOC expansion runs in a single Browserless session that clicks every parent
-    # in the lazy sidebar (e.g. Commvault's ~9,670-node tree). The page renders
-    # once, then each toggle is a cheap in-page click (~200ms), but a very large
-    # tree still needs a long session — size this for the whole walk.
-    browserless_toc_timeout_ms: int = 1_500_000  # 25 min
+    # TOC expansion clicks every parent in a lazy sidebar (e.g. Commvault's
+    # ~9,670-node tree). The page renders once, then each toggle is a cheap
+    # in-page click (~200ms), but a very large section still needs a long
+    # session. The index build splits into one session per top-level section
+    # (each checkpointed for resume), so this caps a single section's walk.
+    browserless_toc_timeout_ms: int = 1_800_000  # 30 min
 
     model_config = {
         "env_prefix": "DOCEXTRACTOR_",

@@ -9,6 +9,7 @@ from app.models.image import ArticleImage
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.schedule import Schedule
 from app.models.export_job import ExportJob, ExportStatus
+from app.models.toc_checkpoint import TocCheckpoint
 
 __all__ = [
     "Vendor",
@@ -23,4 +24,5 @@ __all__ = [
     "Schedule",
     "ExportJob",
     "ExportStatus",
+    "TocCheckpoint",
 ]

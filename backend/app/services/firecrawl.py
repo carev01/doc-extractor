@@ -26,6 +26,8 @@ from app.services.profiles.detector import detect_platform
 import app.services.profiles.llm as llm_mod
 from app.services.profiles.scraper import Scraper
 from app.services.sanitize import sanitize_markdown
+from app.services.toc_checkpoint import TocBuildCheckpoint
+from app.core.database import async_session
 
 # Default content scrape options when no profile config is supplied (legacy Commvault).
 _LEGACY_CONTENT = {"includeTags": ["#doc"], "onlyMainContent": False, "waitFor": 1500}
@@ -946,7 +948,15 @@ class FirecrawlService:
             logger.info(
                 "Discovering TOC for %s (profile=%s)", source.base_url, profile.name
             )
-            toc_objs = await profile.build_toc(source.base_url, Scraper(self))
+            # A persistent checkpoint lets a long sidebar expansion (e.g.
+            # Commvault's ~9,670-node tree) resume after an interruption instead
+            # of restarting; profiles that don't expand section-by-section ignore
+            # it. Uses its own sessions so progress is independent of this run's
+            # transaction.
+            checkpoint = TocBuildCheckpoint(async_session, source_id)
+            toc_objs = await profile.build_toc(
+                source.base_url, Scraper(self, checkpoint=checkpoint)
+            )
             toc_entries = [
                 {
                     "title": e.title, "url": e.url, "level": e.level,

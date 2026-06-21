@@ -126,6 +126,15 @@ export default async function ({ page, context }) {
     });
   }, sel);
 
+  // Top-level-only mode: list the root sections without expanding. The caller
+  // (resumable build) then expands each section in its own checkpointed call.
+  if (sectionId === '__TOP__') {
+    const tops = (await readItems('div#nav > ul.nav-group-root')).map(it => ({
+      id: it.id, href: it.href, title: it.title, level: 0, isParent: it.isParent,
+    }));
+    return { data: { toc: tops }, type: 'application/json' };
+  }
+
   async function expand(id) {
     if (!id || expanded.has(id)) return false;
     expanded.add(id);

@@ -44,26 +44,66 @@ class CommvaultProfile:
     async def build_toc(self, root_url: str, scraper) -> list[TocEntry]:
         """Depth-first expand the sidebar (via Browserless) into an ordered TOC.
 
-        Mirrors the proven standalone Playwright crawler: a **single** Browserless
-        session loads the page once (the only expensive step is rendering the
-        ~515KB nav) then walks the whole tree with cheap in-page toggle clicks.
+        Mirrors the proven standalone Playwright crawler: load the page, then walk
+        the tree with cheap in-page toggle clicks (~200ms each). One full session
+        captures the whole ~9,670-node tree in ~14 min.
 
-        * index.html → the whole product doc set, expanded in one session.
-        * Specific page → that section's ``<li id>`` (``nav__<page-key>``) subtree.
-
-        An earlier design split index.html into one Browserless call per
-        top-level section and ran them concurrently; that re-rendered the nav N
-        times and overran Browserless's concurrency, starving big sections into
-        empty stubs. One session is both faster and reliable.
+        * Specific page → that section's ``<li id>`` (``nav__<page-key>``) subtree,
+          in a single session.
+        * index.html with a checkpoint store → the whole product doc set, expanded
+          **one top-level section per Browserless session, sequentially**, each
+          persisted as it completes so an interrupted run resumes from the
+          sections already done (see ``_build_full_resumable``). Sequential (not
+          concurrent) avoids overrunning Browserless's session concurrency, which
+          previously starved big sections into empty stubs.
+        * index.html without a checkpoint (tests) → one full session.
         """
         root_file = urlparse(root_url).path.rsplit("/", 1)[-1]
 
-        section_id = None
         if root_file.endswith(".html") and root_file != "index.html":
             section_id = "nav__" + root_file[:-5]
+            return self._nodes_to_toc(await scraper.expand_toc(root_url, section_id=section_id), root_url)
 
-        nodes = await scraper.expand_toc(root_url, section_id=section_id)
-        return self._nodes_to_toc(nodes, root_url)
+        checkpoint = getattr(scraper, "checkpoint", None)
+        if checkpoint is None:
+            return self._nodes_to_toc(await scraper.expand_toc(root_url), root_url)
+
+        return self._nodes_to_toc(await self._build_full_resumable(root_url, scraper, checkpoint), root_url)
+
+    @staticmethod
+    async def _build_full_resumable(root_url: str, scraper, checkpoint) -> list[dict]:
+        """Expand every top-level section sequentially, checkpointing each.
+
+        On resume, sections already in the checkpoint are reused (not re-walked);
+        only the remaining ones are expanded. The checkpoint is cleared once the
+        whole tree is assembled.
+        """
+        state = await checkpoint.load()
+        tops = state.get("top_level")
+        if not tops:
+            tops = await scraper.expand_toc(root_url, section_id="__TOP__")
+            await checkpoint.save_top_level(tops)
+        done = state.get("sections") or {}
+
+        all_nodes: list[dict] = []
+        for top in tops:
+            sid = top.get("id")
+            if sid in done:
+                nodes = done[sid]
+            elif top.get("isParent") and sid:
+                nodes = await scraper.expand_toc(root_url, section_id=sid)
+                # Keep at least the section's own node if it expanded to nothing.
+                nodes = nodes or [{"id": sid, "href": top.get("href"),
+                                   "title": top.get("title"), "level": 0,
+                                   "isParent": top.get("isParent")}]
+                await checkpoint.save_section(sid, nodes)
+            else:
+                nodes = [{"id": sid, "href": top.get("href"), "title": top.get("title"),
+                          "level": 0, "isParent": top.get("isParent")}]
+            all_nodes.extend(nodes)
+
+        await checkpoint.clear()
+        return all_nodes
 
     @staticmethod
     def _nodes_to_toc(nodes: list[dict], root_url: str) -> list[TocEntry]:

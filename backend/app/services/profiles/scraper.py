@@ -6,10 +6,16 @@ HTML, with no network.
 
 
 class Scraper:
-    """Thin adapter over FirecrawlService for use by extraction profiles."""
+    """Thin adapter over FirecrawlService for use by extraction profiles.
 
-    def __init__(self, firecrawl):
+    ``checkpoint`` (a TocBuildCheckpoint or None) lets a profile persist
+    incremental TOC-build progress so a long expansion can resume after an
+    interruption; profiles that don't need it ignore it.
+    """
+
+    def __init__(self, firecrawl, checkpoint=None):
         self._fc = firecrawl
+        self.checkpoint = checkpoint
 
     async def get_html(self, url: str, wait_ms: int = 1500) -> str:
         data = await self._fc._firecrawl_request(
@@ -59,6 +65,7 @@ class FakeScraper:
         render_by_url: dict[str, dict] | None = None,
         rendered_html_by_url: dict[str, str] | None = None,
         toc_by_url: dict[str, list] | None = None,
+        checkpoint=None,
     ):
         self._h = html_by_url
         self._urls = urls or list(html_by_url)
@@ -66,6 +73,7 @@ class FakeScraper:
         self._render = render_by_url or {}
         self._rendered_html = rendered_html_by_url or {}
         self._toc = toc_by_url or {}
+        self.checkpoint = checkpoint
 
     async def get_html(self, url: str, wait_ms: int = 1500) -> str:
         return self._h.get(url, "")
