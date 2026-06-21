@@ -1,6 +1,5 @@
-import json
-import os
 import sys
+import os
 
 import pytest
 
@@ -8,31 +7,36 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.services.profiles.commvault import CommvaultProfile
 from app.services.profiles.scraper import FakeScraper
 
-ROOT = "https://documentation.commvault.com/11.44/software/get_started_with_commvault.html"
+BASE = "https://documentation.commvault.com/11.44/software/"
+INDEX_ROOT = BASE + "index.html"
+SECTION_ROOT = BASE + "get_started_with_commvault.html"
 
-# Canned Browserless-rendered nav: the active "Get started" section (nav-open)
-# expanded with its children, plus a collapsed sibling section.
-RENDERED_NAV = """
-<html><body>
-<div id="nav" class="nav">
-  <ul>
-    <li class="nav-row nav-open">
-      <div class="nav-item"><a href="get_started_with_commvault.html">Get started</a></div>
-      <ul>
-        <li class="nav-row"><div class="nav-item"><a href="deploy_commvault_infrastructure.html">Deploy infrastructure</a></div></li>
-        <li class="nav-row"><div class="nav-item"><a href="configure_network_connectivity_for_commvault.html">Configure network connectivity</a></div></li>
-      </ul>
-    </li>
-    <li class="nav-row"><div class="nav-item"><a href="what_s_new.html">What's new</a></div></li>
-    <li class="nav-row"><div class="nav-item"><a href="explore.html">Explore</a></div></li>
-  </ul>
-</div>
-</body></html>
-"""
+GS = "nav__get_started_with_commvault"
 
+# Full-mode fixture: a top-level listing (__TOP__) plus each section's depth-first
+# expansion (section node at level 0 + descendants). "Protect" is a url-less
+# category with a child.
+FULL_TOC = {
+    "__TOP__": [
+        {"id": GS, "href": "get_started_with_commvault.html", "title": "Get started", "level": 0, "isParent": True},
+        {"id": "nav__protect", "href": None, "title": "Protect", "level": 0, "isParent": True},
+    ],
+    GS: [
+        {"id": GS, "href": "get_started_with_commvault.html", "title": "Get started", "level": 0, "isParent": True},
+        {"id": "x1", "href": "deploy_infra.html", "title": "Deploy infrastructure", "level": 1, "isParent": False},
+        {"id": "x2", "href": "configure_network.html", "title": "Configure network", "level": 1, "isParent": False},
+    ],
+    "nav__protect": [
+        {"id": "nav__protect", "href": None, "title": "Protect", "level": 0, "isParent": True},
+        {"id": "x3", "href": "cloud_discovery.html", "title": "Cloud discovery", "level": 1, "isParent": False},
+    ],
+}
+
+
+# ── Detection ────────────────────────────────────────────────────────────────
 
 def test_detect_matches_commvault_host():
-    assert CommvaultProfile().detect("<html>Loading…</html>", ROOT) is True
+    assert CommvaultProfile().detect("<html>Loading…</html>", INDEX_ROOT) is True
 
 
 def test_detect_matches_old_inline_nav():
@@ -46,97 +50,74 @@ def test_detect_rejects_other_platforms():
     ) is False
 
 
-def test_content_config_scopes_to_doc():
+# ── Content config ───────────────────────────────────────────────────────────
+
+def test_content_config_scopes_to_doc_and_drops_breadcrumb():
     cfg = CommvaultProfile().content_config()
     assert cfg["includeTags"] == ["#doc"]
-    assert cfg["excludeTags"] == [".breadcrumbs"]  # drop the leading breadcrumb trail
+    assert cfg["excludeTags"] == [".breadcrumbs"]
 
 
-@pytest.mark.asyncio
-async def test_build_toc_scoped_hierarchy():
-    """TOC is scoped to the active section and nests via the rendered <ul> tree."""
-    scraper = FakeScraper({}, rendered_html_by_url={ROOT: RENDERED_NAV})
-    toc = await CommvaultProfile().build_toc(ROOT, scraper)
-    got = [(e.title, e.level, e.is_article) for e in toc]
-    assert got == [
-        ("Get started", 0, False),                  # section root (has children)
-        ("Deploy infrastructure", 1, True),
-        ("Configure network connectivity", 1, True),
-    ]
-    # 'What's new' / 'Explore' (other top-level sections) are NOT included.
-    assert "What's new" not in [e.title for e in toc]
-
+# ── FULL mode (index): top-level listing + per-section expansion, combined ───
 
 @pytest.mark.asyncio
-async def test_build_toc_parent_and_absolute_urls():
-    scraper = FakeScraper({}, rendered_html_by_url={ROOT: RENDERED_NAV})
-    toc = await CommvaultProfile().build_toc(ROOT, scraper)
-    by_title = {e.title: e for e in toc}
-    assert by_title["Get started"].parent_url is None
-    assert by_title["Deploy infrastructure"].parent_url == by_title["Get started"].url
-    for e in toc:
-        assert e.url.startswith("https://documentation.commvault.com/11.44/software/")
-
-
-@pytest.mark.asyncio
-async def test_build_toc_empty_when_nav_not_rendered():
-    scraper = FakeScraper({}, rendered_html_by_url={ROOT: "<html><body>Loading…</body></html>"})
-    assert await CommvaultProfile().build_toc(ROOT, scraper) == []
-
-
-# ── FULL mode (rooted at index.html) ────────────────────────────────────────
-
-FULL_BASE = "https://documentation.commvault.com/11.44/software/"
-INDEX_ROOT = FULL_BASE + "index.html"
-
-
-def _page(navpath_keys, title):
-    meta = "[" + ", ".join(f"&#34;{k}&#34;" for k in navpath_keys) + "]"
-    return f'<html><head><meta name="nav-path" content="{meta}"></head>' \
-           f'<body><div id="doc"><h1 class="heading">{title}</h1></div></body></html>'
-
-
-FULL_RAW = {
-    FULL_BASE + "static/scripts/nav-map.json": json.dumps([
-        "index.html", "get_started_with_commvault.html",
-        "deploy_infra.html", "what_s_new.html",
-    ]),
-    FULL_BASE + "index.html": _page(["index"], "Software"),
-    FULL_BASE + "get_started_with_commvault.html":
-        _page(["index", "get_started_with_commvault"], "Get started"),
-    FULL_BASE + "deploy_infra.html":
-        _page(["index", "get_started_with_commvault", "deploy_infra"], "Deploy infrastructure"),
-    # HTML-entity title — must be decoded to "What's new".
-    FULL_BASE + "what_s_new.html": _page(["index", "what_s_new"], "What&#39;s new"),
-}
-
-
-@pytest.mark.asyncio
-async def test_full_mode_builds_whole_hierarchical_tree():
-    """Rooted at index.html → full doc set, hierarchy from each page's nav-path."""
-    scraper = FakeScraper({}, raw_by_url=FULL_RAW)
+async def test_full_mode_combines_sections_in_order():
+    scraper = FakeScraper({}, toc_by_url=FULL_TOC)
     toc = await CommvaultProfile().build_toc(INDEX_ROOT, scraper)
-    got = [(e.title, e.level, e.url) for e in toc]
+    got = [(e.title, e.level, e.is_article, e.url) for e in toc]
     assert got == [
-        ("Software", 0, FULL_BASE + "index.html"),
-        ("Get started", 1, FULL_BASE + "get_started_with_commvault.html"),
-        ("Deploy infrastructure", 2, FULL_BASE + "deploy_infra.html"),
-        ("What's new", 1, FULL_BASE + "what_s_new.html"),
+        ("Get started", 0, True, BASE + "get_started_with_commvault.html"),
+        ("Deploy infrastructure", 1, True, BASE + "deploy_infra.html"),
+        ("Configure network", 1, True, BASE + "configure_network.html"),
+        ("Protect", 0, False, None),                       # url-less category section
+        ("Cloud discovery", 1, True, BASE + "cloud_discovery.html"),
     ]
 
 
 @pytest.mark.asyncio
-async def test_full_mode_parent_linkage():
-    scraper = FakeScraper({}, raw_by_url=FULL_RAW)
+async def test_full_mode_parent_links():
+    scraper = FakeScraper({}, toc_by_url=FULL_TOC)
     toc = await CommvaultProfile().build_toc(INDEX_ROOT, scraper)
     by = {e.title: e for e in toc}
-    assert by["Software"].parent_url is None
-    assert by["Get started"].parent_url == by["Software"].url
+    assert by["Get started"].parent_url is None
     assert by["Deploy infrastructure"].parent_url == by["Get started"].url
-    assert by["What's new"].parent_url == by["Software"].url
+    # Child of a url-less category → no parent_url (downstream level-adjacency links it).
+    assert by["Cloud discovery"].parent_url is None
+
+
+# ── SECTION mode (specific page): scoped to nav__<key> ───────────────────────
+
+@pytest.mark.asyncio
+async def test_section_mode_scopes_to_page_subtree():
+    scraper = FakeScraper({}, toc_by_url=FULL_TOC)
+    toc = await CommvaultProfile().build_toc(SECTION_ROOT, scraper)
+    assert [e.title for e in toc] == ["Get started", "Deploy infrastructure", "Configure network"]
 
 
 @pytest.mark.asyncio
-async def test_full_mode_empty_when_navmap_missing():
-    scraper = FakeScraper({}, raw_by_url={})  # nav-map.json fetch fails
-    assert await CommvaultProfile().build_toc(INDEX_ROOT, scraper) == []
+async def test_section_id_derivation():
+    captured = []
+
+    class CapturingScraper(FakeScraper):
+        async def expand_toc(self, url, section_id=None):
+            captured.append(section_id)
+            return await super().expand_toc(url, section_id)
+
+    sc = CapturingScraper({}, toc_by_url=FULL_TOC)
+    await CommvaultProfile().build_toc(SECTION_ROOT, sc)
+    assert captured == [GS]
+
+
+@pytest.mark.asyncio
+async def test_index_root_lists_top_level_first():
+    captured = []
+
+    class CapturingScraper(FakeScraper):
+        async def expand_toc(self, url, section_id=None):
+            captured.append(section_id)
+            return await super().expand_toc(url, section_id)
+
+    sc = CapturingScraper({}, toc_by_url=FULL_TOC)
+    await CommvaultProfile().build_toc(INDEX_ROOT, sc)
+    assert captured[0] == "__TOP__"
+    assert GS in captured and "nav__protect" in captured
