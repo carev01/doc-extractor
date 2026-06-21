@@ -15,14 +15,10 @@ of their own; they become url-less section entries that their children nest
 under. Article content is server-rendered in ``#doc`` (Firecrawl content path).
 """
 
-import asyncio
-import logging
 from urllib.parse import urljoin, urlparse
 
 from app.services.profiles import registry
 from app.services.profiles.base import TocEntry
-
-logger = logging.getLogger(__name__)
 
 
 class CommvaultProfile:
@@ -48,11 +44,19 @@ class CommvaultProfile:
     async def build_toc(self, root_url: str, scraper) -> list[TocEntry]:
         """Depth-first expand the sidebar (via Browserless) into an ordered TOC.
 
-        * Specific page → that section's ``<li id>`` (``nav__<page-key>``) subtree.
-        * index.html → the whole tree, expanded **one top-level section per
-          Browserless call** so no single session has to expand all ~9,670 nodes
-          (a session timeout would otherwise lose everything). Sections expand
-          concurrently; top-level order is preserved.
+        Mirrors the proven standalone Playwright crawler: load the page, then walk
+        the tree with cheap in-page toggle clicks (~200ms each). One full session
+        captures the whole ~9,670-node tree in ~14 min.
+
+        * Specific page → that section's ``<li id>`` (``nav__<page-key>``) subtree,
+          in a single session.
+        * index.html with a checkpoint store → the whole product doc set, expanded
+          **one top-level section per Browserless session, sequentially**, each
+          persisted as it completes so an interrupted run resumes from the
+          sections already done (see ``_build_full_resumable``). Sequential (not
+          concurrent) avoids overrunning Browserless's session concurrency, which
+          previously starved big sections into empty stubs.
+        * index.html without a checkpoint (tests) → one full session.
         """
         root_file = urlparse(root_url).path.rsplit("/", 1)[-1]
 
@@ -60,28 +64,46 @@ class CommvaultProfile:
             section_id = "nav__" + root_file[:-5]
             return self._nodes_to_toc(await scraper.expand_toc(root_url, section_id=section_id), root_url)
 
-        tops = await scraper.expand_toc(root_url, section_id="__TOP__")
+        checkpoint = getattr(scraper, "checkpoint", None)
+        if checkpoint is None:
+            return self._nodes_to_toc(await scraper.expand_toc(root_url), root_url)
+
+        return self._nodes_to_toc(await self._build_full_resumable(root_url, scraper, checkpoint), root_url)
+
+    @staticmethod
+    async def _build_full_resumable(root_url: str, scraper, checkpoint) -> list[dict]:
+        """Expand every top-level section sequentially, checkpointing each.
+
+        On resume, sections already in the checkpoint are reused (not re-walked);
+        only the remaining ones are expanded. The checkpoint is cleared once the
+        whole tree is assembled.
+        """
+        state = await checkpoint.load()
+        tops = state.get("top_level")
         if not tops:
-            return []
+            tops = await scraper.expand_toc(root_url, section_id="__TOP__")
+            await checkpoint.save_top_level(tops)
+        done = state.get("sections") or {}
 
-        async def section_nodes(top: dict) -> list[dict]:
-            # Always keep the top-level node even if its subtree can't be
-            # expanded (e.g. a very large section that exceeds the Browserless
-            # timeout) — one failed section must not lose the whole TOC.
-            fallback = [{"href": top.get("href"), "title": top.get("title"),
-                         "level": 0, "isParent": top.get("isParent")}]
-            if not (top.get("isParent") and top.get("id")):
-                return fallback
-            try:
-                nodes = await scraper.expand_toc(root_url, section_id=top["id"])
-            except Exception as exc:
-                logger.warning("Commvault section %r expansion failed: %s", top.get("title"), exc)
-                return fallback
-            return nodes or fallback
+        all_nodes: list[dict] = []
+        for top in tops:
+            sid = top.get("id")
+            if sid in done:
+                nodes = done[sid]
+            elif top.get("isParent") and sid:
+                nodes = await scraper.expand_toc(root_url, section_id=sid)
+                # Keep at least the section's own node if it expanded to nothing.
+                nodes = nodes or [{"id": sid, "href": top.get("href"),
+                                   "title": top.get("title"), "level": 0,
+                                   "isParent": top.get("isParent")}]
+                await checkpoint.save_section(sid, nodes)
+            else:
+                nodes = [{"id": sid, "href": top.get("href"), "title": top.get("title"),
+                          "level": 0, "isParent": top.get("isParent")}]
+            all_nodes.extend(nodes)
 
-        chunks = await asyncio.gather(*(section_nodes(t) for t in tops))
-        all_nodes = [n for chunk in chunks for n in chunk]
-        return self._nodes_to_toc(all_nodes, root_url)
+        await checkpoint.clear()
+        return all_nodes
 
     @staticmethod
     def _nodes_to_toc(nodes: list[dict], root_url: str) -> list[TocEntry]:

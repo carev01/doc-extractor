@@ -13,10 +13,30 @@ SECTION_ROOT = BASE + "get_started_with_commvault.html"
 
 GS = "nav__get_started_with_commvault"
 
-# Full-mode fixture: a top-level listing (__TOP__) plus each section's depth-first
-# expansion (section node at level 0 + descendants). "Protect" is a url-less
-# category with a child.
+# A single Browserless session expands the whole tree depth-first and returns one
+# ordered node list. The full-mode fixture (keyed by the index URL, i.e.
+# section_id=None) is that flat depth-first walk; the section-mode fixture (keyed
+# by the section's <li id>) is just that section's subtree. "Protect" is a
+# url-less category with a child.
 FULL_TOC = {
+    INDEX_ROOT: [
+        {"id": GS, "href": "get_started_with_commvault.html", "title": "Get started", "level": 0, "isParent": True},
+        {"id": "x1", "href": "deploy_infra.html", "title": "Deploy infrastructure", "level": 1, "isParent": False},
+        {"id": "x2", "href": "configure_network.html", "title": "Configure network", "level": 1, "isParent": False},
+        {"id": "nav__protect", "href": None, "title": "Protect", "level": 0, "isParent": True},
+        {"id": "x3", "href": "cloud_discovery.html", "title": "Cloud discovery", "level": 1, "isParent": False},
+    ],
+    GS: [
+        {"id": GS, "href": "get_started_with_commvault.html", "title": "Get started", "level": 0, "isParent": True},
+        {"id": "x1", "href": "deploy_infra.html", "title": "Deploy infrastructure", "level": 1, "isParent": False},
+        {"id": "x2", "href": "configure_network.html", "title": "Configure network", "level": 1, "isParent": False},
+    ],
+}
+
+# Checkpoint (resumable) fixture: a top-level listing keyed by "__TOP__" plus
+# each section's subtree keyed by its <li id>. build_toc expands one section per
+# call and persists it, so the index can resume mid-build.
+CKPT_TOC = {
     "__TOP__": [
         {"id": GS, "href": "get_started_with_commvault.html", "title": "Get started", "level": 0, "isParent": True},
         {"id": "nav__protect", "href": None, "title": "Protect", "level": 0, "isParent": True},
@@ -31,6 +51,27 @@ FULL_TOC = {
         {"id": "x3", "href": "cloud_discovery.html", "title": "Cloud discovery", "level": 1, "isParent": False},
     ],
 }
+
+
+class FakeCheckpoint:
+    """In-memory stand-in for TocBuildCheckpoint."""
+
+    def __init__(self, initial: dict | None = None):
+        self.data = dict(initial or {})
+        self.cleared = False
+
+    async def load(self) -> dict:
+        return dict(self.data)
+
+    async def save_top_level(self, tops):
+        self.data["top_level"] = tops
+
+    async def save_section(self, section_id, nodes):
+        self.data.setdefault("sections", {})[section_id] = nodes
+
+    async def clear(self):
+        self.cleared = True
+        self.data = {}
 
 
 # ── Detection ────────────────────────────────────────────────────────────────
@@ -109,26 +150,9 @@ async def test_section_id_derivation():
 
 
 @pytest.mark.asyncio
-async def test_full_mode_resilient_to_failed_section():
-    """A section whose expansion errors (e.g. Browserless timeout) keeps its
-    top-level node; the rest of the TOC is unaffected."""
-    class FlakyScraper(FakeScraper):
-        async def expand_toc(self, url, section_id=None):
-            if section_id == "nav__protect":
-                raise RuntimeError("408 timeout")
-            return await super().expand_toc(url, section_id)
-
-    sc = FlakyScraper({}, toc_by_url=FULL_TOC)
-    toc = await CommvaultProfile().build_toc(INDEX_ROOT, sc)
-    titles = [e.title for e in toc]
-    # Get started subtree intact; Protect kept as a node but without its child.
-    assert "Get started" in titles and "Deploy infrastructure" in titles
-    assert "Protect" in titles
-    assert "Cloud discovery" not in titles
-
-
-@pytest.mark.asyncio
-async def test_index_root_lists_top_level_first():
+async def test_index_root_no_checkpoint_expands_whole_tree_in_one_call():
+    """index.html without a checkpoint (e.g. tests) → a single expand_toc call
+    with section_id=None (one session walks the whole tree)."""
     captured = []
 
     class CapturingScraper(FakeScraper):
@@ -136,7 +160,68 @@ async def test_index_root_lists_top_level_first():
             captured.append(section_id)
             return await super().expand_toc(url, section_id)
 
-    sc = CapturingScraper({}, toc_by_url=FULL_TOC)
+    sc = CapturingScraper({}, toc_by_url=FULL_TOC)  # checkpoint defaults to None
     await CommvaultProfile().build_toc(INDEX_ROOT, sc)
-    assert captured[0] == "__TOP__"
-    assert GS in captured and "nav__protect" in captured
+    assert captured == [None]
+
+
+# ── FULL mode (index) with a checkpoint: resumable per-section expansion ─────
+
+class _CapturingScraper(FakeScraper):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.expanded = []
+
+    async def expand_toc(self, url, section_id=None):
+        self.expanded.append(section_id)
+        return await super().expand_toc(url, section_id)
+
+
+@pytest.mark.asyncio
+async def test_checkpointed_index_lists_top_then_expands_each_section():
+    ckpt = FakeCheckpoint()
+    sc = _CapturingScraper({}, toc_by_url=CKPT_TOC, checkpoint=ckpt)
+    toc = await CommvaultProfile().build_toc(INDEX_ROOT, sc)
+    # __TOP__ first, then one call per top-level section, in order.
+    assert sc.expanded == ["__TOP__", GS, "nav__protect"]
+    assert [(e.title, e.level) for e in toc] == [
+        ("Get started", 0), ("Deploy infrastructure", 1), ("Configure network", 1),
+        ("Protect", 0), ("Cloud discovery", 1),
+    ]
+    # Checkpoint cleared once the whole tree is assembled.
+    assert ckpt.cleared is True
+
+
+@pytest.mark.asyncio
+async def test_checkpointed_index_resumes_and_skips_done_sections():
+    # Resume state: top-level already read, "Get started" already expanded.
+    ckpt = FakeCheckpoint({
+        "top_level": CKPT_TOC["__TOP__"],
+        "sections": {GS: CKPT_TOC[GS]},
+    })
+    sc = _CapturingScraper({}, toc_by_url=CKPT_TOC, checkpoint=ckpt)
+    toc = await CommvaultProfile().build_toc(INDEX_ROOT, sc)
+    # Neither __TOP__ nor the done section is re-expanded — only "Protect".
+    assert sc.expanded == ["nav__protect"]
+    titles = [e.title for e in toc]
+    assert titles == ["Get started", "Deploy infrastructure", "Configure network",
+                      "Protect", "Cloud discovery"]
+    assert ckpt.cleared is True
+
+
+@pytest.mark.asyncio
+async def test_checkpointed_index_persists_each_section_as_it_completes():
+    ckpt = FakeCheckpoint()
+
+    saved = []
+    orig_save = ckpt.save_section
+
+    async def tracking_save(sid, nodes):
+        saved.append(sid)
+        await orig_save(sid, nodes)
+
+    ckpt.save_section = tracking_save
+    sc = _CapturingScraper({}, toc_by_url=CKPT_TOC, checkpoint=ckpt)
+    await CommvaultProfile().build_toc(INDEX_ROOT, sc)
+    # Each expanded section was persisted before the build finished.
+    assert saved == [GS, "nav__protect"]
