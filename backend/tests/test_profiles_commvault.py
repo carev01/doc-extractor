@@ -46,7 +46,9 @@ def test_detect_rejects_other_platforms():
 
 
 def test_content_config_scopes_to_doc():
-    assert CommvaultProfile().content_config()["includeTags"] == ["#doc"]
+    cfg = CommvaultProfile().content_config()
+    assert cfg["includeTags"] == ["#doc"]
+    assert cfg["excludeTags"] == [".breadcrumbs"]  # drop the leading breadcrumb trail
 
 
 @pytest.mark.asyncio
