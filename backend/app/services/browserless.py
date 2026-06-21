@@ -84,13 +84,15 @@ class BrowserlessClient:
         builds hierarchy/dedup from it). Raises BrowserlessError on failure.
         """
         endpoint = f"{self.url}/function"
-        params = {"token": self.token} if self.token else None
+        # Pass the token as a Bearer header, not a ?token= query param, so it
+        # doesn't leak into httpx's request logs.
+        headers = {"Authorization": f"Bearer {self.token}"} if self.token else None
         payload = {"code": _FUNCTION_CODE, "context": {"url": target_url, "waitMs": self.wait_ms}}
 
         owns = client is None
         client = client or httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0))
         try:
-            resp = await client.post(endpoint, params=params, json=payload)
+            resp = await client.post(endpoint, headers=headers, json=payload)
             resp.raise_for_status()
             body = resp.json()
         except httpx.HTTPError as exc:

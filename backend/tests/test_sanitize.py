@@ -67,6 +67,38 @@ def test_preserves_real_prose():
     assert "easy process" in out
 
 
+def test_removes_leading_you_are_here_breadcrumb():
+    """Salesforce Help articles open with a 'You are here:' breadcrumb above the title."""
+    md = (
+        "You are here:\n"
+        "\n"
+        "1. [Salesforce Help](/s/?language=en_US)\n"
+        "2. [Docs](/s/products?language=en_US)\n"
+        "3. [Own from Salesforce](https://help.salesforce.com/s/articleView?id=platform.own.htm)\n"
+        "\n"
+        "User Roles\n"
+        "==========\n"
+        "\n"
+        "Roles are assigned to users per business unit.\n"
+    )
+    out = sanitize_markdown(md)
+    assert "You are here" not in out
+    assert "Salesforce Help](/s/" not in out  # breadcrumb links gone
+    assert out.lstrip().startswith("User Roles")
+    assert "Roles are assigned to users per business unit." in out
+
+
+def test_keeps_prose_mentioning_you_are_here_mid_document():
+    """The breadcrumb rule is leading-anchored — mid-article text is untouched."""
+    md = (
+        "Guide\n=====\n\n"
+        "The banner shows you are here in the workflow.\n"
+        "More content.\n"
+    )
+    out = sanitize_markdown(md)
+    assert "you are here in the workflow" in out
+
+
 def test_removes_leading_promo_banner():
     md = (
         "Kaseya’s latest product innovations are live. [Explore now](https://www.kaseya.com/2026-h1-release)\n"

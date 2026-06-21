@@ -26,9 +26,9 @@ class _FakeClient:
         self._resp = resp
         self._capture = capture
 
-    async def post(self, url, params=None, json=None):
+    async def post(self, url, headers=None, json=None):
         self._capture["url"] = url
-        self._capture["params"] = params
+        self._capture["headers"] = headers
         self._capture["json"] = json
         return self._resp
 
@@ -41,7 +41,9 @@ async def test_render_sends_token_and_target_url_and_unwraps_data():
     out = await client.render("https://help.salesforce.com/s/articleView?id=p.a.htm", client=_FakeClient(resp, cap))
 
     assert cap["url"] == "http://bl:3000/function"
-    assert cap["params"] == {"token": "tok"}
+    # Token goes in the Authorization header, never the URL/query (avoids log leak).
+    assert cap["headers"] == {"Authorization": "Bearer tok"}
+    assert "tok" not in cap["url"]
     assert cap["json"]["context"]["url"].endswith("id=p.a.htm")
     assert cap["json"]["context"]["waitMs"] == 5000
     assert out["toc"][0]["title"] == "A"
@@ -55,7 +57,7 @@ async def test_render_accepts_unwrapped_body():
     resp = _FakeResp(body={"toc": [], "contentHtml": "<h1>x</h1>"})
     client = BrowserlessClient(url="http://bl:3000", token="")
     out = await client.render("https://x", client=_FakeClient(resp, cap))
-    assert cap["params"] is None  # no token -> no params
+    assert cap["headers"] is None  # no token -> no auth header
     assert out["contentHtml"] == "<h1>x</h1>"
 
 

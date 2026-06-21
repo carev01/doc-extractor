@@ -72,6 +72,11 @@ _COPYRIGHT_RE = re.compile(r"^\s*\|?\s*Copyright\s*(?:©|\(c\))", re.IGNORECASE)
 # Leading marketing banner signatures.
 _PROMO_RE = re.compile(r"product innovations are live|\[Explore now\]\(", re.IGNORECASE)
 
+# A leading "You are here:" breadcrumb (e.g. Salesforce Help) sits above the title.
+_BREADCRUMB_RE = re.compile(r"^\s*you are here\s*:?\s*$", re.IGNORECASE)
+# A setext heading underline (=== or ---) marks the real title start.
+_SETEXT_UNDERLINE_RE = re.compile(r"^\s*[=\-]{3,}\s*$")
+
 # A feedback-link table contains the JS feedback link or its known row texts.
 _FEEDBACK_TABLE_SIG_RE = re.compile(
     r"SendLinkByMail|Provide feedback for the Documentation team",
@@ -170,6 +175,27 @@ def _strip_feedback_table(lines: list[str]) -> list[str]:
     return out
 
 
+def _strip_lead_breadcrumb(lines: list[str]) -> list[str]:
+    """Drop a leading 'You are here:' breadcrumb (+ its link list) before the title.
+
+    Only fires when the document opens with the breadcrumb; everything up to the
+    first heading (ATX ``#`` or a setext underline) is removed.
+    """
+    first = 0
+    while first < len(lines) and not _norm(lines[first]).strip():
+        first += 1
+    if first >= len(lines) or not _BREADCRUMB_RE.match(_norm(lines[first])):
+        return lines
+    i = first + 1
+    while i < len(lines):
+        ln = _norm(lines[i])
+        nxt = _norm(lines[i + 1]) if i + 1 < len(lines) else ""
+        if ln.strip().startswith("#") or (ln.strip() and _SETEXT_UNDERLINE_RE.match(nxt)):
+            break
+        i += 1
+    return lines[i:]
+
+
 def _strip_lead_promo_banner(lines: list[str]) -> list[str]:
     """Drop a leading marketing banner (and a lone trailing '.') before the title."""
     # Find first non-blank line.
@@ -188,6 +214,7 @@ def _strip_lead_promo_banner(lines: list[str]) -> list[str]:
 
 
 _RULES = (
+    _strip_lead_breadcrumb,
     _strip_lead_promo_banner,
     _strip_feedback_table,
     _strip_helpful_widget,
