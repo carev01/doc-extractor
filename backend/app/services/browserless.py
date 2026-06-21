@@ -65,6 +65,30 @@ export default async function ({ page, context }) {
 """
 
 
+# Browserless /function module that returns the fully-rendered light-DOM HTML
+# after waiting for a selector to appear. Used by profiles whose nav/content is
+# JS-rendered into the light DOM (e.g. Commvault's #nav), so a plain Firecrawl
+# scrape catches it mid-"Loading…".
+_HTML_FUNCTION_CODE = r"""
+export default async function ({ page, context }) {
+  const { url, waitMs, waitSelector } = context;
+  await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+  if (waitSelector) {
+    // Generous timeout: client-rendered navs can be heavy (e.g. Commvault builds
+    // its tree from a ~515KB manifest). waitForSelector returns as soon as it
+    // appears, so this only caps the worst case.
+    try { await page.waitForSelector(waitSelector, { timeout: 30000 }); }
+    catch (e) { /* fall through with whatever rendered */ }
+    await new Promise(r => setTimeout(r, 1500));
+  } else {
+    await new Promise(r => setTimeout(r, waitMs || 9000));
+  }
+  const html = await page.evaluate(() => document.documentElement.outerHTML);
+  return { data: { html }, type: 'application/json' };
+}
+"""
+
+
 class BrowserlessError(Exception):
     """Raised when Browserless is unreachable or returns an unusable response."""
 
@@ -77,17 +101,13 @@ class BrowserlessClient:
         self.token = token if token is not None else settings.browserless_token
         self.wait_ms = wait_ms or settings.browserless_wait_ms
 
-    async def render(self, target_url: str, client: httpx.AsyncClient | None = None) -> dict:
-        """Render ``target_url`` and return {toc, contentHtml, contentText, title}.
-
-        ``toc`` is a list of {title, href, level} in document order (the caller
-        builds hierarchy/dedup from it). Raises BrowserlessError on failure.
-        """
+    async def _post(self, code: str, context: dict, target_url: str,
+                    client: httpx.AsyncClient | None = None) -> dict:
+        """POST a /function call and return its unwrapped data dict."""
         endpoint = f"{self.url}/function"
-        # Pass the token as a Bearer header, not a ?token= query param, so it
-        # doesn't leak into httpx's request logs.
+        # Token as a Bearer header, not ?token=, so it doesn't leak into logs.
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else None
-        payload = {"code": _FUNCTION_CODE, "context": {"url": target_url, "waitMs": self.wait_ms}}
+        payload = {"code": code, "context": context}
 
         owns = client is None
         client = client or httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0))
@@ -108,6 +128,25 @@ class BrowserlessClient:
         if not isinstance(data, dict):
             raise BrowserlessError(f"Unexpected Browserless payload for {target_url}: {type(data)}")
         return data
+
+    async def render(self, target_url: str, client: httpx.AsyncClient | None = None) -> dict:
+        """Render ``target_url`` and return {toc, contentHtml, contentText, title}
+        via shadow-DOM extraction (Salesforce Help). Raises BrowserlessError."""
+        return await self._post(
+            _FUNCTION_CODE, {"url": target_url, "waitMs": self.wait_ms}, target_url, client
+        )
+
+    async def render_html(self, target_url: str, wait_selector: str | None = None,
+                          client: httpx.AsyncClient | None = None) -> str:
+        """Return the fully-rendered light-DOM HTML after a JS-rendered element
+        (``wait_selector``) appears — for navs/content built client-side into the
+        light DOM (e.g. Commvault's #nav). Raises BrowserlessError."""
+        data = await self._post(
+            _HTML_FUNCTION_CODE,
+            {"url": target_url, "waitMs": self.wait_ms, "waitSelector": wait_selector},
+            target_url, client,
+        )
+        return data.get("html", "")
 
 
 browserless_client = BrowserlessClient()
