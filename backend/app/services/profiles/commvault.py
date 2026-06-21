@@ -1,16 +1,24 @@
 """Commvault documentation profile.
 
-The current documentation.commvault.com platform renders its sidebar nav
-client-side into ``#nav`` (it reads "Loading…" in static/Firecrawl HTML), so the
-TOC is built from the **Browserless-rendered** nav: we wait for ``.nav-row`` to
-appear, then walk the nested ``<ul>``/``<li class="nav-row">`` tree, scoped to
-the active section (the bookshelf rooted at the requested URL).
+Two TOC modes, by what the source is rooted at:
 
-Article content lives in server-rendered ``#doc``, so content scraping uses the
-normal Firecrawl path (no per-article browser render needed).
+* FULL (rooted at ``index.html``) — the whole product doc set. ``nav-map.json``
+  lists every page (flat); each page's ``nav-path`` meta is its ancestor chain,
+  so we fetch the pages and reconstruct the full hierarchical tree. This is a
+  large set (thousands of pages).
+* SECTION (rooted at a specific page) — just that bookshelf. The sidebar nav is
+  rendered client-side into ``#nav`` ("Loading…" in static HTML), so we render
+  it via Browserless and walk the active section's ``<ul>``/``<li.nav-row>`` tree.
+
+Article content is server-rendered in ``#doc``, so content scraping uses the
+normal Firecrawl path (no per-article browser render).
 """
 
+import asyncio
+import json
 import logging
+import re
+from html import unescape
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
@@ -19,6 +27,9 @@ from app.services.profiles import registry
 from app.services.profiles.base import TocEntry
 
 logger = logging.getLogger(__name__)
+
+# Max concurrent raw fetches when reconstructing the full-doc hierarchy.
+_FULL_TOC_CONCURRENCY = 12
 
 
 class CommvaultProfile:
@@ -72,6 +83,87 @@ class CommvaultProfile:
             self._walk(child, level + 1, url, root_url, out)
 
     async def build_toc(self, root_url: str, scraper) -> list[TocEntry]:
+        """Dispatch: full doc set when rooted at index.html, else the section."""
+        if urlparse(root_url).path.rsplit("/", 1)[-1] in ("index.html", "index.htm", ""):
+            return await self._build_full_toc(root_url, scraper)
+        return await self._build_section_toc(root_url, scraper)
+
+    # ── FULL mode: whole doc set from nav-map.json + per-page nav-path ─────────
+
+    async def _build_full_toc(self, root_url: str, scraper) -> list[TocEntry]:
+        """Build the entire hierarchical TOC for the product docs.
+
+        ``nav-map.json`` lists every page (flat); each page's ``nav-path`` meta is
+        its ancestor key-chain. We fetch the pages (bounded concurrency) to read
+        nav-path + title, then emit a DFS pre-order tree (parents before children).
+        """
+        base = root_url.rsplit("/", 1)[0] + "/"
+        try:
+            files = json.loads(await scraper.get_raw(base + "static/scripts/nav-map.json"))
+        except Exception as exc:
+            logger.warning("Commvault nav-map.json fetch failed: %s", exc)
+            return []
+        files = [f for f in files if isinstance(f, str) and f.endswith(".html")]
+        if not files:
+            return []
+
+        # key (filename without .html) -> {title, navpath, order}
+        pages: dict[str, dict] = {}
+        sem = asyncio.Semaphore(_FULL_TOC_CONCURRENCY)
+        nav_path_re = re.compile(r'<meta name="nav-path" content="([^"]*)"')
+        h1_re = re.compile(r'<h1[^>]*class="heading"[^>]*>(.*?)</h1>', re.S)
+
+        async def fetch(order: int, fname: str) -> None:
+            key = fname[:-5]
+            title = key.replace("_", " ").strip().capitalize()
+            navpath = [key]
+            async with sem:
+                try:
+                    html = await scraper.get_raw(base + fname)
+                except Exception:
+                    html = ""
+            if html:
+                m = nav_path_re.search(html)
+                if m:
+                    try:
+                        parsed = json.loads(unescape(m.group(1)))
+                        if isinstance(parsed, list) and parsed:
+                            navpath = [str(x) for x in parsed]
+                    except (ValueError, TypeError):
+                        pass
+                hm = h1_re.search(html)
+                if hm:
+                    title = unescape(re.sub(r"<[^>]+>", "", hm.group(1))).strip() or title
+            pages[key] = {"title": title, "navpath": navpath, "order": order}
+
+        await asyncio.gather(*(fetch(i, f) for i, f in enumerate(files)))
+
+        # Group children by parent key (navpath[-2]); preserve nav-map order.
+        children: dict[str | None, list[str]] = {}
+        for key, p in sorted(pages.items(), key=lambda kv: kv[1]["order"]):
+            parent = p["navpath"][-2] if len(p["navpath"]) >= 2 else None
+            children.setdefault(parent if parent in pages else None, []).append(key)
+
+        out: list[TocEntry] = []
+
+        def walk(parent_key: str | None, level: int, parent_url: str | None) -> None:
+            for key in children.get(parent_key, []):
+                p = pages[key]
+                url = base + key + ".html"
+                kids = children.get(key)
+                out.append(TocEntry(
+                    title=p["title"], url=url, level=level,
+                    is_article=True, parent_url=parent_url,
+                ))
+                if kids:
+                    walk(key, level + 1, url)
+
+        walk(None, 0, None)
+        return out
+
+    # ── SECTION mode: active bookshelf via the Browserless-rendered nav ────────
+
+    async def _build_section_toc(self, root_url: str, scraper) -> list[TocEntry]:
         """Render the sidebar via Browserless and return the active section's tree.
 
         Scopes to the bookshelf the user rooted at: the nav-row whose link is the
