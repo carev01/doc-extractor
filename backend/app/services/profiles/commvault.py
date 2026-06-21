@@ -65,12 +65,19 @@ class CommvaultProfile:
             return []
 
         async def section_nodes(top: dict) -> list[dict]:
+            # Always keep the top-level node even if its subtree can't be
+            # expanded (e.g. a very large section that exceeds the Browserless
+            # timeout) — one failed section must not lose the whole TOC.
             fallback = [{"href": top.get("href"), "title": top.get("title"),
                          "level": 0, "isParent": top.get("isParent")}]
-            if top.get("isParent") and top.get("id"):
+            if not (top.get("isParent") and top.get("id")):
+                return fallback
+            try:
                 nodes = await scraper.expand_toc(root_url, section_id=top["id"])
-                return nodes or fallback
-            return fallback
+            except Exception as exc:
+                logger.warning("Commvault section %r expansion failed: %s", top.get("title"), exc)
+                return fallback
+            return nodes or fallback
 
         chunks = await asyncio.gather(*(section_nodes(t) for t in tops))
         all_nodes = [n for chunk in chunks for n in chunk]

@@ -109,6 +109,25 @@ async def test_section_id_derivation():
 
 
 @pytest.mark.asyncio
+async def test_full_mode_resilient_to_failed_section():
+    """A section whose expansion errors (e.g. Browserless timeout) keeps its
+    top-level node; the rest of the TOC is unaffected."""
+    class FlakyScraper(FakeScraper):
+        async def expand_toc(self, url, section_id=None):
+            if section_id == "nav__protect":
+                raise RuntimeError("408 timeout")
+            return await super().expand_toc(url, section_id)
+
+    sc = FlakyScraper({}, toc_by_url=FULL_TOC)
+    toc = await CommvaultProfile().build_toc(INDEX_ROOT, sc)
+    titles = [e.title for e in toc]
+    # Get started subtree intact; Protect kept as a node but without its child.
+    assert "Get started" in titles and "Deploy infrastructure" in titles
+    assert "Protect" in titles
+    assert "Cloud discovery" not in titles
+
+
+@pytest.mark.asyncio
 async def test_index_root_lists_top_level_first():
     captured = []
 
