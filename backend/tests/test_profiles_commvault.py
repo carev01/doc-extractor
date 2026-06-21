@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -81,3 +82,61 @@ async def test_build_toc_parent_and_absolute_urls():
 async def test_build_toc_empty_when_nav_not_rendered():
     scraper = FakeScraper({}, rendered_html_by_url={ROOT: "<html><body>Loading…</body></html>"})
     assert await CommvaultProfile().build_toc(ROOT, scraper) == []
+
+
+# ── FULL mode (rooted at index.html) ────────────────────────────────────────
+
+FULL_BASE = "https://documentation.commvault.com/11.44/software/"
+INDEX_ROOT = FULL_BASE + "index.html"
+
+
+def _page(navpath_keys, title):
+    meta = "[" + ", ".join(f"&#34;{k}&#34;" for k in navpath_keys) + "]"
+    return f'<html><head><meta name="nav-path" content="{meta}"></head>' \
+           f'<body><div id="doc"><h1 class="heading">{title}</h1></div></body></html>'
+
+
+FULL_RAW = {
+    FULL_BASE + "static/scripts/nav-map.json": json.dumps([
+        "index.html", "get_started_with_commvault.html",
+        "deploy_infra.html", "what_s_new.html",
+    ]),
+    FULL_BASE + "index.html": _page(["index"], "Software"),
+    FULL_BASE + "get_started_with_commvault.html":
+        _page(["index", "get_started_with_commvault"], "Get started"),
+    FULL_BASE + "deploy_infra.html":
+        _page(["index", "get_started_with_commvault", "deploy_infra"], "Deploy infrastructure"),
+    # HTML-entity title — must be decoded to "What's new".
+    FULL_BASE + "what_s_new.html": _page(["index", "what_s_new"], "What&#39;s new"),
+}
+
+
+@pytest.mark.asyncio
+async def test_full_mode_builds_whole_hierarchical_tree():
+    """Rooted at index.html → full doc set, hierarchy from each page's nav-path."""
+    scraper = FakeScraper({}, raw_by_url=FULL_RAW)
+    toc = await CommvaultProfile().build_toc(INDEX_ROOT, scraper)
+    got = [(e.title, e.level, e.url) for e in toc]
+    assert got == [
+        ("Software", 0, FULL_BASE + "index.html"),
+        ("Get started", 1, FULL_BASE + "get_started_with_commvault.html"),
+        ("Deploy infrastructure", 2, FULL_BASE + "deploy_infra.html"),
+        ("What's new", 1, FULL_BASE + "what_s_new.html"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_full_mode_parent_linkage():
+    scraper = FakeScraper({}, raw_by_url=FULL_RAW)
+    toc = await CommvaultProfile().build_toc(INDEX_ROOT, scraper)
+    by = {e.title: e for e in toc}
+    assert by["Software"].parent_url is None
+    assert by["Get started"].parent_url == by["Software"].url
+    assert by["Deploy infrastructure"].parent_url == by["Get started"].url
+    assert by["What's new"].parent_url == by["Software"].url
+
+
+@pytest.mark.asyncio
+async def test_full_mode_empty_when_navmap_missing():
+    scraper = FakeScraper({}, raw_by_url={})  # nav-map.json fetch fails
+    assert await CommvaultProfile().build_toc(INDEX_ROOT, scraper) == []
