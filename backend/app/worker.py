@@ -15,6 +15,7 @@ from sqlalchemy import select, update
 import app.models  # noqa: F401
 from app.core.database import async_session
 from app.models.extraction_run import ExtractionRun, RunStatus
+from app.models.source import DocumentationSource, SourceStatus
 from app.services.firecrawl import firecrawl_service
 from app.services.queue import claim_next_run, claim_next_export
 from app.services.export_runner import run_export_job_sync
@@ -80,6 +81,11 @@ async def run_one(claim_session_factory=None, work_session_factory=None) -> bool
                 await db.commit()
         except Exception as exc:
             logger.exception("Run %s failed", run_id)
+            # extract_source's own failure handler only flush()es before
+            # re-raising, so its FAILED writes roll back when this session exits
+            # without committing. Persist the terminal state here on a clean
+            # session — both the run AND the source, so the source can't get
+            # stuck showing "extracting" after a failed run.
             async with work_session_factory() as db:
                 res = await db.execute(
                     select(ExtractionRun).where(ExtractionRun.id == run_id)
@@ -91,6 +97,10 @@ async def run_one(claim_session_factory=None, work_session_factory=None) -> bool
                     r.status = RunStatus.FAILED
                     r.error_message = str(exc)[:4096]
                     r.completed_at = datetime.now(timezone.utc)
+                    src = await db.get(DocumentationSource, source_id)
+                    if src is not None and src.status == SourceStatus.EXTRACTING:
+                        src.status = SourceStatus.FAILED
+                        src.error_message = str(exc)[:4096]
                     await db.commit()
         finally:
             hb.cancel()

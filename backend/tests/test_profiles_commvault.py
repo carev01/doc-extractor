@@ -188,8 +188,9 @@ async def test_checkpointed_index_lists_top_then_expands_each_section():
         ("Get started", 0), ("Deploy infrastructure", 1), ("Configure network", 1),
         ("Protect", 0), ("Cloud discovery", 1),
     ]
-    # Checkpoint cleared once the whole tree is assembled.
-    assert ckpt.cleared is True
+    # build_toc does NOT clear — the checkpoint carries into the content phase
+    # and is cleared by the caller (extract_source) once the whole run completes.
+    assert ckpt.cleared is False
 
 
 @pytest.mark.asyncio
@@ -206,7 +207,7 @@ async def test_checkpointed_index_resumes_and_skips_done_sections():
     titles = [e.title for e in toc]
     assert titles == ["Get started", "Deploy infrastructure", "Configure network",
                       "Protect", "Cloud discovery"]
-    assert ckpt.cleared is True
+    assert ckpt.cleared is False  # cleared later by extract_source, not build_toc
 
 
 @pytest.mark.asyncio

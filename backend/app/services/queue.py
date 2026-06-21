@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.export_job import ExportJob, ExportStatus
+from app.models.source import DocumentationSource, SourceStatus
 
 
 class ActiveRunExists(Exception):
@@ -87,6 +88,11 @@ async def reap_stale_runs(
             run.status = RunStatus.FAILED
             run.error_message = (run.error_message or "worker lost")[:4096]
             run.completed_at = datetime.now(timezone.utc)
+            # Don't leave the source stuck at "extracting" once the run is dead.
+            src = await db.get(DocumentationSource, run.source_id)
+            if src is not None and src.status == SourceStatus.EXTRACTING:
+                src.status = SourceStatus.FAILED
+                src.error_message = (run.error_message or "worker lost")[:4096]
         else:
             run.status = RunStatus.PENDING
             run.claimed_by = None

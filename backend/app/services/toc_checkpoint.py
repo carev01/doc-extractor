@@ -46,6 +46,25 @@ class TocBuildCheckpoint:
             await self._write(db, row, data)
             await db.commit()
 
+    async def load_content_done(self) -> set[str]:
+        """URLs whose content was already scraped in this extraction cycle."""
+        data = await self.load()
+        return set(data.get("content_done") or [])
+
+    async def add_content_done(self, urls: list[str]) -> None:
+        """Mark a chunk of URLs as scraped (committed immediately so a later
+        failure/restart resumes from here)."""
+        if not urls:
+            return
+        async with self._sf() as db:
+            row = await db.get(TocCheckpoint, self.source_id)
+            data = dict(row.data) if row and row.data else {}
+            done = list(data.get("content_done") or [])
+            done.extend(urls)
+            data["content_done"] = done
+            await self._write(db, row, data)
+            await db.commit()
+
     async def clear(self) -> None:
         async with self._sf() as db:
             await db.execute(
