@@ -15,14 +15,10 @@ of their own; they become url-less section entries that their children nest
 under. Article content is server-rendered in ``#doc`` (Firecrawl content path).
 """
 
-import asyncio
-import logging
 from urllib.parse import urljoin, urlparse
 
 from app.services.profiles import registry
 from app.services.profiles.base import TocEntry
-
-logger = logging.getLogger(__name__)
 
 
 class CommvaultProfile:
@@ -48,40 +44,26 @@ class CommvaultProfile:
     async def build_toc(self, root_url: str, scraper) -> list[TocEntry]:
         """Depth-first expand the sidebar (via Browserless) into an ordered TOC.
 
+        Mirrors the proven standalone Playwright crawler: a **single** Browserless
+        session loads the page once (the only expensive step is rendering the
+        ~515KB nav) then walks the whole tree with cheap in-page toggle clicks.
+
+        * index.html → the whole product doc set, expanded in one session.
         * Specific page → that section's ``<li id>`` (``nav__<page-key>``) subtree.
-        * index.html → the whole tree, expanded **one top-level section per
-          Browserless call** so no single session has to expand all ~9,670 nodes
-          (a session timeout would otherwise lose everything). Sections expand
-          concurrently; top-level order is preserved.
+
+        An earlier design split index.html into one Browserless call per
+        top-level section and ran them concurrently; that re-rendered the nav N
+        times and overran Browserless's concurrency, starving big sections into
+        empty stubs. One session is both faster and reliable.
         """
         root_file = urlparse(root_url).path.rsplit("/", 1)[-1]
 
+        section_id = None
         if root_file.endswith(".html") and root_file != "index.html":
             section_id = "nav__" + root_file[:-5]
-            return self._nodes_to_toc(await scraper.expand_toc(root_url, section_id=section_id), root_url)
 
-        tops = await scraper.expand_toc(root_url, section_id="__TOP__")
-        if not tops:
-            return []
-
-        async def section_nodes(top: dict) -> list[dict]:
-            # Always keep the top-level node even if its subtree can't be
-            # expanded (e.g. a very large section that exceeds the Browserless
-            # timeout) — one failed section must not lose the whole TOC.
-            fallback = [{"href": top.get("href"), "title": top.get("title"),
-                         "level": 0, "isParent": top.get("isParent")}]
-            if not (top.get("isParent") and top.get("id")):
-                return fallback
-            try:
-                nodes = await scraper.expand_toc(root_url, section_id=top["id"])
-            except Exception as exc:
-                logger.warning("Commvault section %r expansion failed: %s", top.get("title"), exc)
-                return fallback
-            return nodes or fallback
-
-        chunks = await asyncio.gather(*(section_nodes(t) for t in tops))
-        all_nodes = [n for chunk in chunks for n in chunk]
-        return self._nodes_to_toc(all_nodes, root_url)
+        nodes = await scraper.expand_toc(root_url, section_id=section_id)
+        return self._nodes_to_toc(nodes, root_url)
 
     @staticmethod
     def _nodes_to_toc(nodes: list[dict], root_url: str) -> list[TocEntry]:

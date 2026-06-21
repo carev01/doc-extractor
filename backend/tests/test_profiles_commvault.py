@@ -13,22 +13,23 @@ SECTION_ROOT = BASE + "get_started_with_commvault.html"
 
 GS = "nav__get_started_with_commvault"
 
-# Full-mode fixture: a top-level listing (__TOP__) plus each section's depth-first
-# expansion (section node at level 0 + descendants). "Protect" is a url-less
-# category with a child.
+# A single Browserless session expands the whole tree depth-first and returns one
+# ordered node list. The full-mode fixture (keyed by the index URL, i.e.
+# section_id=None) is that flat depth-first walk; the section-mode fixture (keyed
+# by the section's <li id>) is just that section's subtree. "Protect" is a
+# url-less category with a child.
 FULL_TOC = {
-    "__TOP__": [
+    INDEX_ROOT: [
         {"id": GS, "href": "get_started_with_commvault.html", "title": "Get started", "level": 0, "isParent": True},
+        {"id": "x1", "href": "deploy_infra.html", "title": "Deploy infrastructure", "level": 1, "isParent": False},
+        {"id": "x2", "href": "configure_network.html", "title": "Configure network", "level": 1, "isParent": False},
         {"id": "nav__protect", "href": None, "title": "Protect", "level": 0, "isParent": True},
+        {"id": "x3", "href": "cloud_discovery.html", "title": "Cloud discovery", "level": 1, "isParent": False},
     ],
     GS: [
         {"id": GS, "href": "get_started_with_commvault.html", "title": "Get started", "level": 0, "isParent": True},
         {"id": "x1", "href": "deploy_infra.html", "title": "Deploy infrastructure", "level": 1, "isParent": False},
         {"id": "x2", "href": "configure_network.html", "title": "Configure network", "level": 1, "isParent": False},
-    ],
-    "nav__protect": [
-        {"id": "nav__protect", "href": None, "title": "Protect", "level": 0, "isParent": True},
-        {"id": "x3", "href": "cloud_discovery.html", "title": "Cloud discovery", "level": 1, "isParent": False},
     ],
 }
 
@@ -109,26 +110,9 @@ async def test_section_id_derivation():
 
 
 @pytest.mark.asyncio
-async def test_full_mode_resilient_to_failed_section():
-    """A section whose expansion errors (e.g. Browserless timeout) keeps its
-    top-level node; the rest of the TOC is unaffected."""
-    class FlakyScraper(FakeScraper):
-        async def expand_toc(self, url, section_id=None):
-            if section_id == "nav__protect":
-                raise RuntimeError("408 timeout")
-            return await super().expand_toc(url, section_id)
-
-    sc = FlakyScraper({}, toc_by_url=FULL_TOC)
-    toc = await CommvaultProfile().build_toc(INDEX_ROOT, sc)
-    titles = [e.title for e in toc]
-    # Get started subtree intact; Protect kept as a node but without its child.
-    assert "Get started" in titles and "Deploy infrastructure" in titles
-    assert "Protect" in titles
-    assert "Cloud discovery" not in titles
-
-
-@pytest.mark.asyncio
-async def test_index_root_lists_top_level_first():
+async def test_index_root_expands_whole_tree_in_one_call():
+    """index.html → a single expand_toc call with section_id=None (one session
+    walks the whole tree), not a per-section fan-out."""
     captured = []
 
     class CapturingScraper(FakeScraper):
@@ -138,5 +122,4 @@ async def test_index_root_lists_top_level_first():
 
     sc = CapturingScraper({}, toc_by_url=FULL_TOC)
     await CommvaultProfile().build_toc(INDEX_ROOT, sc)
-    assert captured[0] == "__TOP__"
-    assert GS in captured and "nav__protect" in captured
+    assert captured == [None]

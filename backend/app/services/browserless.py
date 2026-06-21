@@ -91,9 +91,17 @@ export default async function ({ page, context }) {
 
 # Browserless /function that traverses a lazy-loaded sidebar tree depth-first,
 # clicking each parent's toggle to reveal its children, and returns the ordered
-# nodes with depth. Mirrors the proven Commvault Playwright approach. Selectors:
+# nodes with depth. Mirrors the proven Commvault Playwright crawler: a SINGLE
+# session loads the page once (the ~515KB nav render is the only expensive step)
+# then expands the whole tree with cheap in-page clicks. Selectors:
 # ul.nav-group-root (root) / ul.nav-group (children), li > div.nav-item with
 # data-is-parent, a.nav-text.fetch-doc (link), button.nav-parent-toggle (expand).
+#
+# Expansion uses an in-page el.click() (via page.evaluate) rather than
+# page.click(): the latter requires the toggle to be in the viewport and fails
+# for nodes below the fold (the cause of earlier empty subtrees). We scroll the
+# toggle into view, click it in-page, then poll for children — measured at
+# ~200ms per node against the live site, reliably, for every section.
 _TOC_EXPAND_CODE = r"""
 export default async function ({ page, context }) {
   const { url, sectionId } = context;
@@ -118,24 +126,26 @@ export default async function ({ page, context }) {
     });
   }, sel);
 
-  // Top-level-only mode: list the root sections without expanding (the caller
-  // then expands each section in its own bounded call).
-  if (sectionId === '__TOP__') {
-    const tops = (await readItems('div#nav > ul.nav-group-root')).map(it => ({
-      id: it.id, href: it.href, title: it.title, level: 0, isParent: it.isParent,
-    }));
-    return { data: { toc: tops }, type: 'application/json' };
-  }
-
   async function expand(id) {
     if (!id || expanded.has(id)) return false;
     expanded.add(id);
-    const liSel = `li[id="${id}"]`;
-    try {
-      await page.click(`${liSel} > div.nav-item button.nav-parent-toggle`);
-      await page.waitForSelector(`${liSel} > ul.nav-group > li`, { timeout: 6000 });
+    const childSel = `li[id="${id}"] > ul.nav-group > li`;
+    const clicked = await page.evaluate((sid) => {
+      const li = document.getElementById(sid);
+      if (!li) return false;
+      const btn = li.querySelector(':scope > div.nav-item button.nav-parent-toggle');
+      if (!btn) return false;
+      btn.scrollIntoView({ block: 'center' });
+      btn.click();
       return true;
-    } catch (e) { return false; }
+    }, id);
+    if (!clicked) return false;
+    // Poll for the lazily-loaded children (cheap; usually ready within ~200ms).
+    for (let i = 0; i < 40; i++) {
+      if (await page.evaluate((s) => document.querySelectorAll(s).length, childSel) > 0) return true;
+      await new Promise(r => setTimeout(r, 150));
+    }
+    return false;
   }
 
   async function processList(sel, depth) {
