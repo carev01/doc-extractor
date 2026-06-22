@@ -915,10 +915,34 @@ class FirecrawlService:
     ) -> None:
         """Stamp pages that dropped out of the rebuilt TOC, clear ones that returned.
 
-        Runs after all pages are processed (and re-linked), so the set of articles
-        with toc_entry_id IS NULL is exactly the removed pages. removed_at is only
-        set when currently NULL, so it stays pinned to first detection across runs.
+        Phase 1 deletes the old TOC, which NULLs every article's toc_entry_id via
+        the ON DELETE SET NULL FK; Phase 2 re-links each page as it is scraped.
+        But a *resumed* run skips pages already scraped in a prior cycle, so those
+        articles would never be re-linked and would be wrongly flagged removed.
+        Guard against that by authoritatively re-linking every article to its
+        current TOC entry by URL first — so the set of articles still NULL after
+        this is exactly the pages genuinely absent from the rebuilt TOC.
+
+        removed_at is only set when currently NULL, so it stays pinned to first
+        detection across runs.
         """
+        # Re-link by URL: each article points at the current TOC entry sharing its
+        # source_url, or stays NULL if its page is truly gone from the TOC.
+        relink = (
+            select(TOCEntry.id)
+            .where(
+                TOCEntry.source_id == source_id,
+                TOCEntry.url == Article.source_url,
+            )
+            .limit(1)
+            .scalar_subquery()
+        )
+        await db.execute(
+            update(Article)
+            .where(Article.source_id == source_id)
+            .values(toc_entry_id=relink)
+        )
+
         now = datetime.now(timezone.utc)
         # Newly removed.
         await db.execute(
