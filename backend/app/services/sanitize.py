@@ -72,6 +72,43 @@ _COPYRIGHT_RE = re.compile(r"^\s*\|?\s*Copyright\s*(?:©|\(c\))", re.IGNORECASE)
 # Leading marketing banner signatures.
 _PROMO_RE = re.compile(r"product innovations are live|\[Explore now\]\(", re.IGNORECASE)
 
+# GitBook cookie/privacy-consent banner: the pitch line (mentions both cookies
+# and the privacy policy) followed — after an optional wrapped "." and blanks —
+# by the "Accept"/"Reject" buttons. Signature is specific enough never to match
+# real prose. e.g.:
+#   This site uses cookies to deliver its service and to analyze traffic. By
+#   browsing this site, you accept the [privacy policy](…)
+#   .
+#   AcceptReject
+_COOKIE_CONSENT_RE = re.compile(r"uses cookies\b.*\bprivacy policy", re.IGNORECASE)
+_COOKIE_BUTTONS_RE = re.compile(
+    r"^\s*\**\s*"
+    r"\[?\s*Accept\s*\]?(?:\([^)]*\))?"   # "Accept" or "[Accept](…)"
+    r"\s*/?\s*"                            # optional separator (none, space, "/")
+    r"\[?\s*Reject\s*\]?(?:\([^)]*\))?"   # "Reject" or "[Reject](…)"
+    r"\s*\**\s*$",
+    re.IGNORECASE,
+)
+
+# GitBook prev/next page navigation: a standalone markdown link whose text is
+# "Previous"/"Next" glued directly to the adjacent page title (no space), e.g.
+#   [PreviousBackup & Archive - Overview](https://…/backup-and-archive)
+#   [NextHow to Start a Free Trial](https://…/trial)
+# The no-space-then-capital glue is the signature — a real link like
+# "[Next steps](…)" has a space and is left untouched.
+_PAGE_NAV_RE = re.compile(
+    r"^\s*\[(?:Previous|Next)[A-Z][^\]]*\]\([^)]*\)\s*$"
+)
+
+# GitBook "Last updated N <unit> ago" footer line (optionally italicised with
+# underscores/asterisks). The page's real last-updated timestamp is captured in
+# article metadata, so this relative-time chrome is redundant noise.
+# Trailing "[*_]*$" allows markdown emphasis right after "ago" (e.g. "…ago_"),
+# where \b would fail since underscore counts as a word character.
+_LAST_UPDATED_RE = re.compile(
+    r"^\s*[*_]*\s*Last updated\b.*\bago[\s*_]*$", re.IGNORECASE
+)
+
 # A leading "You are here:" breadcrumb (e.g. Salesforce Help) sits above the title.
 _BREADCRUMB_RE = re.compile(r"^\s*you are here\s*:?\s*$", re.IGNORECASE)
 # A setext heading underline (=== or ---) marks the real title start.
@@ -196,6 +233,42 @@ def _strip_lead_breadcrumb(lines: list[str]) -> list[str]:
     return lines[i:]
 
 
+def _strip_cookie_consent(lines: list[str]) -> list[str]:
+    """Drop a cookie/privacy-consent banner and its Accept/Reject buttons.
+
+    Fires on the specific "uses cookies … privacy policy" signature, then also
+    removes the trailing wrapped "." and the adjacent Accept/Reject line when
+    present (skipping intervening blanks).
+    """
+    out: list[str] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        if _COOKIE_CONSENT_RE.search(_norm(lines[i])):
+            j = i + 1
+            # Skip blanks and a wrapped lone "." that follows the banner text.
+            while j < n and (not _norm(lines[j]).strip() or _norm(lines[j]).strip() == "."):
+                j += 1
+            if j < n and _COOKIE_BUTTONS_RE.match(_norm(lines[j])):
+                i = j + 1  # drop banner … buttons inclusive
+                continue
+            i += 1  # no buttons found — drop only the banner line
+            continue
+        out.append(lines[i])
+        i += 1
+    return out
+
+
+def _strip_last_updated(lines: list[str]) -> list[str]:
+    """Drop standalone 'Last updated N <unit> ago' footer lines (GitBook)."""
+    return [ln for ln in lines if not _LAST_UPDATED_RE.match(_norm(ln))]
+
+
+def _strip_page_nav(lines: list[str]) -> list[str]:
+    """Drop standalone GitBook prev/next page-navigation links."""
+    return [ln for ln in lines if not _PAGE_NAV_RE.match(_norm(ln))]
+
+
 def _strip_lead_promo_banner(lines: list[str]) -> list[str]:
     """Drop a leading marketing banner (and a lone trailing '.') before the title."""
     # Find first non-blank line.
@@ -216,11 +289,14 @@ def _strip_lead_promo_banner(lines: list[str]) -> list[str]:
 _RULES = (
     _strip_lead_breadcrumb,
     _strip_lead_promo_banner,
+    _strip_cookie_consent,
     _strip_feedback_table,
     _strip_helpful_widget,
     _strip_vote_tally,
     _strip_edit_links,
     _strip_back_to_top,
+    _strip_page_nav,
+    _strip_last_updated,
     _strip_copyright_footer,
 )
 

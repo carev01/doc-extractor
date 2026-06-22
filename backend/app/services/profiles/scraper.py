@@ -59,6 +59,13 @@ class Scraper:
         from app.services.browserless import browserless_client
         return await browserless_client.gitbook_sidebars(urls)
 
+    async def expand_docusaurus_sidebar(self, url: str) -> str:
+        """Fully expand a Docusaurus sidebar via Browserless and return the
+        ``.theme-doc-sidebar-menu`` HTML with every collapsed category mounted —
+        Docusaurus doesn't render category children until expanded."""
+        from app.services.browserless import browserless_client
+        return await browserless_client.expand_docusaurus_sidebar(url)
+
 
 class FakeScraper:
     """Test double: serves canned HTML per URL and a canned URL list."""
@@ -72,6 +79,7 @@ class FakeScraper:
         rendered_html_by_url: dict[str, str] | None = None,
         toc_by_url: dict[str, list] | None = None,
         gitbook_sidebars_by_url: dict[str, str] | None = None,
+        docusaurus_sidebar_by_url: dict[str, str] | None = None,
         checkpoint=None,
     ):
         self._h = html_by_url
@@ -81,6 +89,7 @@ class FakeScraper:
         self._rendered_html = rendered_html_by_url or {}
         self._toc = toc_by_url or {}
         self._gitbook = gitbook_sidebars_by_url or {}
+        self._docusaurus = docusaurus_sidebar_by_url or {}
         self.checkpoint = checkpoint
 
     async def get_html(self, url: str, wait_ms: int = 1500) -> str:
@@ -107,3 +116,9 @@ class FakeScraper:
 
     async def gitbook_sidebars(self, urls: list[str]) -> dict[str, str]:
         return {u: self._gitbook[u] for u in urls if u in self._gitbook}
+
+    async def expand_docusaurus_sidebar(self, url: str) -> str:
+        from app.services.browserless import BrowserlessError
+        if url not in self._docusaurus:
+            raise BrowserlessError(f"no docusaurus sidebar fixture for {url}")
+        return self._docusaurus[url]
