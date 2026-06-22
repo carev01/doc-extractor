@@ -16,18 +16,17 @@ from bs4 import BeautifulSoup
 from .base import TocEntry
 
 
-async def sidebar_tree_toc(
-    scraper, root_url: str, nav_selector: str, *, item_selector: str = "a", wait_ms: int = 1500
+def parse_sidebar_tree(
+    html: str, root_url: str, nav_selector: str, *, item_selector: str = "a"
 ) -> list[TocEntry]:
-    """Parse the nested list under ``nav_selector`` into an ordered TOC.
+    """Parse the nested list under ``nav_selector`` in ``html`` into an ordered TOC.
 
-    Pass the nav container element OR the list (<ul>) itself — if the selected
-    element is already a ``<ul>``, it is used directly as the top-level list.
-
-    A node with a child <ul> is treated as a section (is_article=False); a leaf
-    link is an article. Order is the DOM order of the nav.
+    The selector may match the nav container OR the list (<ul>) itself — if the
+    matched element is already a ``<ul>``, it is used directly as the top-level
+    list. A node with a child <ul> is treated as a section (is_article=False);
+    a leaf link is an article. Order is the DOM order of the nav.
     """
-    soup = BeautifulSoup(await scraper.get_html(root_url, wait_ms), "html.parser")
+    soup = BeautifulSoup(html, "html.parser")
     nav = soup.select_one(nav_selector)
     out: list[TocEntry] = []
     if not nav:
@@ -56,6 +55,20 @@ async def sidebar_tree_toc(
     if top:
         walk(top, 0, None)
     return out
+
+
+async def sidebar_tree_toc(
+    scraper, root_url: str, nav_selector: str, *, item_selector: str = "a", wait_ms: int = 1500
+) -> list[TocEntry]:
+    """Render ``root_url`` and parse its ``nav_selector`` nav into an ordered TOC.
+
+    Thin wrapper over :func:`parse_sidebar_tree` that fetches the rendered HTML
+    first. Note: for navs that lazy-mount children (e.g. Docusaurus collapsed
+    categories), a single render only exposes what is in the DOM — profiles that
+    need the full tree must expand it (see DocusaurusProfile).
+    """
+    html = await scraper.get_html(root_url, wait_ms)
+    return parse_sidebar_tree(html, root_url, nav_selector, item_selector=item_selector)
 
 
 def _element_title(element, title_selector: str | None) -> str:

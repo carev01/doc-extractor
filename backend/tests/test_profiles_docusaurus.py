@@ -35,20 +35,72 @@ def test_content_config():
     assert cfg["waitFor"] == 1500
 
 
+# A fully-expanded Docusaurus sidebar (what Browserless returns after clicking
+# every collapsed caret): a leaf link, a category with children, and a nested
+# sub-category — the structure a single collapsed render can't expose.
+EXPANDED_SIDEBAR = """
+<ul class="theme-doc-sidebar-menu menu__list">
+  <li class="theme-doc-sidebar-item-link">
+    <a class="menu__link" href="/portworx-backup-on-prem/whats-new">What's New</a>
+  </li>
+  <li class="theme-doc-sidebar-item-category menu__list-item">
+    <div class="menu__list-item-collapsible">
+      <a class="menu__link menu__link--sublist" href="/portworx-backup-on-prem/concepts">Concepts</a>
+      <button aria-expanded="true" class="clean-btn menu__caret" type="button"></button>
+    </div>
+    <ul class="menu__list">
+      <li class="theme-doc-sidebar-item-link">
+        <a class="menu__link" href="/portworx-backup-on-prem/concepts/health-check">Health Check</a>
+      </li>
+      <li class="theme-doc-sidebar-item-category menu__list-item">
+        <div class="menu__list-item-collapsible">
+          <a class="menu__link menu__link--sublist" href="/portworx-backup-on-prem/concepts/api">API</a>
+          <button aria-expanded="true" class="clean-btn menu__caret" type="button"></button>
+        </div>
+        <ul class="menu__list">
+          <li class="theme-doc-sidebar-item-link">
+            <a class="menu__link" href="/portworx-backup-on-prem/concepts/api/backend">Backend API</a>
+          </li>
+        </ul>
+      </li>
+    </ul>
+  </li>
+</ul>
+"""
+
+
 @pytest.mark.asyncio
-async def test_build_toc_yields_ordered_entries():
+async def test_build_toc_expands_full_nested_tree():
+    """When Browserless returns the expanded sidebar, the full nested hierarchy
+    is parsed (not just the collapsed top level)."""
+    scraper = FakeScraper({ROOT: _html()}, docusaurus_sidebar_by_url={ROOT: EXPANDED_SIDEBAR})
+    toc = await DocusaurusProfile().build_toc(ROOT, scraper)
+
+    by_title = {e.title: e for e in toc}
+    assert set(by_title) == {"What's New", "Concepts", "Health Check", "API", "Backend API"}
+    # Levels reflect nesting depth.
+    assert by_title["What's New"].level == 0
+    assert by_title["Concepts"].level == 0
+    assert by_title["Health Check"].level == 1
+    assert by_title["API"].level == 1
+    assert by_title["Backend API"].level == 2
+    # Categories with children are sections; leaves are articles.
+    assert by_title["Concepts"].is_article is False
+    assert by_title["API"].is_article is False
+    assert by_title["Backend API"].is_article is True
+    # Relative hrefs are resolved against the root.
+    assert by_title["Backend API"].url == ROOT + "concepts/api/backend"
+
+
+@pytest.mark.asyncio
+async def test_build_toc_falls_back_to_single_render_without_browserless():
+    """If Browserless can't expand (no fixture → BrowserlessError), the profile
+    still returns a TOC from a single render (top level only)."""
     toc = await DocusaurusProfile().build_toc(ROOT, FakeScraper({ROOT: _html()}))
-    assert len(toc) > 0
-    # All entries must have non-empty titles and urls
     assert all(e.title and e.url for e in toc)
-    # Levels must be non-negative (fixture has all level 0 since sidebar is collapsed)
-    assert all(e.level >= 0 for e in toc)
-    # Verify specific top-level titles parsed from the fixture
     titles = [e.title for e in toc]
     assert "Portworx Backup Documentation" in titles
-    assert "What's New in Portworx Backup" in titles
     assert "Release Notes" in titles
-    # All 11 sidebar items should be present
+    # The collapsed fixture exposes exactly its 11 top-level items.
     assert len(toc) == 11
-    # DOM order must be preserved: first item before last item
     assert titles.index("Portworx Backup Documentation") < titles.index("Release Notes")

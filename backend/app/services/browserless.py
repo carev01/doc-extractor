@@ -214,6 +214,41 @@ export default async function ({ page, context }) {
 """
 
 
+# Browserless /function that fully expands a Docusaurus sidebar and returns its
+# HTML. Docusaurus does NOT mount a collapsed category's children in the DOM
+# until it is expanded, so a single render only ever exposes the top level. We
+# load the page once, then repeatedly click every collapsed caret
+# (button.menu__caret[aria-expanded="false"]) — each click mounts that category's
+# child <ul>, which may itself contain further collapsed carets — until none
+# remain. In-page el.click() (not page.click) so below-the-fold toggles work,
+# matching the Commvault crawler. Measured on Portworx: 11 → 258 links in 4
+# rounds, links increasing monotonically (no auto-collapse fighting).
+_DOCUSAURUS_EXPAND_CODE = r"""
+export default async function ({ page, context }) {
+  const { url } = context;
+  await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+  await page.waitForSelector('.theme-doc-sidebar-menu', { timeout: 30000 });
+  let rounds = 0;
+  while (rounds++ < 80) {
+    const clicked = await page.evaluate(() => {
+      const btns = Array.from(document.querySelectorAll('button.menu__caret'))
+        .filter(b => b.getAttribute('aria-expanded') === 'false');
+      btns.forEach(b => { try { b.scrollIntoView({ block: 'center' }); b.click(); } catch (e) {} });
+      return btns.length;
+    });
+    if (clicked === 0) break;
+    // Let the expanded category mount its child <ul> (and any nested carets).
+    await new Promise(r => setTimeout(r, 400));
+  }
+  const html = await page.evaluate(() => {
+    const el = document.querySelector('.theme-doc-sidebar-menu');
+    return el ? el.outerHTML : '';
+  });
+  return { data: { html }, type: 'application/json' };
+}
+"""
+
+
 class BrowserlessError(Exception):
     """Raised when Browserless is unreachable or returns an unusable response."""
 
@@ -333,6 +368,22 @@ class BrowserlessClient:
         )
         toc = data.get("toc")
         return toc if isinstance(toc, list) else []
+
+    async def expand_docusaurus_sidebar(self, target_url: str,
+                                        client: httpx.AsyncClient | None = None) -> str:
+        """Fully expand a Docusaurus sidebar (clicking every collapsed category)
+        and return the ``.theme-doc-sidebar-menu`` outerHTML with all children
+        mounted. Raises BrowserlessError. Uses the long TOC session timeout since
+        a deep tree means many click+mount rounds."""
+        timeout_ms = settings.browserless_toc_timeout_ms
+        data = await self._post(
+            _DOCUSAURUS_EXPAND_CODE,
+            {"url": target_url},
+            target_url, client,
+            session_timeout_ms=timeout_ms,
+            http_timeout_s=timeout_ms / 1000 + 30,
+        )
+        return data.get("html", "")
 
     async def gitbook_sidebars(self, urls: list[str],
                                client: httpx.AsyncClient | None = None) -> dict[str, str]:

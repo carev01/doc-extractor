@@ -1,16 +1,26 @@
 """Docusaurus documentation profile.
 
-TOC: parse the nested sidebar nav via sidebar_tree_toc using the
-``.theme-doc-sidebar-menu`` selector, which is the stable Docusaurus class
-(i18n-robust, unlike the English aria-label).  The shared strategy treats a
-selected ``<ul>`` directly as the top-level list and walks ``<li>/<a>`` +
-nested ``<ul>``.
+TOC: Docusaurus does NOT mount a collapsed category's children in the DOM until
+it is expanded, so a single render of ``.theme-doc-sidebar-menu`` only exposes
+the top-level items (observed on Portworx: 11 of 258 pages). We therefore expand
+the sidebar in Browserless first — clicking every collapsed caret until the full
+tree is mounted — then parse the resulting HTML with the shared sidebar walker
+(``<ul>`` as top-level list, ``<li>/<a>`` + nested ``<ul>``). If Browserless is
+unavailable we fall back to a single render (top level only) so a TOC is still
+produced. ``.theme-doc-sidebar-menu`` is the stable Docusaurus class
+(i18n-robust, unlike the English aria-label).
 Content: the ``.theme-doc-markdown`` wrapper.
 """
 
+import logging
+
 from app.services.profiles import registry
-from app.services.profiles.strategies import sidebar_tree_toc
+from app.services.profiles.strategies import parse_sidebar_tree, sidebar_tree_toc
 from app.services.profiles.base import TocEntry
+
+logger = logging.getLogger(__name__)
+
+_NAV_SELECTOR = ".theme-doc-sidebar-menu"
 
 
 class DocusaurusProfile:
@@ -23,9 +33,24 @@ class DocusaurusProfile:
         )
 
     async def build_toc(self, root_url: str, scraper) -> list[TocEntry]:
-        return await sidebar_tree_toc(
-            scraper, root_url, ".theme-doc-sidebar-menu"
-        )
+        # Import here so the profile stays importable/unit-testable without the
+        # browserless module loaded.
+        from app.services.browserless import BrowserlessError
+        try:
+            html = await scraper.expand_docusaurus_sidebar(root_url)
+            entries = parse_sidebar_tree(html, root_url, _NAV_SELECTOR)
+            if entries:
+                return entries
+            logger.warning(
+                "Docusaurus expand for %s yielded no entries — falling back to "
+                "single render", root_url,
+            )
+        except BrowserlessError as exc:
+            logger.warning(
+                "Docusaurus sidebar expand failed for %s (%s) — falling back to "
+                "single render (top level only)", root_url, exc,
+            )
+        return await sidebar_tree_toc(scraper, root_url, _NAV_SELECTOR)
 
     def content_config(self) -> dict:
         return {
