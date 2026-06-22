@@ -269,6 +269,76 @@ def test_mid_article_copyright_not_treated_as_footer():
     assert "Copyright © 2026 Acme governs" in out
 
 
+# Real captured tail from a stored Flosum (GitBook) article: prev/next nav, the
+# relative "Last updated" line, then the cookie/privacy-consent banner.
+FLOSUM_TAIL = (
+    "This article outlines the required prerequisites for Flosum Backup & Archive.\n"
+    "\n"
+    "[[PreviousBackup & Archive - Overview](https://docs.flosum.com/backup-and-archive)]\n"
+    "[[NextHow to Start a Free Backup & Archive Trial](https://docs.flosum.com/backup-and-archive/getting-started/how-to-start-a-free-backup-and-archive-trial)]\n"
+    "\n"
+    "Last updated 1 month ago\n"
+    "\n"
+    "This site uses cookies to deliver its service and to analyze traffic. By browsing this site, you accept the [privacy policy](https://www.flosum.com/privacy-policy)\n"
+    ".\n"
+    "\n"
+    "AcceptReject\n"
+)
+
+
+def test_removes_cookie_consent_banner():
+    out = sanitize_markdown(FLOSUM_TAIL)
+    assert "uses cookies" not in out
+    assert "privacy policy" not in out
+    assert "AcceptReject" not in out
+    # The wrapped lone "." that followed the banner text is gone too.
+    assert not any(ln.strip() == "." for ln in out.splitlines())
+
+
+def test_removes_last_updated_footer():
+    out = sanitize_markdown(FLOSUM_TAIL)
+    assert "Last updated" not in out
+
+
+def test_cookie_and_last_updated_preserve_prose():
+    out = sanitize_markdown(FLOSUM_TAIL)
+    assert "required prerequisites for Flosum Backup & Archive" in out
+
+
+def test_last_updated_variants_and_italics():
+    for line in (
+        "Last updated 2 months ago",
+        "Last updated 3 days ago",
+        "_Last updated just a moment ago_",
+        "Last updated 1 year ago",
+    ):
+        md = f"Real content here.\n\n{line}\n"
+        out = sanitize_markdown(md)
+        assert "Last updated" not in out, line
+        assert "Real content here." in out
+
+
+def test_cookie_button_link_form():
+    """Accept/Reject may render as markdown links."""
+    md = (
+        "Body text.\n\n"
+        "This site uses cookies to deliver its service. You accept the [privacy policy](https://x/p)\n"
+        "\n"
+        "[Accept](#a)[Reject](#r)\n"
+    )
+    out = sanitize_markdown(md)
+    assert "uses cookies" not in out
+    assert "Accept" not in out and "Reject" not in out
+    assert "Body text." in out
+
+
+def test_last_updated_does_not_eat_real_prose():
+    """A sentence merely containing 'ago' must not be stripped."""
+    md = "We released this feature a long time ago and it works well.\n"
+    out = sanitize_markdown(md)
+    assert "a long time ago and it works well" in out
+
+
 def test_empty_input():
     assert sanitize_markdown("") == ""
     assert sanitize_markdown("   \n  ") == "   \n  "
