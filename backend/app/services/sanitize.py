@@ -72,6 +72,16 @@ _COPYRIGHT_RE = re.compile(r"^\s*\|?\s*Copyright\s*(?:©|\(c\))", re.IGNORECASE)
 # Leading marketing banner signatures.
 _PROMO_RE = re.compile(r"product innovations are live|\[Explore now\]\(", re.IGNORECASE)
 
+# GitBook leading "llms.txt / available as Markdown" banner that prefaces every
+# page, e.g.:
+#   For the complete documentation index, see [llms.txt](…/llms.txt)
+#   . This page is also available as [Markdown](….md)
+#   .
+# Signature is the "complete documentation index … llms.txt" lead line.
+_LLMS_BANNER_RE = re.compile(
+    r"complete documentation index\b.*\bllms\.txt", re.IGNORECASE
+)
+
 # GitBook cookie/privacy-consent banner: the pitch line (mentions both cookies
 # and the privacy policy) followed — after an optional wrapped "." and blanks —
 # by the "Accept"/"Reject" buttons. Signature is specific enough never to match
@@ -269,6 +279,24 @@ def _strip_page_nav(lines: list[str]) -> list[str]:
     return [ln for ln in lines if not _PAGE_NAV_RE.match(_norm(ln))]
 
 
+def _strip_lead_llms_banner(lines: list[str]) -> list[str]:
+    """Drop GitBook's leading 'llms.txt / available as Markdown' banner.
+
+    Only fires when the document opens with the banner; removes its contiguous
+    (non-blank) paragraph — the lead line, the wrapped 'available as Markdown'
+    line, and a trailing lone '.' — up to the first blank line.
+    """
+    first = 0
+    while first < len(lines) and not _norm(lines[first]).strip():
+        first += 1
+    if first >= len(lines) or not _LLMS_BANNER_RE.search(_norm(lines[first])):
+        return lines
+    j = first
+    while j < len(lines) and _norm(lines[j]).strip():
+        j += 1
+    return lines[j:]
+
+
 def _strip_lead_promo_banner(lines: list[str]) -> list[str]:
     """Drop a leading marketing banner (and a lone trailing '.') before the title."""
     # Find first non-blank line.
@@ -288,6 +316,7 @@ def _strip_lead_promo_banner(lines: list[str]) -> list[str]:
 
 _RULES = (
     _strip_lead_breadcrumb,
+    _strip_lead_llms_banner,
     _strip_lead_promo_banner,
     _strip_cookie_consent,
     _strip_feedback_table,
