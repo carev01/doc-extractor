@@ -189,6 +189,30 @@ export default async function ({ page, context }) {
 """
 
 
+# Browserless /function that visits each URL in one warm session and returns its
+# table-of-contents <aside> HTML. GitBook renders a *contextual* sidebar: a
+# node's children appear only when you navigate to that node, so the full tree is
+# reconstructed by visiting every page and merging each one's revealed children.
+_GITBOOK_SIDEBARS_CODE = r"""
+export default async function ({ page, context }) {
+  const sel = 'aside[data-testid="table-of-contents"]';
+  const out = {};
+  for (const url of context.urls) {
+    try {
+      await page.goto(url, { waitUntil: 'networkidle2', timeout: 45000 });
+      await page.waitForSelector(sel, { timeout: 20000 });
+      await new Promise(r => setTimeout(r, 700));
+      out[url] = await page.evaluate((s) => {
+        const a = document.querySelector(s);
+        return a ? a.outerHTML : '';
+      }, sel);
+    } catch (e) { out[url] = ''; }
+  }
+  return { data: { sidebars: out }, type: 'application/json' };
+}
+"""
+
+
 class BrowserlessError(Exception):
     """Raised when Browserless is unreachable or returns an unusable response."""
 
@@ -275,6 +299,27 @@ class BrowserlessClient:
         )
         toc = data.get("toc")
         return toc if isinstance(toc, list) else []
+
+    async def gitbook_sidebars(self, urls: list[str],
+                               client: httpx.AsyncClient | None = None) -> dict[str, str]:
+        """Visit each URL in one session and return {url: table-of-contents HTML}.
+
+        Used to reconstruct a GitBook tree: each page reveals its own node's
+        direct children in the sidebar. Uses the long TOC session timeout since a
+        batch can be dozens of navigations. Raises BrowserlessError.
+        """
+        if not urls:
+            return {}
+        timeout_ms = settings.browserless_toc_timeout_ms
+        data = await self._post(
+            _GITBOOK_SIDEBARS_CODE,
+            {"urls": urls},
+            urls[0], client,
+            session_timeout_ms=timeout_ms,
+            http_timeout_s=timeout_ms / 1000 + 30,
+        )
+        sidebars = data.get("sidebars")
+        return sidebars if isinstance(sidebars, dict) else {}
 
 
 browserless_client = BrowserlessClient()

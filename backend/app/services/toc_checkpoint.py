@@ -36,6 +36,11 @@ class TocBuildCheckpoint:
     async def save_top_level(self, tops: list) -> None:
         await self._merge({"top_level": tops})
 
+    async def save_data(self, patch: dict) -> None:
+        """Shallow-merge arbitrary keys into the checkpoint blob (used by profiles
+        with their own resume shape, e.g. GitBook's crawl state)."""
+        await self._merge(patch)
+
     async def save_section(self, section_id: str, nodes: list) -> None:
         async with self._sf() as db:
             row = await db.get(TocCheckpoint, self.source_id)

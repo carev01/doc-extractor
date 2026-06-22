@@ -53,6 +53,12 @@ class Scraper:
         from app.services.browserless import browserless_client
         return await browserless_client.expand_toc(url, section_id=section_id)
 
+    async def gitbook_sidebars(self, urls: list[str]) -> dict[str, str]:
+        """Visit each URL via Browserless and return {url: table-of-contents HTML}
+        — for reconstructing a GitBook tree whose sidebar is contextual."""
+        from app.services.browserless import browserless_client
+        return await browserless_client.gitbook_sidebars(urls)
+
 
 class FakeScraper:
     """Test double: serves canned HTML per URL and a canned URL list."""
@@ -65,6 +71,7 @@ class FakeScraper:
         render_by_url: dict[str, dict] | None = None,
         rendered_html_by_url: dict[str, str] | None = None,
         toc_by_url: dict[str, list] | None = None,
+        gitbook_sidebars_by_url: dict[str, str] | None = None,
         checkpoint=None,
     ):
         self._h = html_by_url
@@ -73,6 +80,7 @@ class FakeScraper:
         self._render = render_by_url or {}
         self._rendered_html = rendered_html_by_url or {}
         self._toc = toc_by_url or {}
+        self._gitbook = gitbook_sidebars_by_url or {}
         self.checkpoint = checkpoint
 
     async def get_html(self, url: str, wait_ms: int = 1500) -> str:
@@ -96,3 +104,6 @@ class FakeScraper:
         # Keyed by section_id when given (so the full-mode "__TOP__" + per-section
         # orchestration is testable), else by url.
         return self._toc.get(section_id if section_id else url, [])
+
+    async def gitbook_sidebars(self, urls: list[str]) -> dict[str, str]:
+        return {u: self._gitbook[u] for u in urls if u in self._gitbook}
