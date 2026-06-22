@@ -300,6 +300,44 @@ def test_removes_last_updated_footer():
     assert "Last updated" not in out
 
 
+# Real captured head from a stored GitBook (Flosum) article: the leading
+# "llms.txt / available as Markdown" banner, then the real title + body.
+FLOSUM_HEAD = (
+    "For the complete documentation index, see [llms.txt](https://docs.flosum.com/llms.txt)\n"
+    ". This page is also available as [Markdown](https://docs.flosum.com/backup-and-archive/getting-started/backup-and-archive-prerequisites.md)\n"
+    ".\n"
+    "\n"
+    "![](/media/x/icon.svg) Overview\n"
+    "\n"
+    "----\n"
+    "\n"
+    "This article outlines the required prerequisites for Flosum Backup & Archive.\n"
+)
+
+
+def test_removes_leading_llms_markdown_banner():
+    out = sanitize_markdown(FLOSUM_HEAD)
+    assert "complete documentation index" not in out
+    assert "llms.txt" not in out
+    assert "also available as" not in out
+    # Real content survives, and the banner didn't eat the title.
+    assert "Overview" in out
+    assert "required prerequisites for Flosum Backup & Archive" in out
+    # The document now starts at the real content, not the banner.
+    assert out.lstrip().startswith("![](/media/x/icon.svg) Overview")
+
+
+def test_llms_banner_only_strips_at_document_head():
+    """The signature mid-document (not at the head) is left alone — conservative."""
+    md = (
+        "# Real Title\n\n"
+        "Body paragraph one.\n\n"
+        "For the complete documentation index, see [llms.txt](https://x/llms.txt)\n"
+    )
+    out = sanitize_markdown(md)
+    assert "complete documentation index" in out
+
+
 def test_removes_prev_next_page_nav():
     out = sanitize_markdown(FLOSUM_TAIL)
     assert "PreviousBackup & Archive - Overview" not in out
