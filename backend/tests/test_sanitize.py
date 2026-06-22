@@ -274,8 +274,8 @@ def test_mid_article_copyright_not_treated_as_footer():
 FLOSUM_TAIL = (
     "This article outlines the required prerequisites for Flosum Backup & Archive.\n"
     "\n"
-    "[[PreviousBackup & Archive - Overview](https://docs.flosum.com/backup-and-archive)]\n"
-    "[[NextHow to Start a Free Backup & Archive Trial](https://docs.flosum.com/backup-and-archive/getting-started/how-to-start-a-free-backup-and-archive-trial)]\n"
+    "[PreviousBackup & Archive - Overview](https://docs.flosum.com/backup-and-archive)\n"
+    "[NextHow to Start a Free Backup & Archive Trial](https://docs.flosum.com/backup-and-archive/getting-started/how-to-start-a-free-backup-and-archive-trial)\n"
     "\n"
     "Last updated 1 month ago\n"
     "\n"
@@ -298,6 +298,28 @@ def test_removes_cookie_consent_banner():
 def test_removes_last_updated_footer():
     out = sanitize_markdown(FLOSUM_TAIL)
     assert "Last updated" not in out
+
+
+def test_removes_prev_next_page_nav():
+    out = sanitize_markdown(FLOSUM_TAIL)
+    assert "PreviousBackup & Archive - Overview" not in out
+    assert "NextHow to Start" not in out
+    assert "docs.flosum.com/backup-and-archive)" not in out
+
+
+def test_page_nav_preserves_real_links_with_space():
+    """A genuine link whose text merely starts with 'Next '/'Previous ' (with a
+    space) is real content and must survive."""
+    md = (
+        "See the guide below.\n\n"
+        "[Next steps](https://x/next-steps)\n"
+        "[Previous releases](https://x/releases)\n"
+        "[Nextcloud integration](https://x/nextcloud)\n"
+    )
+    out = sanitize_markdown(md)
+    assert "Next steps" in out
+    assert "Previous releases" in out
+    assert "Nextcloud integration" in out
 
 
 def test_cookie_and_last_updated_preserve_prose():

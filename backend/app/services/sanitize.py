@@ -90,6 +90,16 @@ _COOKIE_BUTTONS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# GitBook prev/next page navigation: a standalone markdown link whose text is
+# "Previous"/"Next" glued directly to the adjacent page title (no space), e.g.
+#   [PreviousBackup & Archive - Overview](https://…/backup-and-archive)
+#   [NextHow to Start a Free Trial](https://…/trial)
+# The no-space-then-capital glue is the signature — a real link like
+# "[Next steps](…)" has a space and is left untouched.
+_PAGE_NAV_RE = re.compile(
+    r"^\s*\[(?:Previous|Next)[A-Z][^\]]*\]\([^)]*\)\s*$"
+)
+
 # GitBook "Last updated N <unit> ago" footer line (optionally italicised with
 # underscores/asterisks). The page's real last-updated timestamp is captured in
 # article metadata, so this relative-time chrome is redundant noise.
@@ -254,6 +264,11 @@ def _strip_last_updated(lines: list[str]) -> list[str]:
     return [ln for ln in lines if not _LAST_UPDATED_RE.match(_norm(ln))]
 
 
+def _strip_page_nav(lines: list[str]) -> list[str]:
+    """Drop standalone GitBook prev/next page-navigation links."""
+    return [ln for ln in lines if not _PAGE_NAV_RE.match(_norm(ln))]
+
+
 def _strip_lead_promo_banner(lines: list[str]) -> list[str]:
     """Drop a leading marketing banner (and a lone trailing '.') before the title."""
     # Find first non-blank line.
@@ -280,6 +295,7 @@ _RULES = (
     _strip_vote_tally,
     _strip_edit_links,
     _strip_back_to_top,
+    _strip_page_nav,
     _strip_last_updated,
     _strip_copyright_footer,
 )
