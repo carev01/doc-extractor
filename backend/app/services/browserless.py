@@ -10,6 +10,7 @@ The same Browserless instance already backs Firecrawl's engine, so the page
 renders identically; we only need a different *extraction* path.
 """
 
+import asyncio
 import logging
 
 import httpx
@@ -220,6 +221,15 @@ class BrowserlessError(Exception):
 class BrowserlessClient:
     """Minimal client over Browserless's ``/function`` API."""
 
+    # Browserless returns a transient error when an in-page op fails (a page-load
+    # or selector timeout inside the function surfaces as 400, or the instance is
+    # briefly overloaded → 5xx, or the connection drops). Our request bodies are
+    # always well-formed, so retry these rather than failing the whole TOC build
+    # on one blip. A persistently malformed request still fails after the cap.
+    TRANSIENT_STATUS = (400, 408, 429, 500, 502, 503, 504)
+    TRANSIENT_RETRIES = 3
+    TRANSIENT_BACKOFF = 5.0  # seconds; ×3 each attempt (5, 15, 45)
+
     def __init__(self, url: str | None = None, token: str | None = None, wait_ms: int | None = None):
         self.url = (url or settings.browserless_url).rstrip("/")
         self.token = token if token is not None else settings.browserless_token
@@ -244,14 +254,38 @@ class BrowserlessClient:
 
         owns = client is None
         client = client or httpx.AsyncClient(timeout=httpx.Timeout(http_timeout_s, connect=10.0))
+        delay = self.TRANSIENT_BACKOFF
         try:
-            resp = await client.post(endpoint, headers=headers, json=payload)
-            resp.raise_for_status()
-            body = resp.json()
-        except httpx.HTTPError as exc:
-            raise BrowserlessError(f"Browserless request failed for {target_url}: {exc}") from exc
-        except ValueError as exc:
-            raise BrowserlessError(f"Browserless returned non-JSON for {target_url}: {exc}") from exc
+            body = None
+            for attempt in range(self.TRANSIENT_RETRIES + 1):
+                try:
+                    resp = await client.post(endpoint, headers=headers, json=payload)
+                    resp.raise_for_status()
+                    body = resp.json()
+                    break
+                except httpx.HTTPStatusError as exc:
+                    code = exc.response.status_code if exc.response is not None else None
+                    if code not in self.TRANSIENT_STATUS or attempt >= self.TRANSIENT_RETRIES:
+                        raise BrowserlessError(
+                            f"Browserless request failed for {target_url}: {exc}"
+                        ) from exc
+                    reason = exc
+                except httpx.TransportError as exc:  # connect/read/write/timeout
+                    if attempt >= self.TRANSIENT_RETRIES:
+                        raise BrowserlessError(
+                            f"Browserless request failed for {target_url}: {exc}"
+                        ) from exc
+                    reason = exc
+                except ValueError as exc:
+                    raise BrowserlessError(
+                        f"Browserless returned non-JSON for {target_url}: {exc}"
+                    ) from exc
+                logger.warning(
+                    "Browserless %s transient failure (%s) — retry %d/%d in %.0fs",
+                    target_url, reason, attempt + 1, self.TRANSIENT_RETRIES, delay,
+                )
+                await asyncio.sleep(delay)
+                delay *= 3
         finally:
             if owns:
                 await client.aclose()
