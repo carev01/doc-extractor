@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 
@@ -288,14 +289,18 @@ class FirecrawlService:
         resp.raise_for_status()
         return resp.text
 
-    async def _post_with_retry(self, endpoint: str, json: dict, what: str) -> httpx.Response:
-        """POST to Firecrawl, retrying transient 5xx/429 and transport errors with
-        exponential backoff. Non-transient errors (4xx) raise immediately."""
+    async def _request_with_retry(
+        self, send: Callable[[], Awaitable[httpx.Response]], what: str
+    ) -> httpx.Response:
+        """Run an httpx request (via the `send` callable), retrying transient
+        5xx/429 and transport errors (connect/read/write — e.g. a Firecrawl pod
+        restart) with exponential backoff. Non-transient errors (4xx) raise
+        immediately."""
         delay = self.TRANSIENT_BACKOFF
         last_exc: Exception | None = None
         for attempt in range(self.TRANSIENT_RETRIES + 1):
             try:
-                resp = await self.client.post(endpoint, json=json, headers=self._auth_headers())
+                resp = await send()
                 resp.raise_for_status()
                 return resp
             except httpx.HTTPStatusError as exc:
@@ -314,6 +319,20 @@ class FirecrawlService:
             await asyncio.sleep(delay)
             delay *= 2
         raise last_exc  # pragma: no cover (loop always returns or raises above)
+
+    async def _post_with_retry(self, endpoint: str, json: dict, what: str) -> httpx.Response:
+        """POST to Firecrawl, retrying transient 5xx/429 and transport errors."""
+        return await self._request_with_retry(
+            lambda: self.client.post(endpoint, json=json, headers=self._auth_headers()),
+            what,
+        )
+
+    async def _get_with_retry(self, url: str, what: str) -> httpx.Response:
+        """GET from Firecrawl, retrying transient 5xx/429 and transport errors."""
+        return await self._request_with_retry(
+            lambda: self.client.get(url, headers=self._auth_headers()),
+            what,
+        )
 
     async def _firecrawl_request(self, url: str, payload: dict) -> dict:
         """Make a Firecrawl v2 scrape request and return the data dict."""
@@ -674,8 +693,7 @@ class FirecrawlService:
         """GET a batch status page (accepts both full URL and bare job ID)."""
         if not url.startswith("http"):
             url = f"{self.base_url}/v2/batch/scrape/{url}"
-        resp = await self.client.get(url, headers=self._auth_headers())
-        resp.raise_for_status()
+        resp = await self._get_with_retry(url, what=f"batch status {url}")
         return resp.json()
 
     async def _wait_for_batch_completion(self, job_id: str) -> None:
