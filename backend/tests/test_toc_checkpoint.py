@@ -86,3 +86,34 @@ async def test_clear_removes_row():
     await cp.clear()
     assert SID not in store
     assert await cp.load() == {}
+
+
+@pytest.mark.asyncio
+async def test_content_done_accumulates_and_loads_as_set():
+    store = {}
+    cp = TocBuildCheckpoint(make_factory(store), SID)
+    assert await cp.load_content_done() == set()
+    await cp.add_content_done(["https://x/a", "https://x/b"])
+    await cp.add_content_done(["https://x/c"])
+    assert await cp.load_content_done() == {"https://x/a", "https://x/b", "https://x/c"}
+
+
+@pytest.mark.asyncio
+async def test_content_done_coexists_with_toc_sections():
+    store = {}
+    cp = TocBuildCheckpoint(make_factory(store), SID)
+    await cp.save_top_level([{"id": "s"}])
+    await cp.save_section("s", [{"id": "s"}])
+    await cp.add_content_done(["https://x/a"])
+    data = await cp.load()
+    assert data["top_level"] == [{"id": "s"}]
+    assert data["sections"] == {"s": [{"id": "s"}]}
+    assert data["content_done"] == ["https://x/a"]
+
+
+@pytest.mark.asyncio
+async def test_add_content_done_empty_is_noop():
+    store = {}
+    cp = TocBuildCheckpoint(make_factory(store), SID)
+    await cp.add_content_done([])
+    assert SID not in store

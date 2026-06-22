@@ -114,6 +114,12 @@ class FirecrawlService:
     # Cap URLs per Firecrawl batch; large doc sets are scraped as sequential
     # chunks so we don't overwhelm Firecrawl (503s on huge batches + retries).
     MAX_BATCH_URLS = 100
+    # Firecrawl can briefly return 5xx/429 or drop the connection under load
+    # (it shares the Browserless engine). These are transient — retry the POST
+    # with exponential backoff rather than failing the whole run on one blip.
+    TRANSIENT_STATUS = (429, 502, 503, 504)
+    TRANSIENT_RETRIES = 5
+    TRANSIENT_BACKOFF = 4.0  # seconds; doubles each attempt (4,8,16,32,64)
 
     def __init__(self):
         self.base_url = settings.firecrawl_api_url.rstrip("/")
@@ -282,18 +288,42 @@ class FirecrawlService:
         resp.raise_for_status()
         return resp.text
 
+    async def _post_with_retry(self, endpoint: str, json: dict, what: str) -> httpx.Response:
+        """POST to Firecrawl, retrying transient 5xx/429 and transport errors with
+        exponential backoff. Non-transient errors (4xx) raise immediately."""
+        delay = self.TRANSIENT_BACKOFF
+        last_exc: Exception | None = None
+        for attempt in range(self.TRANSIENT_RETRIES + 1):
+            try:
+                resp = await self.client.post(endpoint, json=json, headers=self._auth_headers())
+                resp.raise_for_status()
+                return resp
+            except httpx.HTTPStatusError as exc:
+                code = exc.response.status_code if exc.response is not None else None
+                if code not in self.TRANSIENT_STATUS or attempt >= self.TRANSIENT_RETRIES:
+                    raise
+                last_exc = exc
+            except httpx.TransportError as exc:  # connect/read/write errors
+                if attempt >= self.TRANSIENT_RETRIES:
+                    raise
+                last_exc = exc
+            logger.warning(
+                "%s transient failure (%s) — retry %d/%d in %.0fs",
+                what, last_exc, attempt + 1, self.TRANSIENT_RETRIES, delay,
+            )
+            await asyncio.sleep(delay)
+            delay *= 2
+        raise last_exc  # pragma: no cover (loop always returns or raises above)
+
     async def _firecrawl_request(self, url: str, payload: dict) -> dict:
         """Make a Firecrawl v2 scrape request and return the data dict."""
         # Inject a browser UA so bot-gated sites render real content. A
         # caller-provided "headers" key overrides (merged dict: UA first,
         # caller's value wins via **payload spread).
         body = {"url": url, "headers": {"User-Agent": _BROWSER_UA}, **payload}
-        resp = await self.client.post(
-            f"{self.base_url}/v2/scrape",
-            json=body,
-            headers=self._auth_headers(),
+        resp = await self._post_with_retry(
+            f"{self.base_url}/v2/scrape", body, what=f"scrape {url}"
         )
-        resp.raise_for_status()
         return resp.json().get("data", {})
 
     async def _scrape_article(
@@ -633,12 +663,9 @@ class FirecrawlService:
         # any "headers" already present in content_config (caller wins).
         scrape_headers = {"User-Agent": _BROWSER_UA, **(content.get("headers") or {})}
         payload: dict = {"urls": urls, "formats": formats, **content, "headers": scrape_headers}
-        resp = await self.client.post(
-            f"{self.base_url}/v2/batch/scrape",
-            json=payload,
-            headers=self._auth_headers(),
+        resp = await self._post_with_retry(
+            f"{self.base_url}/v2/batch/scrape", payload, what="batch submit"
         )
-        resp.raise_for_status()
         job_id = resp.json()["id"]
         logger.info("Batch job submitted: %s (%d URLs)", job_id, len(urls))
         return job_id
@@ -1036,10 +1063,25 @@ class FirecrawlService:
                 # Submit in capped chunks (≤ MAX_BATCH_URLS) processed
                 # sequentially, so a huge doc set doesn't overwhelm Firecrawl
                 # (large single batches + empty-retry storms caused 503s).
+                #
+                # Resumable: URLs already scraped in this extraction cycle are
+                # recorded in the checkpoint, so a failed/interrupted run that is
+                # re-triggered skips them instead of re-scraping from zero.
                 batch_tag = f"src-{source_id}" if self.api_key else None
+                done = await checkpoint.load_content_done()
                 all_urls = list(url_to_entry.keys())
-                for i in range(0, len(all_urls), self.MAX_BATCH_URLS):
-                    chunk = all_urls[i:i + self.MAX_BATCH_URLS]
+                pending = [u for u in all_urls if u not in done]
+                resumed = len(all_urls) - len(pending)
+                if resumed:
+                    logger.info(
+                        "Resuming content scrape for %s: %d already done, %d pending",
+                        source.base_url, resumed, len(pending),
+                    )
+                    # Reflect prior progress in the run's counter for an accurate bar.
+                    run.articles_extracted = resumed
+                    await db.commit()
+                for i in range(0, len(pending), self.MAX_BATCH_URLS):
+                    chunk = pending[i:i + self.MAX_BATCH_URLS]
                     chunk_map = {u: url_to_entry[u] for u in chunk}
                     job_id = await self._submit_batch(
                         chunk, source_id, content_config=content_cfg
@@ -1050,9 +1092,14 @@ class FirecrawlService:
                         db, source_id, run.id, chunk_map, job_id, batch_tag=batch_tag,
                         content_config=content_cfg,
                     )
+                    # Checkpoint the chunk only after it's fully processed.
+                    await checkpoint.add_content_done(chunk)
 
             # Record removals (pages gone from the rebuilt TOC) before completing.
             await self._reconcile_removals(db, source_id, run.id)
+
+            # Whole run succeeded — drop the resume checkpoint (TOC + content).
+            await checkpoint.clear()
 
             run.status = RunStatus.COMPLETED
             run.completed_at = datetime.now(timezone.utc)

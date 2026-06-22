@@ -75,8 +75,9 @@ class CommvaultProfile:
         """Expand every top-level section sequentially, checkpointing each.
 
         On resume, sections already in the checkpoint are reused (not re-walked);
-        only the remaining ones are expanded. The checkpoint is cleared once the
-        whole tree is assembled.
+        only the remaining ones are expanded. The checkpoint row is NOT cleared
+        here — it carries into the content-scraping phase (which records its own
+        progress) and is cleared by the caller once the whole run completes.
         """
         state = await checkpoint.load()
         tops = state.get("top_level")
@@ -102,7 +103,6 @@ class CommvaultProfile:
                           "level": 0, "isParent": top.get("isParent")}]
             all_nodes.extend(nodes)
 
-        await checkpoint.clear()
         return all_nodes
 
     @staticmethod
