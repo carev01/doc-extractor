@@ -675,35 +675,46 @@ def test_firecrawl_service_available():
     assert hasattr(firecrawl_service, "_resolve_profile")
 
 
-def test_nav_item_parsing():
-    """The Commvault profile parses ordered items from a nav <ul>."""
-    from bs4 import BeautifulSoup
-    from app.services.profiles.commvault import CommvaultProfile
+@pytest.mark.asyncio
+async def test_commvault_build_toc_maps_expanded_nodes():
+    """The Commvault profile maps the ordered nodes from the Browserless sidebar
+    expansion (scraper.expand_toc) into a hierarchical TocEntry list.
 
-    html = """
-    <ul class="nav-group nav-group-root">
-      <li class="nav-row">
-        <div class="nav-item nav-doc" data-is-parent="">
-          <a href="https://docs.example.com/section-a">Section A</a>
-        </div>
-      </li>
-      <li class="nav-row">
-        <div class="nav-item nav-doc">
-          <a href="https://docs.example.com/page-b">Page B</a>
-        </div>
-      </li>
-    </ul>
+    The old DOM-based ``_parse_nav_items`` was removed when the profile switched
+    to depth-first Browserless expansion; this exercises the current path
+    (build_toc → expand_toc → _nodes_to_toc).
     """
-    soup = BeautifulSoup(html, "html.parser")
-    ul = soup.find("ul")
-    items = CommvaultProfile()._parse_nav_items(ul)
+    from app.services.profiles.commvault import CommvaultProfile
+    from app.services.profiles.scraper import FakeScraper
 
-    assert len(items) == 2
-    assert items[0]["title"] == "Section A"
-    assert items[0]["url"] == "https://docs.example.com/section-a"
-    assert items[0]["is_parent"] is True
-    assert items[1]["title"] == "Page B"
-    assert items[1]["is_parent"] is False
+    root = "https://docs.example.com/index.html"
+    # Shape Browserless's _TOC_EXPAND_CODE returns: ordered {href,title,level,isParent}.
+    nodes = [
+        {"id": "nav__section-a", "href": "https://docs.example.com/section-a",
+         "title": "Section A", "level": 0, "isParent": True},
+        {"id": "nav__child", "href": "https://docs.example.com/child",
+         "title": "Child", "level": 1, "isParent": False},
+        {"id": "nav__protect", "href": None,
+         "title": "Protect", "level": 0, "isParent": True},  # url-less category
+        {"id": "nav__page-b", "href": "https://docs.example.com/page-b",
+         "title": "Page B", "level": 0, "isParent": False},
+    ]
+    # No checkpoint on FakeScraper → build_toc takes the single-session path and
+    # calls expand_toc(root) with no section_id (keyed by url in the fake).
+    scraper = FakeScraper({root: ""}, toc_by_url={root: nodes})
+    toc = await CommvaultProfile().build_toc(root, scraper)
+
+    assert [e.title for e in toc] == ["Section A", "Child", "Protect", "Page B"]
+    # Section A: a linked parent — has a url, so is_article (bool(url)) is True.
+    assert toc[0].url == "https://docs.example.com/section-a"
+    assert toc[0].level == 0 and toc[0].parent_url is None
+    # Child nests under Section A via the level stack.
+    assert toc[1].level == 1 and toc[1].parent_url == "https://docs.example.com/section-a"
+    # Protect: a url-less category → not an article, top level.
+    assert toc[2].url is None and toc[2].is_article is False and toc[2].level == 0
+    # Page B: a top-level leaf article.
+    assert toc[3].url == "https://docs.example.com/page-b"
+    assert toc[3].is_article is True and toc[3].parent_url is None
 
 
 if __name__ == "__main__":

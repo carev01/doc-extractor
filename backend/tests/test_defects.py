@@ -43,8 +43,8 @@ def db_session():
 
 # ── Defect 1: Models registered in Base.metadata ──
 
-def test_defect1_all_nine_tables_in_metadata():
-    """After importing app.models, Base.metadata must contain all 9 expected tables.
+def test_defect1_all_tables_in_metadata():
+    """After importing app.models, Base.metadata must contain every model's table.
 
     This was the root cause: main.py did `Base.metadata.create_all` without
     importing the model modules first, so no tables were created.
@@ -61,9 +61,10 @@ def test_defect1_all_nine_tables_in_metadata():
         "export_jobs",
         "extraction_runs",
         "schedules",
+        "toc_checkpoints",
         "toc_entries",
         "vendors",
-    ], f"Expected 9 tables, got {len(table_names)}: {table_names}"
+    ], f"Expected 10 tables, got {len(table_names)}: {table_names}"
 
 
 def test_defect1_tables_created_on_startup(db_session):
