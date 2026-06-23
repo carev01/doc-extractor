@@ -256,6 +256,12 @@ export async function listJobRuns(id: string, limit = 20): Promise<JobRunItem[]>
   return res.data;
 }
 
+/** Recent JobRuns across all jobs (for the Jobs Activity feed). */
+export async function listAllJobRuns(limit = 30): Promise<JobRunItem[]> {
+  const res = await api.get("/jobs/runs", { params: { limit } });
+  return res.data;
+}
+
 // ── Articles ──
 
 export async function listArticles(

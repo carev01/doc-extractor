@@ -106,6 +106,26 @@ async def create_job(body: JobCreate, db: AsyncSession = Depends(get_db)):
     return await _response(db, job)
 
 
+@router.get("/runs", response_model=list[JobRunResponse])
+async def list_recent_job_runs(limit: int = 30, db: AsyncSession = Depends(get_db)):
+    """Recent JobRuns across all jobs (newest first), each tagged with its job
+    name — drives the Jobs view's Activity feed so a scheduled fan-out shows as
+    one rolled-up unit rather than N loose extraction runs.
+
+    Declared before ``/{job_id}`` so the literal ``/runs`` path isn't captured by
+    the job-id route.
+    """
+    rows = (
+        await db.execute(
+            select(JobRun, Job.name)
+            .join(Job, Job.id == JobRun.job_id)
+            .order_by(JobRun.created_at.desc())
+            .limit(limit)
+        )
+    ).all()
+    return [_run_response(jr, job_name=name) for jr, name in rows]
+
+
 @router.get("/{job_id}", response_model=JobResponse)
 async def get_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     return await _response(db, await _load(db, job_id))
@@ -195,10 +215,10 @@ async def list_job_runs(
     return [_run_response(r) for r in runs]
 
 
-def _run_response(jr: JobRun) -> JobRunResponse:
+def _run_response(jr: JobRun, job_name: str | None = None) -> JobRunResponse:
     return JobRunResponse(
-        id=jr.id, job_id=jr.job_id, status=jr.status.value, trigger=jr.trigger,
-        sources_total=jr.sources_total, sources_done=jr.sources_done,
-        sources_failed=jr.sources_failed, created_at=jr.created_at,
-        started_at=jr.started_at, completed_at=jr.completed_at,
+        id=jr.id, job_id=jr.job_id, job_name=job_name, status=jr.status.value,
+        trigger=jr.trigger, sources_total=jr.sources_total,
+        sources_done=jr.sources_done, sources_failed=jr.sources_failed,
+        created_at=jr.created_at, started_at=jr.started_at, completed_at=jr.completed_at,
     )

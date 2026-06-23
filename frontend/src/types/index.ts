@@ -183,6 +183,7 @@ export interface JobList {
 export interface JobRunItem {
   id: string;
   job_id: string;
+  job_name: string | null;
   status: "pending" | "running" | "completed" | "partial" | "failed" | "cancelled";
   trigger: "manual" | "scheduled";
   sources_total: number;

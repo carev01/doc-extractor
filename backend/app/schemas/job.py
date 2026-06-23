@@ -87,6 +87,7 @@ class JobList(BaseModel):
 class JobRunResponse(BaseModel):
     id: uuid.UUID
     job_id: uuid.UUID
+    job_name: str | None = None
     status: str
     trigger: str
     sources_total: int

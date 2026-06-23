@@ -36,7 +36,10 @@ governing ceiling — two big jobs at once tipped it into 502/503 before.
   tabs; `JobsManager` (create job, inline schedule editor, assigned-source list +
   un-assign, Run now, recent JobRuns with rollup, rename/delete); source list gains
   a "Job" assignment dropdown. Per-source Schedule tab/`ScheduleControl` + dead
-  schedule client fns/types removed. Phases 1+2 ship together.
+  schedule client fns/types removed. Phases 1+2 ship together. **Hardening:** the
+  Activity feed gains a "Job runs" section (`GET /api/jobs/runs`, all JobRuns
+  tagged with job name) so a scheduled fan-out shows as one rolled-up unit
+  (done/failed counts), not N loose extraction runs.
 - **Phase 3 — Parallelism: ⏸️ DEFERRED (2026-06-23, likely not worth it).** See
   findings below — the realistic upside is "stop a big job blocking a small one,"
   not faster big jobs, and on the current shared Browserless pool it's fiddly and

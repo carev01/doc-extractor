@@ -139,6 +139,22 @@ async def test_run_job_fans_out_to_pending_runs(client):
     assert len(listed) == 1 and listed[0]["id"] == jr["id"]
 
 
+async def test_recent_job_runs_across_all_jobs_tagged_with_name(client):
+    c, factory = client
+    s1 = await _source(factory, "A")
+    job = (await c.post("/api/jobs", json={"name": "Nightly"})).json()
+    await c.put(f"/api/jobs/{job['id']}/sources/{s1}")
+    jr = (await c.post(f"/api/jobs/{job['id']}/run")).json()
+
+    # The literal /runs path must not be captured by /{job_id}.
+    resp = await c.get("/api/jobs/runs")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["id"] == jr["id"]
+    assert body[0]["job_name"] == "Nightly"
+
+
 async def test_run_job_without_sources_is_409(client):
     c, _ = client
     job = (await c.post("/api/jobs", json={"name": "Empty"})).json()
