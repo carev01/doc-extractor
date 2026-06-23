@@ -31,7 +31,7 @@ Full-stack app: FastAPI backend + React/TypeScript frontend. The two are separat
 - `app/core/` — database engine/session (`database.py`) and settings (`config.py`)
 - `app/models/` — SQLAlchemy ORM models. **All models must be imported in `app/models/__init__.py`** so `Base.metadata` is populated before `create_all` runs on startup.
 - `app/schemas/` — Pydantic request/response schemas
-- `app/routes/` — FastAPI routers (vendors, sources, extraction, articles, export)
+- `app/routes/` — FastAPI routers (vendors, products, sources, extraction, articles, export, jobs)
 - `app/services/firecrawl.py` — core extraction engine; `app/services/exporter.py` — markdown export engine
 - `exports/` — generated markdown files written here (one subdirectory per export UUID)
 

@@ -1,16 +1,20 @@
-"""Scheduler tick: reap dead runs, enqueue due schedules, advance next_run_at."""
+"""Scheduler tick: reap dead runs, reconcile job runs, fan out due jobs."""
 
 import logging
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.schedule import Schedule
+from app.models.extraction_run import ExtractionRun, RunStatus
+from app.models.job import Job
+from app.models.job_run import JobRun, JobRunStatus
+from app.models.source import DocumentationSource
 from app.services.cron import compute_next_run
 from app.services.export_retention import purge_expired_exports
-from app.services.queue import ActiveRunExists, enqueue_run, reap_stale_runs, reap_stale_exports
+from app.services.queue import reap_stale_runs, reap_stale_exports
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +23,108 @@ logger = logging.getLogger(__name__)
 # triggers one sweep after restart — harmless).
 _EXPORT_PURGE_INTERVAL = timedelta(hours=1)
 _last_export_purge: datetime | None = None
+
+
+async def fan_out_job(
+    db: AsyncSession, job: Job, trigger: str, now: datetime | None = None
+) -> JobRun | None:
+    """Create a JobRun and enqueue one pending ExtractionRun per assigned source.
+
+    A source that already has an active run is coalesced (skipped) via a
+    savepoint so it never rolls back the whole fan-out. Returns the JobRun, or
+    None when the job has no sources assigned. Does not commit — the caller does.
+    """
+    now = now or datetime.now(timezone.utc)
+    source_ids = (
+        await db.execute(
+            select(DocumentationSource.id).where(DocumentationSource.job_id == job.id)
+        )
+    ).scalars().all()
+    if not source_ids:
+        return None
+
+    job_run = JobRun(job_id=job.id, trigger=trigger, status=JobRunStatus.PENDING)
+    db.add(job_run)
+    await db.flush()
+
+    enqueued = 0
+    for sid in source_ids:
+        try:
+            async with db.begin_nested():
+                db.add(
+                    ExtractionRun(
+                        source_id=sid, status=RunStatus.PENDING,
+                        trigger=trigger, job_run_id=job_run.id,
+                    )
+                )
+        except IntegrityError:
+            # uq_active_run_per_source — a run is already active for this source.
+            logger.info("Job %s: source %s coalesced (run already active)", job.id, sid)
+        else:
+            enqueued += 1
+
+    job_run.sources_total = enqueued
+    if enqueued == 0:
+        # Every source was already running — nothing to do.
+        job_run.status = JobRunStatus.COMPLETED
+        job_run.completed_at = now
+    job.last_run_at = now
+    await db.flush()
+    return job_run
+
+
+async def reconcile_job_runs(db: AsyncSession, now: datetime | None = None) -> int:
+    """Advance open JobRuns from the aggregate state of their child runs."""
+    now = now or datetime.now(timezone.utc)
+    open_runs = (
+        await db.execute(
+            select(JobRun).where(
+                JobRun.status.in_([JobRunStatus.PENDING, JobRunStatus.RUNNING])
+            )
+        )
+    ).scalars().all()
+
+    changed = 0
+    for jr in open_runs:
+        children = (
+            await db.execute(
+                select(ExtractionRun.status).where(ExtractionRun.job_run_id == jr.id)
+            )
+        ).scalars().all()
+        if not children:
+            continue  # fan_out handles the 0-child (all-coalesced) case
+
+        completed = sum(1 for c in children if c == RunStatus.COMPLETED)
+        failed = sum(1 for c in children if c == RunStatus.FAILED)
+        cancelled = sum(1 for c in children if c == RunStatus.CANCELLED)
+        terminal = completed + failed + cancelled
+        new_status = jr.status
+
+        if terminal < len(children):
+            # Still in progress. RUNNING once anything has left PENDING.
+            if any(c != RunStatus.PENDING for c in children):
+                new_status = JobRunStatus.RUNNING
+                if jr.started_at is None:
+                    jr.started_at = now
+        else:
+            if completed == len(children):
+                new_status = JobRunStatus.COMPLETED
+            elif failed == len(children):
+                new_status = JobRunStatus.FAILED
+            elif cancelled == len(children):
+                new_status = JobRunStatus.CANCELLED
+            else:
+                new_status = JobRunStatus.PARTIAL
+            jr.completed_at = now
+            jr.sources_done = completed
+            jr.sources_failed = failed
+
+        if new_status != jr.status:
+            jr.status = new_status
+            changed += 1
+
+    await db.commit()
+    return changed
 
 
 async def tick(db: AsyncSession, now: datetime | None = None) -> dict:
@@ -39,40 +145,27 @@ async def tick(db: AsyncSession, now: datetime | None = None) -> dict:
         )
         _last_export_purge = now
 
+    reconciled = await reconcile_job_runs(db, now)
+
     due = (
         await db.execute(
-            select(Schedule).where(
-                Schedule.enabled.is_(True), Schedule.next_run_at <= now
-            )
+            select(Job).where(Job.enabled.is_(True), Job.next_run_at <= now)
         )
     ).scalars().all()
 
     enqueued = 0
-    for sched in due:
-        # Capture identity before any potential rollback expires the object.
-        source_id = sched.source_id
-        sched_id = sched.id
-        cron = sched.cron
-        tz = sched.timezone
-
-        try:
-            run = await enqueue_run(db, source_id, trigger="scheduled")
-            sched.last_run_at = now
-            sched.last_run_id = run.id
-            enqueued += 1
-        except ActiveRunExists:
-            logger.info(
-                "Schedule for source %s coalesced — run already active", source_id
-            )
-            # enqueue_run rolled back the transaction; reload sched so we can
-            # still update next_run_at in the same session.
-            await db.refresh(sched)
-
+    for job in due:
+        cron = job.cron
+        tz = job.timezone
+        job_run = await fan_out_job(db, job, trigger="scheduled", now=now)
         # Always advance: computing from `now` yields catch-up-once semantics.
-        sched.next_run_at = compute_next_run(cron, tz, now)
+        job.next_run_at = compute_next_run(cron, tz, now) if cron else None
         await db.commit()
+        if job_run is not None and job_run.sources_total > 0:
+            enqueued += 1
 
     return {
         "reaped": reaped, "enqueued": enqueued, "due": len(due),
+        "reconciled": reconciled,
         "reaped_exports": reaped_exports, "purged_exports": purged_exports,
     }

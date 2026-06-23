@@ -27,6 +27,7 @@ class SourceResponse(BaseModel):
 
     id: uuid.UUID
     product_id: uuid.UUID
+    job_id: uuid.UUID | None
     name: str
     base_url: str
     status: SourceStatus

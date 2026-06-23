@@ -5,6 +5,45 @@ promoted to a spec/plan when picked up.
 
 ---
 
+## Scheduled Jobs + parallel processing
+
+**Status:** 🔨 IN PROGRESS (Phase 1 done) · **Priority:** High · **Filed:** 2026-06-23
+
+Move scheduling off individual sources and introduce **jobs** (like backup jobs
+in Veeam): a job owns a schedule and a set of sources, and firing it fans out
+into one extraction run per source, grouped under a **JobRun** for monitoring.
+
+**Decisions taken:** one job per source; per-source schedules migrated into jobs
+(per-source schedule UI removed); parallelism via in-process concurrency + a
+global Browserless render budget (not multi-worker, which would need RWX storage).
+
+**Bottleneck (the big ones, e.g. Cohesity ~14k articles ≈ 10h):** shadow-DOM
+platforms render every page through the shared Browserless at
+`browserless_concurrency=4` × `browserless_wait_ms=9000`, so time ≈
+pages × ~11s ÷ 4. The shared Browserless pool (also used by Firecrawl) is the
+governing ceiling — two big jobs at once tipped it into 502/503 before.
+
+### Phases
+
+- **Phase 1 — Jobs backend ✅ DONE:** `Job`/`JobRun` models; `job_id` on sources,
+  `job_run_id` on runs; migration `d9e0f1a2b3c4` (backfills existing per-source
+  schedules into single-source jobs, drops `schedules`); jobs CRUD + source
+  assignment + manual run; scheduler switched from per-source schedule eval to
+  per-job fan-out + JobRun reconciliation. **Per-source `schedules` table/model/
+  routes removed — Phase 2 must land before deploy** (frontend still calls the old
+  `/api/schedules` + `/sources/{id}/schedule` endpoints).
+- **Phase 2 — Jobs frontend:** manage jobs (create, schedule, assign sources),
+  Jobs view shows JobRuns with rollup, remove per-source schedule UI + dead client fns.
+- **Phase 3 — Parallelism:** global Browserless render-token budget (process-wide
+  semaphore), worker runs N concurrent extractions, fast lane so small sources
+  coexist with big ones. **Prereq:** per-run log routing (the worker attaches a
+  handler to the *root* logger per run — concurrent runs would interleave logs).
+- **Phase 4 — Big-job speed:** cheap change-detection on the Browserless path
+  (skip unchanged pages via sitemap `lastmod`/conditional fetch); expose
+  `concurrency`/`wait_ms` knobs.
+
+---
+
 ## Product layer: group documentation URLs under a product (Vendor → Product → Source)
 
 **Status:** ✅ DONE (PRs #37/#38; migration hotfixes #39/#40; deployed) · **Filed:** 2026-06-23

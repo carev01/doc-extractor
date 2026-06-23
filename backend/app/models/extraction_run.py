@@ -44,6 +44,13 @@ class ExtractionRun(Base):
         ForeignKey("documentation_sources.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # Parent JobRun when this run was created by a job fan-out (NULL for ad-hoc
+    # manual runs). SET NULL so deleting job history never deletes the run.
+    job_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("job_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     status: Mapped[RunStatus] = mapped_column(
         SAEnum(RunStatus), default=RunStatus.RUNNING, nullable=False
@@ -90,6 +97,9 @@ class ExtractionRun(Base):
 
     source: Mapped["DocumentationSource"] = relationship(
         "DocumentationSource", back_populates="extraction_runs"
+    )
+    job_run: Mapped["JobRun | None"] = relationship(
+        "JobRun", back_populates="runs"
     )
     articles: Mapped[list["Article"]] = relationship(
         "Article",
