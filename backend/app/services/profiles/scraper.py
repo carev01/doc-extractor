@@ -66,6 +66,13 @@ class Scraper:
         from app.services.browserless import browserless_client
         return await browserless_client.expand_docusaurus_sidebar(url)
 
+    async def expand_collapsible_sidebar(self, url: str) -> str:
+        """Fully expand a shadcn/ui + radix Collapsible sidebar (docs.cohesity.com)
+        via Browserless and return the ``[data-slot='sidebar-inner']`` HTML with
+        every collapsed node mounted — children aren't in the DOM until expanded."""
+        from app.services.browserless import browserless_client
+        return await browserless_client.expand_collapsible_sidebar(url)
+
 
 class FakeScraper:
     """Test double: serves canned HTML per URL and a canned URL list."""
@@ -80,6 +87,7 @@ class FakeScraper:
         toc_by_url: dict[str, list] | None = None,
         gitbook_sidebars_by_url: dict[str, str] | None = None,
         docusaurus_sidebar_by_url: dict[str, str] | None = None,
+        collapsible_sidebar_by_url: dict[str, str] | None = None,
         checkpoint=None,
     ):
         self._h = html_by_url
@@ -90,6 +98,7 @@ class FakeScraper:
         self._toc = toc_by_url or {}
         self._gitbook = gitbook_sidebars_by_url or {}
         self._docusaurus = docusaurus_sidebar_by_url or {}
+        self._collapsible = collapsible_sidebar_by_url or {}
         self.checkpoint = checkpoint
 
     async def get_html(self, url: str, wait_ms: int = 1500) -> str:
@@ -122,3 +131,9 @@ class FakeScraper:
         if url not in self._docusaurus:
             raise BrowserlessError(f"no docusaurus sidebar fixture for {url}")
         return self._docusaurus[url]
+
+    async def expand_collapsible_sidebar(self, url: str) -> str:
+        from app.services.browserless import BrowserlessError
+        if url not in self._collapsible:
+            raise BrowserlessError(f"no collapsible sidebar fixture for {url}")
+        return self._collapsible[url]
