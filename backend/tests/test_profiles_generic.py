@@ -11,10 +11,10 @@ from app.services.profiles.generic import GenericProfile
 from app.services.profiles.scraper import FakeScraper
 from app.services.profiles import registry
 
-COMMVAULT_FIXTURE = os.path.join(
-    os.path.dirname(__file__), "fixtures", "platforms", "commvault.html"
+LAZY_TREE_FIXTURE = os.path.join(
+    os.path.dirname(__file__), "fixtures", "platforms", "lazy_tree.html"
 )
-COMMVAULT_ROOT = "https://documentation.commvault.com/clumio/index.html"
+LAZY_TREE_ROOT = "https://documentation.commvault.com/clumio/index.html"
 
 ROOT = "https://x/docs/"
 
@@ -30,9 +30,9 @@ URLS = [
 
 # ── detect ──────────────────────────────────────────────────────────────────
 
-def test_detect_always_false_on_commvault_html():
-    html = open(COMMVAULT_FIXTURE, encoding="utf-8").read()
-    assert GenericProfile().detect(html, COMMVAULT_ROOT) is False
+def test_detect_always_false_on_lazy_tree_html():
+    html = open(LAZY_TREE_FIXTURE, encoding="utf-8").read()
+    assert GenericProfile().detect(html, LAZY_TREE_ROOT) is False
 
 
 def test_detect_always_false_on_confluence_ish_html():

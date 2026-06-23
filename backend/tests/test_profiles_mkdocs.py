@@ -8,7 +8,7 @@ from app.services.profiles.mkdocs import MkDocsProfile
 from app.services.profiles.scraper import FakeScraper
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "platforms", "mkdocs.html")
-COMMVAULT_FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "platforms", "commvault.html")
+LAZY_TREE_FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "platforms", "lazy_tree.html")
 DOCUSAURUS_FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "platforms", "docusaurus.html")
 ROOT = "https://satoricyber.com/docs/"
 
@@ -17,8 +17,8 @@ def _html():
     return open(FIXTURE, encoding="utf-8").read()
 
 
-def _commvault_html():
-    return open(COMMVAULT_FIXTURE, encoding="utf-8").read()
+def _lazy_tree_html():
+    return open(LAZY_TREE_FIXTURE, encoding="utf-8").read()
 
 
 def _docusaurus_html():
@@ -29,8 +29,8 @@ def test_detect_matches_mkdocs():
     assert MkDocsProfile().detect(_html(), ROOT) is True
 
 
-def test_detect_rejects_commvault():
-    assert MkDocsProfile().detect(_commvault_html(), ROOT) is False
+def test_detect_rejects_lazy_tree():
+    assert MkDocsProfile().detect(_lazy_tree_html(), ROOT) is False
 
 
 def test_detect_rejects_docusaurus():

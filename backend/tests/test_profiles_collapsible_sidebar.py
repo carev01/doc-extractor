@@ -4,7 +4,7 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from app.services.profiles.cohesity import CohesityProfile, parse_cohesity_sidebar
+from app.services.profiles.collapsible_sidebar import CollapsibleSidebarProfile, parse_collapsible_sidebar
 from app.services.profiles.scraper import FakeScraper
 
 ROOT = "https://docs.cohesity.com/docs/netbackup/11.2/103228346-171368441-0/v95650213-171368441"
@@ -73,28 +73,28 @@ COLLAPSED_ROOT = """
 """
 
 
-def test_detect_matches_cohesity_host():
-    assert CohesityProfile().detect("<html></html>", ROOT) is True
+def test_detect_matches_known_host():
+    assert CollapsibleSidebarProfile().detect("<html></html>", ROOT) is True
 
 
 def test_detect_matches_by_markers_on_other_host():
     html = '<div data-slot="sidebar-inner"><button data-slot="collapsible-trigger"></button></div>'
-    assert CohesityProfile().detect(html, "https://example.com/docs") is True
+    assert CollapsibleSidebarProfile().detect(html, "https://example.com/docs") is True
 
 
 def test_detect_rejects_unrelated_site():
-    assert CohesityProfile().detect("<div class='theme-doc-sidebar-menu'></div>",
+    assert CollapsibleSidebarProfile().detect("<div class='theme-doc-sidebar-menu'></div>",
                                     "https://docs.portworx.com/") is False
 
 
 def test_content_config():
-    cfg = CohesityProfile().content_config()
+    cfg = CollapsibleSidebarProfile().content_config()
     assert cfg["includeTags"] == ["article"]
     assert cfg["onlyMainContent"] is False
 
 
 def test_parse_expanded_nested_tree():
-    toc = parse_cohesity_sidebar(EXPANDED_SIDEBAR, ROOT)
+    toc = parse_collapsible_sidebar(EXPANDED_SIDEBAR, ROOT)
     by_title = {e.title: e for e in toc}
     assert set(by_title) == {"Quick Start", "Admin Guide", "Chapter 1",
                              "Advanced", "Tuning", "Release Notes", "About"}
@@ -124,7 +124,7 @@ def test_parse_expanded_nested_tree():
 async def test_build_toc_expands_full_tree():
     scraper = FakeScraper({ROOT: COLLAPSED_ROOT},
                           collapsible_sidebar_by_url={ROOT: EXPANDED_SIDEBAR})
-    toc = await CohesityProfile().build_toc(ROOT, scraper)
+    toc = await CollapsibleSidebarProfile().build_toc(ROOT, scraper)
     titles = {e.title for e in toc}
     assert "Tuning" in titles and "About" in titles and "Chapter 1" in titles
     assert len(toc) == 7
@@ -134,7 +134,7 @@ async def test_build_toc_expands_full_tree():
 async def test_build_toc_falls_back_to_single_render_without_browserless():
     """No Browserless fixture → BrowserlessError → parse the single render
     (top-level labels only, since collapsed children aren't mounted)."""
-    toc = await CohesityProfile().build_toc(ROOT, FakeScraper({ROOT: COLLAPSED_ROOT}))
+    toc = await CollapsibleSidebarProfile().build_toc(ROOT, FakeScraper({ROOT: COLLAPSED_ROOT}))
     titles = [e.title for e in toc]
     assert titles == ["Quick Start", "Admin Guide", "Release Notes"]
     # Quick Start is a real leaf link; the two collapsed guides are url-less.

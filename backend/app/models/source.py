@@ -36,7 +36,7 @@ class DocumentationSource(Base):
         DateTime(timezone=True), nullable=True
     )
     error_message: Mapped[str | None] = mapped_column(String(4096), nullable=True)
-    # Extraction platform profile (e.g. "commvault", "docusaurus", "intercom").
+    # Extraction platform profile (e.g. "lazy_tree", "docusaurus", "intercom").
     # NULL = not yet detected; "generic" = sitemap fallback. Set by detection or UI override.
     platform: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Optional per-source overrides / LLM-derived selectors for the profile.

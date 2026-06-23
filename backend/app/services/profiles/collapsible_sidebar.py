@@ -1,7 +1,7 @@
-"""Cohesity documentation profile (docs.cohesity.com).
+"""Collapsible-sidebar documentation profile.
 
-The Cohesity docs portal is a Next.js app whose left-nav is a shadcn/ui sidebar
-built from nested **radix Collapsible** components. Each guide/section is a
+For doc portals built as a Next.js app whose left-nav is a shadcn/ui sidebar
+made of nested **radix Collapsible** components. Each guide/section is a
 ``<div data-slot="collapsible">`` wrapping a label ``<li data-slot="sidebar-menu-item">``
 and a sibling ``<div data-slot="collapsible-content">``; the content's child
 ``<ul data-slot="sidebar-menu">`` is NOT mounted in the DOM until the trigger is
@@ -14,7 +14,7 @@ We therefore:
 
 * **build_toc** — expand the whole sidebar in Browserless (clicking every
   collapsed ``collapsible-trigger`` until the tree is fully mounted), then parse
-  the result with :func:`parse_cohesity_sidebar`, which understands the
+  the result with :func:`parse_collapsible_sidebar`, which understands the
   collapsible wrapper. Falls back to a single render (top level only) if
   Browserless is unavailable.
 * **content_config** — the article body is the single ``<article class="prose">``
@@ -35,8 +35,8 @@ from app.services.profiles.base import TocEntry
 _SIDEBAR_SELECTOR = "div[data-slot='sidebar-inner']"
 
 
-def parse_cohesity_sidebar(html: str, root_url: str) -> list[TocEntry]:
-    """Parse an (expanded) Cohesity shadcn/radix sidebar into an ordered TOC.
+def parse_collapsible_sidebar(html: str, root_url: str) -> list[TocEntry]:
+    """Parse an (expanded) shadcn/radix collapsible sidebar into an ordered TOC.
 
     Hierarchy comes from the nesting of ``ul[data-slot='sidebar-menu']``. Each
     menu entry is either a plain ``li[data-slot='sidebar-menu-item']`` (leaf) or
@@ -92,8 +92,8 @@ def parse_cohesity_sidebar(html: str, root_url: str) -> list[TocEntry]:
     return out
 
 
-class CohesityProfile:
-    name = "cohesity"
+class CollapsibleSidebarProfile:
+    name = "collapsible_sidebar"
 
     def detect(self, root_html: str, root_url: str) -> bool:
         host = urlparse(root_url).netloc
@@ -111,21 +111,21 @@ class CohesityProfile:
         logger = logging.getLogger(__name__)
         try:
             html = await scraper.expand_collapsible_sidebar(root_url)
-            entries = parse_cohesity_sidebar(html, root_url)
+            entries = parse_collapsible_sidebar(html, root_url)
             if entries:
                 return entries
             logger.warning(
-                "Cohesity expand for %s yielded no entries — falling back to "
-                "single render", root_url,
+                "Collapsible-sidebar expand for %s yielded no entries — falling "
+                "back to single render", root_url,
             )
         except BrowserlessError as exc:
             logger.warning(
-                "Cohesity sidebar expand failed for %s (%s) — falling back to "
+                "Collapsible-sidebar expand failed for %s (%s) — falling back to "
                 "single render (top level only)", root_url, exc,
             )
         # Fallback: parse whatever the single render exposes (top level only).
         html = await scraper.get_html(root_url)
-        return parse_cohesity_sidebar(html, root_url)
+        return parse_collapsible_sidebar(html, root_url)
 
     def content_config(self) -> dict:
         # Article body is <article class="prose">; the sidebar nav lives inside
@@ -137,5 +137,5 @@ class CohesityProfile:
         }
 
 
-PROFILE = CohesityProfile()
+PROFILE = CollapsibleSidebarProfile()
 registry.register(PROFILE)

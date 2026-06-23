@@ -28,8 +28,8 @@ def test_detect_true_on_intercom_fixture():
     assert IntercomProfile().detect(_read("intercom.html"), ROOT) is True
 
 
-def test_detect_false_on_commvault():
-    assert IntercomProfile().detect(_read("commvault.html"), "https://documentation.commvault.com/") is False
+def test_detect_false_on_lazy_tree():
+    assert IntercomProfile().detect(_read("lazy_tree.html"), "https://documentation.commvault.com/") is False
 
 
 def test_detect_false_on_docusaurus():

@@ -12,16 +12,16 @@ from app.services.profiles.detector import detect_platform
 from app.services.profiles import registry
 
 FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures", "platforms")
-COMMVAULT_ROOT = "https://documentation.commvault.com/clumio/index.html"
+LAZY_TREE_ROOT = "https://documentation.commvault.com/clumio/index.html"
 
 
 def _read(name: str) -> str:
     return open(os.path.join(FIXTURE_DIR, name), encoding="utf-8").read()
 
 
-def test_commvault_fixture_detects_as_commvault():
-    html = _read("commvault.html")
-    assert detect_platform(html, COMMVAULT_ROOT) == "commvault"
+def test_lazy_tree_fixture_detects_as_lazy_tree():
+    html = _read("lazy_tree.html")
+    assert detect_platform(html, LAZY_TREE_ROOT) == "lazy_tree"
 
 
 def test_junk_html_returns_none():

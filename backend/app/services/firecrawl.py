@@ -30,7 +30,7 @@ from app.services.sanitize import sanitize_markdown
 from app.services.toc_checkpoint import TocBuildCheckpoint
 from app.core.database import async_session
 
-# Default content scrape options when no profile config is supplied (legacy Commvault).
+# Default content scrape options when no profile config is supplied (legacy #doc).
 _LEGACY_CONTENT = {"includeTags": ["#doc"], "onlyMainContent": False, "waitFor": 1500}
 
 # Browser User-Agent so bot-gated sites (e.g. Confluence Cloud) render real
@@ -1018,7 +1018,7 @@ class FirecrawlService:
                 "Discovering TOC for %s (profile=%s)", source.base_url, profile.name
             )
             # A persistent checkpoint lets a long sidebar expansion (e.g.
-            # Commvault's ~9,670-node tree) resume after an interruption instead
+            # a ~9,670-node tree) resume after an interruption instead
             # of restarting; profiles that don't expand section-by-section ignore
             # it. Uses its own sessions so progress is independent of this run's
             # transaction.

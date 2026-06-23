@@ -13,7 +13,7 @@ from app.services.browserless import BrowserlessError
 
 FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures", "platforms")
 GITBOOK_FIXTURE = os.path.join(FIXTURE_DIR, "gitbook.html")
-COMMVAULT_FIXTURE = os.path.join(FIXTURE_DIR, "commvault.html")
+LAZY_TREE_FIXTURE = os.path.join(FIXTURE_DIR, "lazy_tree.html")
 DOCUSAURUS_FIXTURE = os.path.join(FIXTURE_DIR, "docusaurus.html")
 MKDOCS_FIXTURE = os.path.join(FIXTURE_DIR, "mkdocs.html")
 
@@ -33,8 +33,8 @@ def test_detect_matches_gitbook():
     assert GitBookProfile().detect(_read(GITBOOK_FIXTURE), ROOT) is True
 
 
-def test_detect_rejects_commvault():
-    assert GitBookProfile().detect(_read(COMMVAULT_FIXTURE), ROOT) is False
+def test_detect_rejects_lazy_tree():
+    assert GitBookProfile().detect(_read(LAZY_TREE_FIXTURE), ROOT) is False
 
 
 def test_detect_rejects_docusaurus():

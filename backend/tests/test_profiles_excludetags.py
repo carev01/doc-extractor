@@ -2,7 +2,7 @@
 
 These are the scrape-time half of the sanitization (the post-process half in
 services/sanitize.py applies to every profile). Profiles whose includeTags
-already scope tightly to the content body (salesforce, confluence, commvault)
+already scope tightly to the content body (salesforce, confluence, lazy_tree)
 intentionally have no excludeTags — chrome never enters the scrape.
 """
 
