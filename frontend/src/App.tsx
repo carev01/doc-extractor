@@ -1,6 +1,7 @@
 import { useState } from "react";
-import type { Vendor, DocumentationSource } from "./types";
+import type { Vendor, Product, DocumentationSource } from "./types";
 import VendorList from "./components/VendorList";
+import ProductList from "./components/ProductList";
 import SourceList from "./components/SourceList";
 import ExportPanel from "./components/ExportPanel";
 import ChangelogPanel from "./components/ChangelogPanel";
@@ -8,7 +9,14 @@ import DocsBrowser from "./components/DocsBrowser";
 import ScheduleControl from "./components/ScheduleControl";
 import "./App.css";
 
-type View = "vendors" | "sources" | "browse" | "export" | "changelog" | "schedule";
+type View =
+  | "vendors"
+  | "products"
+  | "sources"
+  | "browse"
+  | "export"
+  | "changelog"
+  | "schedule";
 const SOURCE_TABS = ["browse", "export", "changelog", "schedule"] as const;
 const SOURCE_TAB_LABELS: Record<string, string> = {
   browse: "Browse",
@@ -20,11 +28,19 @@ const SOURCE_TAB_LABELS: Record<string, string> = {
 export default function App() {
   const [view, setView] = useState<View>("vendors");
   const [selectedVendor, setSelectedVendor] = useState<Vendor | null>(null);
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [selectedSource, setSelectedSource] =
     useState<DocumentationSource | null>(null);
 
   const handleSelectVendor = (vendor: Vendor) => {
     setSelectedVendor(vendor);
+    setSelectedProduct(null);
+    setSelectedSource(null);
+    setView("products");
+  };
+
+  const handleSelectProduct = (product: Product) => {
+    setSelectedProduct(product);
     setSelectedSource(null);
     setView("sources");
   };
@@ -52,6 +68,7 @@ export default function App() {
             onClick={() => {
               setView("vendors");
               setSelectedVendor(null);
+              setSelectedProduct(null);
               setSelectedSource(null);
             }}
           >
@@ -61,13 +78,28 @@ export default function App() {
             <>
               <span className="sep">/</span>
               <button
+                className={view === "products" ? "active" : ""}
+                onClick={() => {
+                  setView("products");
+                  setSelectedProduct(null);
+                  setSelectedSource(null);
+                }}
+              >
+                {selectedVendor.name}
+              </button>
+            </>
+          )}
+          {selectedProduct && (
+            <>
+              <span className="sep">/</span>
+              <button
                 className={view === "sources" ? "active" : ""}
                 onClick={() => {
                   setView("sources");
                   setSelectedSource(null);
                 }}
               >
-                {selectedVendor.name}
+                {selectedProduct.name}
               </button>
             </>
           )}
@@ -88,9 +120,17 @@ export default function App() {
           />
         )}
 
-        {view === "sources" && selectedVendor && (
-          <SourceList
+        {view === "products" && selectedVendor && (
+          <ProductList
             vendor={selectedVendor}
+            onSelect={handleSelectProduct}
+            selectedId={selectedProduct?.id}
+          />
+        )}
+
+        {view === "sources" && selectedProduct && (
+          <SourceList
+            product={selectedProduct}
             onSelectSource={handleSelectSource}
             selectedSourceId={selectedSource?.id}
           />

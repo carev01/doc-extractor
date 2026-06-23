@@ -13,11 +13,24 @@ export interface VendorList {
   total: number;
 }
 
+export interface Product {
+  id: string;
+  vendor_id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProductList {
+  products: Product[];
+  total: number;
+}
+
 export type SourceStatus = "pending" | "extracting" | "completed" | "failed";
 
 export interface DocumentationSource {
   id: string;
-  vendor_id: string;
+  product_id: string;
   name: string;
   base_url: string;
   status: SourceStatus;
