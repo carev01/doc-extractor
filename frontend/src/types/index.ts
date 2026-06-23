@@ -31,6 +31,7 @@ export type SourceStatus = "pending" | "extracting" | "completed" | "failed";
 export interface DocumentationSource {
   id: string;
   product_id: string;
+  job_id: string | null;
   name: string;
   base_url: string;
   status: SourceStatus;
@@ -151,18 +152,45 @@ export interface ExportJobItem {
   completed_at: string | null;
 }
 
-export interface ScheduleListItem {
-  source_id: string;
-  source_name: string;
+export interface JobSourceRef {
+  id: string;
+  name: string;
   product_name: string;
   vendor_name: string;
+}
+
+export interface Job {
+  id: string;
+  name: string;
   enabled: boolean;
-  frequency: string;
-  time_of_day: string;
-  cron: string;
+  frequency: Frequency | null;
+  time_of_day: string | null;
+  day_of_week: number | null;
+  day_of_month: number | null;
+  cron: string | null;
   timezone: string;
   next_run_at: string | null;
   last_run_at: string | null;
+  source_count: number;
+  sources: JobSourceRef[];
+}
+
+export interface JobList {
+  jobs: Job[];
+  total: number;
+}
+
+export interface JobRunItem {
+  id: string;
+  job_id: string;
+  status: "pending" | "running" | "completed" | "partial" | "failed" | "cancelled";
+  trigger: "manual" | "scheduled";
+  sources_total: number;
+  sources_done: number;
+  sources_failed: number;
+  created_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
 }
 
 export interface ExtractionTrigger {
@@ -287,23 +315,6 @@ export interface ArticleVersionDetail extends ArticleVersion {
 export type ChangeStatus = "new" | "updated" | "unchanged";
 
 export type Frequency = "hourly" | "daily" | "weekly" | "monthly";
-
-export interface ScheduleConfig {
-  enabled: boolean;
-  frequency: Frequency;
-  time_of_day: string;        // HH:MM
-  day_of_week?: number | null;
-  day_of_month?: number | null;
-  timezone: string;
-}
-
-export interface Schedule extends ScheduleConfig {
-  source_id: string;
-  cron: string;
-  next_run_at: string | null;
-  last_run_at: string | null;
-  last_run: { id: string; status: string; completed_at: string | null } | null;
-}
 
 export interface BrowseTOCEntry {
   id: string;

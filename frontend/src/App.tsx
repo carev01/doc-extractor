@@ -7,7 +7,6 @@ import JobsView from "./components/JobsView";
 import ExportPanel from "./components/ExportPanel";
 import ChangelogPanel from "./components/ChangelogPanel";
 import DocsBrowser from "./components/DocsBrowser";
-import ScheduleControl from "./components/ScheduleControl";
 import "./App.css";
 
 type View =
@@ -17,14 +16,12 @@ type View =
   | "browse"
   | "export"
   | "changelog"
-  | "schedule"
   | "jobs";
-const SOURCE_TABS = ["browse", "export", "changelog", "schedule"] as const;
+const SOURCE_TABS = ["browse", "export", "changelog"] as const;
 const SOURCE_TAB_LABELS: Record<string, string> = {
   browse: "Browse",
   export: "Export",
   changelog: "Changelog",
-  schedule: "Schedule",
 };
 
 export default function App() {
@@ -150,8 +147,7 @@ export default function App() {
         {selectedSource &&
           (view === "browse" ||
             view === "export" ||
-            view === "changelog" ||
-            view === "schedule") && (
+            view === "changelog") && (
             <>
               <nav className="source-tabs">
                 {SOURCE_TABS.map((tab) => (
@@ -168,9 +164,6 @@ export default function App() {
               {view === "export" && <ExportPanel source={selectedSource} />}
               {view === "changelog" && (
                 <ChangelogPanel source={selectedSource} />
-              )}
-              {view === "schedule" && (
-                <ScheduleControl source={selectedSource} />
               )}
             </>
           )}

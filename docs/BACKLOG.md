@@ -29,11 +29,14 @@ governing ceiling — two big jobs at once tipped it into 502/503 before.
   `job_run_id` on runs; migration `d9e0f1a2b3c4` (backfills existing per-source
   schedules into single-source jobs, drops `schedules`); jobs CRUD + source
   assignment + manual run; scheduler switched from per-source schedule eval to
-  per-job fan-out + JobRun reconciliation. **Per-source `schedules` table/model/
-  routes removed — Phase 2 must land before deploy** (frontend still calls the old
-  `/api/schedules` + `/sources/{id}/schedule` endpoints).
-- **Phase 2 — Jobs frontend:** manage jobs (create, schedule, assign sources),
-  Jobs view shows JobRuns with rollup, remove per-source schedule UI + dead client fns.
+  per-job fan-out + JobRun reconciliation. Per-source `schedules` table/model/
+  routes removed (the matching frontend changes land in Phase 2, so the two ship
+  together).
+- **Phase 2 — Jobs frontend ✅ DONE:** Jobs view split into Activity / Manage Jobs
+  tabs; `JobsManager` (create job, inline schedule editor, assigned-source list +
+  un-assign, Run now, recent JobRuns with rollup, rename/delete); source list gains
+  a "Job" assignment dropdown. Per-source Schedule tab/`ScheduleControl` + dead
+  schedule client fns/types removed. Phases 1+2 ship together.
 - **Phase 3 — Parallelism:** global Browserless render-token budget (process-wide
   semaphore), worker runs N concurrent extractions, fast lane so small sources
   coexist with big ones. **Prereq:** per-run log routing (the worker attaches a
