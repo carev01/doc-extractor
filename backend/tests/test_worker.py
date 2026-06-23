@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.config import settings
 from app.core.database import Base
-from app.models import Vendor, DocumentationSource, ExtractionRun
+from app.models import Vendor, Product, DocumentationSource, ExtractionRun
 from app.models.extraction_run import RunStatus
 from app.services.queue import enqueue_run
 import app.worker as worker
@@ -38,7 +38,10 @@ async def _source(db) -> uuid.UUID:
     v = Vendor(name="V")
     db.add(v)
     await db.flush()
-    s = DocumentationSource(vendor_id=v.id, name="S", base_url="http://x")
+    s_prod = Product(vendor_id=v.id, name="P")
+    db.add(s_prod)
+    await db.flush()
+    s = DocumentationSource(product_id=s_prod.id, name="S", base_url="http://x")
     db.add(s)
     await db.commit()
     await db.refresh(s)

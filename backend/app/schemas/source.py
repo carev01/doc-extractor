@@ -9,7 +9,7 @@ from app.models.source import SourceStatus
 
 
 class SourceCreate(BaseModel):
-    vendor_id: uuid.UUID
+    product_id: uuid.UUID
     name: str
     base_url: str
 
@@ -19,13 +19,14 @@ class SourceUpdate(BaseModel):
     base_url: str | None = None
     platform: str | None = None
     refresh_profile: bool | None = None
+    product_id: uuid.UUID | None = None  # move the source to another product
 
 
 class SourceResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    vendor_id: uuid.UUID
+    product_id: uuid.UUID
     name: str
     base_url: str
     status: SourceStatus

@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.config import settings
 from app.core.database import Base
-from app.models import Vendor, DocumentationSource, Article, ExtractionRun
+from app.models import Vendor, Product, DocumentationSource, Article, ExtractionRun
 from app.models.extraction_run import RunStatus
 from app.services.firecrawl import FirecrawlService, FirecrawlUnavailableError
 
@@ -60,11 +60,12 @@ def test_defect1_all_tables_in_metadata():
         "documentation_sources",
         "export_jobs",
         "extraction_runs",
+        "products",
         "schedules",
         "toc_checkpoints",
         "toc_entries",
         "vendors",
-    ], f"Expected 10 tables, got {len(table_names)}: {table_names}"
+    ], f"Expected 11 tables, got {len(table_names)}: {table_names}"
 
 
 def test_defect1_tables_created_on_startup(db_session):
@@ -128,8 +129,11 @@ def test_defect3_extract_source_uses_passed_run_id(db_session):
     db_session.add(v)
     db_session.flush()
 
+    s_prod = Product(vendor_id=v.id, name="P")
+    db_session.add(s_prod)
+    db_session.flush()
     s = DocumentationSource(
-        vendor_id=v.id, name="RunIdSource",
+        product_id=s_prod.id, name="RunIdSource",
         base_url="https://docs.runid.com"
     )
     db_session.add(s)
@@ -179,8 +183,11 @@ def test_defect3_no_duplicate_runs(db_session):
     db_session.add(v)
     db_session.flush()
 
+    s_prod = Product(vendor_id=v.id, name="P")
+    db_session.add(s_prod)
+    db_session.flush()
     s = DocumentationSource(
-        vendor_id=v.id, name="RunIdSource2",
+        product_id=s_prod.id, name="RunIdSource2",
         base_url="https://docs.runid2.com"
     )
     db_session.add(s)

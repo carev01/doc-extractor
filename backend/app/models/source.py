@@ -24,8 +24,8 @@ class DocumentationSource(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    vendor_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("vendors.id", ondelete="CASCADE"), nullable=False
+    product_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(512), nullable=False)
     base_url: Mapped[str] = mapped_column(String(2048), nullable=False)
@@ -49,7 +49,7 @@ class DocumentationSource(Base):
     )
 
     # Relationships
-    vendor: Mapped["Vendor"] = relationship("Vendor", back_populates="sources")
+    product: Mapped["Product"] = relationship("Product", back_populates="sources")
     extraction_runs: Mapped[list["ExtractionRun"]] = relationship(
         "ExtractionRun", back_populates="source", cascade="all, delete-orphan"
     )

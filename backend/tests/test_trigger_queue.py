@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.core.config import settings
 from app.core.database import Base, get_db
 from app.main import app
-from app.models import Vendor, DocumentationSource
+from app.models import Vendor, Product, DocumentationSource
 
 TEST_DATABASE_URL = settings.database_url.rsplit("/", 1)[0] + "/docextractor_test"
 
@@ -61,7 +61,10 @@ async def test_trigger_enqueues_pending_run(client):
     c, session_factory = client
     async with session_factory() as db:
         v = Vendor(name="V"); db.add(v); await db.flush()
-        s = DocumentationSource(vendor_id=v.id, name="S", base_url="http://x")
+        s_prod = Product(vendor_id=v.id, name="P")
+        db.add(s_prod)
+        await db.flush()
+        s = DocumentationSource(product_id=s_prod.id, name="S", base_url="http://x")
         db.add(s); await db.commit(); await db.refresh(s)
         sid = str(s.id)
 

@@ -13,6 +13,7 @@ from app.models.article import Article
 from app.models.article_version import ArticleVersion
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.schedule import Schedule
+from app.models.product import Product
 from app.models.source import DocumentationSource
 from app.models.toc import TOCEntry
 from app.schemas.browse import BrowseTOCEntry, RemovedArticle, BrowseResponse
@@ -31,9 +32,15 @@ router = APIRouter(prefix="/api/sources", tags=["sources"])
 
 @router.post("", response_model=SourceResponse, status_code=201)
 async def create_source(body: SourceCreate, db: AsyncSession = Depends(get_db)):
-    """Add a new documentation source to extract."""
+    """Add a new documentation source to extract, under a product."""
+    product = (
+        await db.execute(select(Product).where(Product.id == body.product_id))
+    ).scalar_one_or_none()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
     source = DocumentationSource(
-        vendor_id=body.vendor_id,
+        product_id=body.product_id,
         name=body.name,
         base_url=body.base_url,
     )
@@ -45,18 +52,32 @@ async def create_source(body: SourceCreate, db: AsyncSession = Depends(get_db)):
 
 @router.get("", response_model=SourceListResponse)
 async def list_sources(
+    product_id: uuid.UUID | None = Query(None),
     vendor_id: uuid.UUID | None = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ):
-    """List documentation sources, optionally filtered by vendor."""
+    """List documentation sources, optionally filtered by product or vendor.
+
+    ``product_id`` filters directly; ``vendor_id`` filters via the source's
+    product (so "all sources for a vendor" still resolves under the new nesting).
+    """
     base_query = select(DocumentationSource)
     count_query = select(func.count(DocumentationSource.id))
 
+    if product_id:
+        base_query = base_query.where(DocumentationSource.product_id == product_id)
+        count_query = count_query.where(DocumentationSource.product_id == product_id)
+
     if vendor_id:
-        base_query = base_query.where(DocumentationSource.vendor_id == vendor_id)
-        count_query = count_query.where(DocumentationSource.vendor_id == vendor_id)
+        vendor_products = (
+            select(Product.id).where(Product.vendor_id == vendor_id).scalar_subquery()
+        )
+        base_query = base_query.where(DocumentationSource.product_id.in_(vendor_products))
+        count_query = count_query.where(
+            DocumentationSource.product_id.in_(vendor_products)
+        )
 
     total_result = await db.execute(count_query)
     total = total_result.scalar()
@@ -97,6 +118,14 @@ async def update_source(
         source.name = body.name
     if body.base_url is not None:
         source.base_url = body.base_url
+    if body.product_id is not None and body.product_id != source.product_id:
+        # Move the source to another product (must exist).
+        target = (
+            await db.execute(select(Product).where(Product.id == body.product_id))
+        ).scalar_one_or_none()
+        if not target:
+            raise HTTPException(status_code=404, detail="Target product not found")
+        source.product_id = body.product_id
     if body.platform is not None:
         # "" / "auto" clears the override so detection runs again next extraction.
         source.platform = None if body.platform in ("", "auto") else body.platform

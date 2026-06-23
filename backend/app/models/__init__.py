@@ -1,6 +1,7 @@
 """All ORM models."""
 
 from app.models.vendor import Vendor
+from app.models.product import Product
 from app.models.source import DocumentationSource, SourceStatus
 from app.models.toc import TOCEntry
 from app.models.article import Article
@@ -13,6 +14,7 @@ from app.models.toc_checkpoint import TocCheckpoint
 
 __all__ = [
     "Vendor",
+    "Product",
     "DocumentationSource",
     "SourceStatus",
     "TOCEntry",
