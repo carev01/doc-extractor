@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type {
-  Vendor,
+  Product,
   DocumentationSource,
   ExtractionRun,
 } from "../types";
@@ -32,7 +32,7 @@ const PLATFORM_OPTIONS: { value: string; label: string }[] = [
 ];
 
 interface Props {
-  vendor: Vendor;
+  product: Product;
   onSelectSource: (source: DocumentationSource) => void;
   selectedSourceId?: string;
 }
@@ -58,7 +58,7 @@ function statusBadge(status: string) {
 }
 
 export default function SourceList({
-  vendor,
+  product,
   onSelectSource,
   selectedSourceId,
 }: Props) {
@@ -70,12 +70,12 @@ export default function SourceList({
 
   const fetchSources = useCallback(async () => {
     try {
-      const data = await listSources(vendor.id);
+      const data = await listSources(product.id);
       setSources(data.sources);
     } catch {
       setError("Failed to load sources");
     }
-  }, [vendor.id]);
+  }, [product.id]);
 
   useEffect(() => {
     fetchSources();
@@ -88,7 +88,7 @@ export default function SourceList({
     setError("");
     try {
       await createSource({
-        vendor_id: vendor.id,
+        product_id: product.id,
         name: name.trim(),
         base_url: baseUrl.trim(),
       });
@@ -114,7 +114,7 @@ export default function SourceList({
 
   return (
     <div className="source-list">
-      <h2>Documentation Sources — {vendor.name}</h2>
+      <h2>Documentation Sources — {product.name}</h2>
 
       {error && <div className="error">{error}</div>}
 

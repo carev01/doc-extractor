@@ -4,6 +4,8 @@ import axios, { isAxiosError } from "axios";
 import type {
   Vendor,
   VendorList,
+  Product,
+  ProductList,
   DocumentationSource,
   SourceList,
   ArticleDetail,
@@ -66,10 +68,43 @@ export async function deleteVendor(id: string): Promise<void> {
   await api.delete(`/vendors/${id}`);
 }
 
+// ── Products ──
+
+export async function createProduct(data: {
+  vendor_id: string;
+  name: string;
+}): Promise<Product> {
+  const res = await api.post("/products", data);
+  return res.data;
+}
+
+export async function listProducts(
+  vendorId?: string,
+  skip = 0,
+  limit = 50
+): Promise<ProductList> {
+  const res = await api.get("/products", {
+    params: { vendor_id: vendorId, skip, limit },
+  });
+  return res.data;
+}
+
+export async function updateProduct(
+  id: string,
+  data: { name?: string }
+): Promise<Product> {
+  const res = await api.patch(`/products/${id}`, data);
+  return res.data;
+}
+
+export async function deleteProduct(id: string): Promise<void> {
+  await api.delete(`/products/${id}`);
+}
+
 // ── Sources ──
 
 export async function createSource(data: {
-  vendor_id: string;
+  product_id: string;
   name: string;
   base_url: string;
 }): Promise<DocumentationSource> {
@@ -78,12 +113,12 @@ export async function createSource(data: {
 }
 
 export async function listSources(
-  vendorId?: string,
+  productId?: string,
   skip = 0,
   limit = 50
 ): Promise<SourceList> {
   const res = await api.get("/sources", {
-    params: { vendor_id: vendorId, skip, limit },
+    params: { product_id: productId, skip, limit },
   });
   return res.data;
 }
