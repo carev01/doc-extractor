@@ -27,6 +27,11 @@ class DocumentationSource(Base):
     product_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False
     )
+    # Optional job assignment (one job per source). NULL = manual-only.
+    # SET NULL on job delete so removing a job just un-assigns its sources.
+    job_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
+    )
     name: Mapped[str] = mapped_column(String(512), nullable=False)
     base_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     status: Mapped[SourceStatus] = mapped_column(
@@ -50,6 +55,7 @@ class DocumentationSource(Base):
 
     # Relationships
     product: Mapped["Product"] = relationship("Product", back_populates="sources")
+    job: Mapped["Job | None"] = relationship("Job", back_populates="sources")
     extraction_runs: Mapped[list["ExtractionRun"]] = relationship(
         "ExtractionRun", back_populates="source", cascade="all, delete-orphan"
     )

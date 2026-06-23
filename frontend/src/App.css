@@ -1660,3 +1660,28 @@ a.btn-primary {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ── Jobs manager (Phase 2) ── */
+.jobs-manager .add-form {
+  margin-bottom: 1rem;
+}
+.job-card .job-schedule {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6em;
+  margin: 0.4rem 0;
+}
+.job-card .job-sources {
+  list-style: none;
+  padding: 0;
+  margin: 0.3rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.job-card .job-sources li {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+}

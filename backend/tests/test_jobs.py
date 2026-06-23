@@ -3,7 +3,6 @@
 import os
 import sys
 import uuid
-from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
@@ -21,7 +20,7 @@ from app.core.config import settings
 from app.core.database import Base, get_db
 from app.main import app
 from app.models import (
-    Vendor, Product, DocumentationSource, ExtractionRun, Schedule, ExportJob,
+    Vendor, Product, DocumentationSource, ExtractionRun, ExportJob,
 )
 from app.models.extraction_run import RunStatus
 from app.models.export_job import ExportStatus
@@ -103,29 +102,6 @@ async def test_run_logs_endpoint(client):
     assert (await c.get(f"/api/extraction/runs/{uuid.uuid4()}/logs")).status_code == 404
 
 
-async def test_list_schedules_with_names(client):
-    c, factory = client
-    sid = await _source(factory)
-    async with factory() as s:
-        s.add(Schedule(
-            source_id=sid, enabled=True, frequency="daily", time_of_day="02:00",
-            cron="0 2 * * *", timezone="UTC",
-            next_run_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
-        ))
-        await s.commit()
-
-    body = (await c.get("/api/schedules")).json()
-    assert len(body["schedules"]) == 1
-    sch = body["schedules"][0]
-    assert sch["vendor_name"] == "Acme"
-    assert sch["product_name"] == "Cloud"
-    assert sch["source_name"] == "Docs"
-    assert sch["enabled"] is True
-    assert sch["next_run_at"].startswith("2026-07-01")
-
-    # enabled_only filter
-    empty = (await c.get("/api/schedules", params={"enabled_only": True})).json()
-    assert len(empty["schedules"]) == 1
 
 
 async def test_list_export_jobs_with_names(client):

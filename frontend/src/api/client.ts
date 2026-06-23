@@ -1,6 +1,6 @@
 /** API client for DocExtractor backend. */
 
-import axios, { isAxiosError } from "axios";
+import axios from "axios";
 import type {
   Vendor,
   VendorList,
@@ -13,7 +13,10 @@ import type {
   TOCResponse,
   ExtractionRun,
   RunLogs,
-  ScheduleListItem,
+  Frequency,
+  Job,
+  JobList,
+  JobRunItem,
   ExtractionTrigger,
   ExportRequest,
   ExportJobCreated,
@@ -25,8 +28,6 @@ import type {
   VersionDiff,
   ChangelogResponse,
   BrowseResponse,
-  Schedule,
-  ScheduleConfig,
 } from "../types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -195,12 +196,69 @@ export async function resanitizeSource(
   return res.data;
 }
 
-export async function listSchedules(
-  enabledOnly = false
-): Promise<{ schedules: ScheduleListItem[] }> {
-  const res = await api.get("/schedules", {
-    params: { enabled_only: enabledOnly },
-  });
+// ── Jobs (scheduled groups of sources) ──
+
+export async function listJobs(): Promise<JobList> {
+  const res = await api.get("/jobs");
+  return res.data;
+}
+
+export async function createJob(data: {
+  name: string;
+  enabled?: boolean;
+  frequency?: Frequency | null;
+  time_of_day?: string;
+  day_of_week?: number | null;
+  day_of_month?: number | null;
+  timezone?: string;
+}): Promise<Job> {
+  const res = await api.post("/jobs", data);
+  return res.data;
+}
+
+export async function updateJob(
+  id: string,
+  data: {
+    name?: string;
+    enabled?: boolean;
+    frequency?: Frequency | null;
+    time_of_day?: string;
+    day_of_week?: number | null;
+    day_of_month?: number | null;
+    timezone?: string;
+  }
+): Promise<Job> {
+  const res = await api.patch(`/jobs/${id}`, data);
+  return res.data;
+}
+
+export async function deleteJob(id: string): Promise<void> {
+  await api.delete(`/jobs/${id}`);
+}
+
+export async function assignSourceToJob(jobId: string, sourceId: string): Promise<Job> {
+  const res = await api.put(`/jobs/${jobId}/sources/${sourceId}`);
+  return res.data;
+}
+
+export async function unassignSourceFromJob(jobId: string, sourceId: string): Promise<Job> {
+  const res = await api.delete(`/jobs/${jobId}/sources/${sourceId}`);
+  return res.data;
+}
+
+export async function runJob(id: string): Promise<JobRunItem> {
+  const res = await api.post(`/jobs/${id}/run`);
+  return res.data;
+}
+
+export async function listJobRuns(id: string, limit = 20): Promise<JobRunItem[]> {
+  const res = await api.get(`/jobs/${id}/runs`, { params: { limit } });
+  return res.data;
+}
+
+/** Recent JobRuns across all jobs (for the Jobs Activity feed). */
+export async function listAllJobRuns(limit = 30): Promise<JobRunItem[]> {
+  const res = await api.get("/jobs/runs", { params: { limit } });
   return res.data;
 }
 
@@ -328,27 +386,4 @@ export async function getVersionDiff(
 export async function browseSource(sourceId: string): Promise<BrowseResponse> {
   const res = await api.get(`/sources/${sourceId}/browse`);
   return res.data;
-}
-
-// ── Schedule ──
-
-export async function getSchedule(sourceId: string): Promise<Schedule | null> {
-  try {
-    const { data } = await api.get<Schedule>(`/sources/${sourceId}/schedule`);
-    return data;
-  } catch (e) {
-    if (isAxiosError(e) && e.response?.status === 404) return null;
-    throw e;
-  }
-}
-
-export async function putSchedule(
-  sourceId: string, config: ScheduleConfig,
-): Promise<Schedule> {
-  const { data } = await api.put<Schedule>(`/sources/${sourceId}/schedule`, config);
-  return data;
-}
-
-export async function deleteSchedule(sourceId: string): Promise<void> {
-  await api.delete(`/sources/${sourceId}/schedule`);
 }

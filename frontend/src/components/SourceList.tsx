@@ -3,6 +3,7 @@ import type {
   Product,
   DocumentationSource,
   ExtractionRun,
+  Job,
 } from "../types";
 import {
   listSources,
@@ -13,6 +14,9 @@ import {
   getRunStatus,
   listRuns,
   resanitizeSource,
+  listJobs,
+  assignSourceToJob,
+  unassignSourceFromJob,
 } from "../api/client";
 
 const PLATFORM_OPTIONS: { value: string; label: string }[] = [
@@ -64,6 +68,7 @@ export default function SourceList({
   selectedSourceId,
 }: Props) {
   const [sources, setSources] = useState<DocumentationSource[]>([]);
+  const [jobs, setJobs] = useState<Job[]>([]);
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [loading, setLoading] = useState(false);
@@ -78,9 +83,18 @@ export default function SourceList({
     }
   }, [product.id]);
 
+  const fetchJobs = useCallback(async () => {
+    try {
+      setJobs((await listJobs()).jobs);
+    } catch {
+      /* non-fatal: job dropdown just stays empty */
+    }
+  }, []);
+
   useEffect(() => {
     fetchSources();
-  }, [fetchSources]);
+    fetchJobs();
+  }, [fetchSources, fetchJobs]);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -144,6 +158,7 @@ export default function SourceList({
           <SourceItem
             key={s.id}
             source={s}
+            jobs={jobs}
             selected={s.id === selectedSourceId}
             onSelect={onSelectSource}
             onDelete={handleDelete}
@@ -162,6 +177,7 @@ export default function SourceList({
 
 interface SourceItemProps {
   source: DocumentationSource;
+  jobs: Job[];
   selected: boolean;
   onSelect: (source: DocumentationSource) => void;
   onDelete: (id: string) => void;
@@ -170,6 +186,7 @@ interface SourceItemProps {
 
 function SourceItem({
   source,
+  jobs,
   selected,
   onSelect,
   onDelete,
@@ -247,6 +264,20 @@ function SourceItem({
       onSourceChanged();
     } catch (e: any) {
       setItemError(e.response?.data?.detail || "Failed to trigger extraction");
+    }
+  };
+
+  const handleJobChange = async (nextJobId: string) => {
+    setItemError("");
+    try {
+      if (nextJobId) {
+        await assignSourceToJob(nextJobId, source.id);
+      } else if (source.job_id) {
+        await unassignSourceFromJob(source.job_id, source.id);
+      }
+      onSourceChanged();
+    } catch {
+      setItemError("Failed to change job assignment");
     }
   };
 
@@ -392,6 +423,27 @@ function SourceItem({
             >
               ↻ Re-derive
             </button>
+          </label>
+        </div>
+
+        <div className="item-meta">
+          <label className="sub" style={{ display: "flex", alignItems: "center", gap: "0.4em" }}>
+            Job:
+            <select
+              value={source.job_id ?? ""}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => {
+                e.stopPropagation();
+                handleJobChange(e.target.value);
+              }}
+            >
+              <option value="">(none — manual only)</option>
+              {jobs.map((j) => (
+                <option key={j.id} value={j.id}>
+                  {j.name}
+                </option>
+              ))}
+            </select>
           </label>
         </div>
 

@@ -1,20 +1,22 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { ExtractionRun, ScheduleListItem, ExportJobItem } from "../types";
+import type { ExtractionRun, ExportJobItem, JobRunItem } from "../types";
 import {
   listRuns,
-  listSchedules,
   getRunLogs,
   listExportJobs,
   cancelExportJob,
   cancelRun,
   pauseRun,
   resumeRun,
+  listAllJobRuns,
 } from "../api/client";
+import JobsManager from "./JobsManager";
 
 const STATUS_COLORS: Record<string, string> = {
   pending: "#6f8087",
   running: "#eaa53d",
   completed: "#58c08a",
+  partial: "#c8923d",
   failed: "#e0685f",
   cancelled: "#6f8087",
   paused: "#5a7fa3",
@@ -57,22 +59,23 @@ function path(run: ExtractionRun): string {
 const ACTIVE = new Set(["running", "pending", "paused"]);
 
 export default function JobsView() {
+  const [tab, setTab] = useState<"activity" | "jobs">("activity");
   const [runs, setRuns] = useState<ExtractionRun[]>([]);
-  const [schedules, setSchedules] = useState<ScheduleListItem[]>([]);
   const [exportJobs, setExportJobs] = useState<ExportJobItem[]>([]);
+  const [jobRuns, setJobRuns] = useState<JobRunItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState("");
 
   const refresh = useCallback(async () => {
     try {
-      const [r, s, e] = await Promise.all([
+      const [r, e, jr] = await Promise.all([
         listRuns(undefined, undefined, 200),
-        listSchedules(),
         listExportJobs(undefined, 100),
+        listAllJobRuns(30),
       ]);
       setRuns(r.runs);
-      setSchedules(s.schedules);
       setExportJobs(e.jobs);
+      setJobRuns(jr);
     } catch {
       setError("Failed to load jobs");
     }
@@ -109,13 +112,24 @@ export default function JobsView() {
 
   const active = runs.filter((r) => ACTIVE.has(r.status));
   const recent = runs.filter((r) => !ACTIVE.has(r.status));
-  const enabledSchedules = schedules.filter((s) => s.enabled);
 
   return (
     <div className="jobs-view">
       <h2>Jobs</h2>
+      <nav className="source-tabs" style={{ marginBottom: "1rem" }}>
+        <button className={tab === "activity" ? "active" : ""} onClick={() => setTab("activity")}>
+          Activity
+        </button>
+        <button className={tab === "jobs" ? "active" : ""} onClick={() => setTab("jobs")}>
+          Manage Jobs
+        </button>
+      </nav>
       {error && <div className="error">{error}</div>}
 
+      {tab === "jobs" && <JobsManager />}
+
+      {tab === "activity" && (
+        <>
       <section className="jobs-section">
         <h3>Active, queued &amp; paused ({active.length})</h3>
         {active.length === 0 && <p className="empty">Nothing running.</p>}
@@ -176,22 +190,25 @@ export default function JobsView() {
       </section>
 
       <section className="jobs-section">
-        <h3>Scheduled ({enabledSchedules.length})</h3>
-        {enabledSchedules.length === 0 && <p className="empty">No enabled schedules.</p>}
+        <h3>Job runs ({jobRuns.length})</h3>
+        {jobRuns.length === 0 && <p className="empty">No job runs yet.</p>}
         <ul className="item-list">
-          {enabledSchedules.map((s) => (
-            <li key={s.source_id} className="non-clickable">
+          {jobRuns.map((jr) => (
+            <li key={jr.id} className="non-clickable">
               <div className="item-info">
-                <strong>{[s.vendor_name, s.product_name, s.source_name].join(" › ")}</strong>
+                <strong>{jr.job_name ?? "(deleted job)"}</strong>
                 <div className="item-meta">
-                  <span className="status-badge" style={{ backgroundColor: "#5a7fa3" }}>
-                    scheduled
+                  {statusBadge(jr.status)}
+                  <span className="sub">{jr.trigger}</span>
+                  <span className="sub">
+                    {jr.sources_done}/{jr.sources_total} done
+                    {jr.sources_failed > 0 ? `, ${jr.sources_failed} failed` : ""}
                   </span>
-                  <span className="sub">{s.frequency} @ {s.time_of_day} {s.timezone}</span>
+                  <span className="sub">
+                    {jr.created_at ? new Date(jr.created_at).toLocaleString() : "—"}
+                  </span>
+                  <span className="sub">took {fmtDuration(jr.started_at, jr.completed_at)}</span>
                 </div>
-                <span className="sub">
-                  Next run: {s.next_run_at ? new Date(s.next_run_at).toLocaleString() : "—"}
-                </span>
               </div>
             </li>
           ))}
@@ -255,6 +272,8 @@ export default function JobsView() {
           ))}
         </ul>
       </section>
+        </>
+      )}
     </div>
   );
 }
