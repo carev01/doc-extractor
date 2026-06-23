@@ -7,7 +7,7 @@ NOT NULL and the now-redundant ``documentation_sources.vendor_id`` is dropped
 (a source's vendor is reached via its product).
 
 Revision ID: a6b7c8d9e0f1
-Revises: f5a6b7c8d9e0
+Revises: a2b3c4d5e6f8
 """
 import uuid
 from typing import Sequence, Union
@@ -17,7 +17,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
 revision: str = "a6b7c8d9e0f1"
-down_revision: Union[str, Sequence[str], None] = "f5a6b7c8d9e0"
+down_revision: Union[str, Sequence[str], None] = "a2b3c4d5e6f8"
 branch_labels = None
 depends_on = None
 
