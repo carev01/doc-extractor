@@ -5,6 +5,179 @@ promoted to a spec/plan when picked up.
 
 ---
 
+## Product layer: group documentation URLs under a product (Vendor → Product → Source)
+
+**Status:** Open · **Priority:** High (data model) · **Filed:** 2026-06-23
+
+### Problem
+
+The data model is two levels: `vendors` → `documentation_sources`, where each
+source is a single `base_url` (`app/models/vendor.py`, `app/models/source.py`).
+A real product's documentation routinely spans **multiple URLs**, so today it
+can't be represented as one thing:
+
+- Afi.ai publishes one product family across separate trees — `/docs/platform/`,
+  `/docs/k8s/`, `/docs/o365/`, `/docs/api/`, … — each of which has to be added as
+  its own top-level source hung directly off the vendor.
+- Other vendors split a single product's docs into many guide URLs (admin guide,
+  install guide, release notes, …).
+
+Because product identity is conflated with a single URL, there is no way to see
+"all documentation for product X", to export/browse a product as a unit, or to
+group related sources. The vendor list flattens unrelated trees together.
+
+### Desired behavior
+
+A three-level hierarchy **Vendor → Product → Source(s)**. A product belongs to a
+vendor and groups 1..N documentation sources (each still its own `base_url`,
+TOC, runs, and versions). Browse / export / changelog can eventually operate at
+**product scope** (aggregate across the product's sources) as well as per-source.
+
+### Likely approach / where to look
+
+- **Schema:** new `products` table (`id`, `vendor_id` FK, `name`, timestamps);
+  add nullable `product_id` FK to `documentation_sources`. Register the model in
+  `app/models/__init__.py` (see the "models imported before create_all"
+  invariant in CLAUDE.md). Alembic migration + data backfill.
+- **Backfill:** for each existing source, create a product (named after the
+  source) and link it — or a single "Default" product per vendor; decide below.
+- **API:** products CRUD nested under a vendor (`app/routes/`), and let
+  `documentation_sources` be created/moved under a product.
+- **UI:** insert a Product level between the `vendors` and `sources` views in
+  `App.tsx` (vendors → products → sources).
+
+### Open decisions (confirm when picked up)
+
+- Is `product_id` mandatory long-term (every source belongs to a product) or
+  optional (loose sources allowed)? Proposed: mandatory after backfill.
+- Backfill strategy: one product per existing source (preserves current list) vs
+  one "Default" product per vendor (flatter). Proposed: one product per source,
+  named after the source, so nothing visually disappears.
+- Whether export/browse/changelog aggregate at product scope in v1 or stay
+  per-source initially (product is just a grouping at first).
+
+### Done when
+
+- Schema + migration land with existing vendors/sources/articles preserved.
+- A user can create products under a vendor and assign multiple sources to one
+  product; the UI navigates Vendor → Product → Source.
+- Per-source extraction/browse/export still work unchanged under the new nesting.
+
+---
+
+## Enable renaming vendors, products, and documentation (bookshelf) names
+
+**Status:** Open · **Priority:** Medium · **Filed:** 2026-06-23
+
+### Problem
+
+Names are effectively fixed once created. There's no affordance in the UI to
+rename a **vendor**, a **product** (once the product layer above exists), or a
+**documentation source** ("bookshelf"). The API is already half-there but unused
+by the frontend:
+
+- `PATCH /api/vendors/{id}` accepts `name` (`update_vendor`, `VendorUpdate`).
+- `PATCH /api/sources/{id}` accepts `name` (`update_source`, `SourceUpdate`).
+- The frontend only ever calls `updateSource` to set `platform` — there is no
+  rename control anywhere (`SourceList.tsx`, the vendor list).
+- Products have no model/endpoint yet (depends on the product-layer item).
+
+### Desired behavior
+
+Inline rename (edit button / editable field) for vendor, product, and source
+names in their respective list views, persisted via PATCH, with sensible
+validation and conflict handling.
+
+### Likely approach / where to look
+
+- **Backend:** vendor + source rename already supported; add a product `PATCH`
+  when the product layer lands. Note `vendors.name` is `unique` — surface a clean
+  409/validation message on collision rather than a 500.
+- **Frontend:** add rename UI to the vendor list and `SourceList.tsx` (and the
+  product list once it exists); reuse the existing `updateVendor`/`updateSource`
+  client calls.
+
+### Done when
+
+- A user can rename a vendor, product, and source from the UI and the change
+  persists across reload.
+- Duplicate vendor names (or any uniqueness constraint) fail gracefully with a
+  clear message, not a server error.
+
+### Notes
+
+- Partially unblocked already (vendor/source rename exists at the API); the
+  product part depends on the "Product layer" item above.
+
+---
+
+## Dedicated task-monitoring view: progress, logs, pause/cancel
+
+**Status:** Open · **Priority:** Medium-High · **Filed:** 2026-06-23
+
+### Problem
+
+Extraction runs are tracked in `extraction_runs` and processed by the worker via
+the queue (`app/worker.py`, `app/services/queue.py`), but there is **no dedicated
+monitoring UI**. Run status is only glimpsed per-source; there is no cross-source
+activity view, no live progress, no access to logs, and no way to stop a run from
+the UI. Operationally this forces `kubectl` (psql + pod logs) — which is exactly
+how the recent stuck-run and failure investigations had to be done. Gaps:
+
+- **No aggregate view.** Views are `vendors / sources / browse / export /
+  changelog / schedule` (`App.tsx`); none lists runs across sources.
+- **No live progress.** `articles_extracted` exists on the run, and resumable
+  builds track `content_done` in `toc_checkpoints`, but nothing surfaces a
+  "N of M pages" progress indicator while a run is in flight.
+- **No log access.** Worker logs live only in the pod; not viewable in-app.
+- **No pause/cancel.** The queue can claim and reap stale runs, but there is no
+  cooperative cancel or pause — a long/wrong run can only be stopped by killing
+  the worker pod (which is what caused the earlier mid-run disruption).
+
+### Desired behavior
+
+A separate "Runs"/"Activity" view listing recent and active runs across all
+sources with status, progress, timing, and attempt count; drill-in to a per-run
+detail with logs; and controls to **cancel** a queued/running run (and, as a
+stretch, **pause/resume**).
+
+### Likely approach / where to look
+
+- **Backend:**
+  - Endpoints to list runs (paginated; filter by status/source) and fetch run
+    detail. A run-progress figure from `articles_extracted` + TOC total +
+    checkpoint `content_done`.
+  - **Cancel** = cooperative: a `CANCELLING` status/flag the worker checks at
+    batch boundaries in the content loop (`firecrawl.py`), landing the run in a
+    terminal `CANCELLED` state; a queued run can be cancelled immediately. Avoid
+    hard pod kills.
+  - **Logs:** either stream pod logs for the run's worker, or persist structured
+    per-run log lines to a table/field so the UI can show them after the fact.
+    Decide below.
+- **Frontend:** new top-level view with a runs table + detail panel + cancel
+  button; poll (or stream) for live status/progress.
+
+### Open decisions (confirm when picked up)
+
+- Cancel mechanism: cooperative flag (preferred, clean) vs forced. Confirm the
+  worker's content loop has a safe checkpoint to observe the flag.
+- Logs: live pod-log stream vs persisted run-log lines (persisted survives pod
+  restarts and is simpler to render; streaming is richer but couples to k8s).
+- Is **pause/resume** in scope for v1 or a stretch? It needs a `PAUSED` state and
+  worker cooperation beyond cancel; resumable builds already checkpoint, so pause
+  ≈ cancel-that-keeps-the-checkpoint.
+
+### Done when
+
+- A dedicated view shows all runs (active + recent) with live progress and
+  status; no `kubectl` needed for routine monitoring.
+- A running or queued run can be cancelled from the UI and promptly reaches a
+  terminal state without killing the worker pod.
+- Run logs are viewable in the UI.
+- (Stretch) a run can be paused and resumed from its checkpoint.
+
+---
+
 ## Backfill: re-sanitize already-stored articles
 
 **Status:** Open · **Priority:** Medium · **Filed:** 2026-06-19
