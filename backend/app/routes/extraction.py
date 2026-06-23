@@ -5,14 +5,16 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.models.extraction_run import ExtractionRun
+from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.product import Product
 from app.models.source import DocumentationSource
 from app.models.toc import TOCEntry
+from app.models.toc_checkpoint import TocCheckpoint
 from app.models.vendor import Vendor
 from app.schemas.export import ExtractionTriggerResponse
 from app.services.firecrawl import firecrawl_service
@@ -157,6 +159,7 @@ async def get_run_status(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         "id": run.id,
         "source_id": run.source_id,
         "status": run.status,
+        "control": run.control,
         "trigger": run.trigger,
         "current_phase": run.current_phase,
         "firecrawl_job_id": run.firecrawl_job_id,
@@ -211,6 +214,7 @@ async def list_runs(
                 "product_name": product_name,
                 "vendor_name": vendor_name,
                 "status": r.status,
+                "control": r.control,
                 "trigger": r.trigger,
                 "current_phase": r.current_phase,
                 "firecrawl_job_id": r.firecrawl_job_id,
@@ -247,3 +251,88 @@ async def get_run_logs(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         if exists is None:
             raise HTTPException(status_code=404, detail="Run not found")
     return {"run_id": run_id, "log_text": log_text or ""}
+
+
+async def _load_run(run_id: uuid.UUID, db: AsyncSession) -> ExtractionRun:
+    run = (
+        await db.execute(select(ExtractionRun).where(ExtractionRun.id == run_id))
+    ).scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run
+
+
+async def _clear_checkpoint(source_id: uuid.UUID, db: AsyncSession) -> None:
+    """Drop the resume checkpoint so a future run starts fresh (used on cancel)."""
+    await db.execute(delete(TocCheckpoint).where(TocCheckpoint.source_id == source_id))
+
+
+@router.post("/runs/{run_id}/cancel")
+async def cancel_run(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Cancel a run. Queued/paused runs end immediately (and their resume
+    checkpoint is discarded); a running run gets a cooperative cancel signal that
+    the worker honours at the next batch boundary."""
+    run = await _load_run(run_id, db)
+    from datetime import datetime, timezone
+
+    if run.status in (RunStatus.PENDING, RunStatus.PAUSED):
+        run.status = RunStatus.CANCELLED
+        run.control = None
+        run.completed_at = datetime.now(timezone.utc)
+        await _clear_checkpoint(run.source_id, db)
+        await db.commit()
+        return {"id": run.id, "status": run.status.value}
+
+    if run.status == RunStatus.RUNNING:
+        run.control = "cancel"
+        await db.commit()
+        return {"id": run.id, "status": run.status.value, "control": "cancel"}
+
+    raise HTTPException(
+        status_code=409, detail=f"Run is {run.status.value}; nothing to cancel"
+    )
+
+
+@router.post("/runs/{run_id}/pause")
+async def pause_run(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Pause a run, keeping its resume checkpoint. A running run is signalled and
+    pauses at the next batch boundary; a queued run is held as PAUSED."""
+    run = await _load_run(run_id, db)
+    if run.status == RunStatus.RUNNING:
+        run.control = "pause"
+        await db.commit()
+        return {"id": run.id, "status": run.status.value, "control": "pause"}
+    if run.status == RunStatus.PENDING:
+        run.status = RunStatus.PAUSED
+        run.control = None
+        await db.commit()
+        return {"id": run.id, "status": run.status.value}
+    raise HTTPException(
+        status_code=409, detail=f"Run is {run.status.value}; cannot pause"
+    )
+
+
+@router.post("/runs/{run_id}/resume")
+async def resume_run(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Resume a paused run by re-queuing it; the worker re-claims it and continues
+    from the checkpoint. 409 if another run is already active for the source."""
+    run = await _load_run(run_id, db)
+    if run.status != RunStatus.PAUSED:
+        raise HTTPException(
+            status_code=409, detail=f"Run is {run.status.value}; only paused runs resume"
+        )
+    run.status = RunStatus.PENDING
+    run.control = None
+    run.claimed_by = None
+    run.claimed_at = None
+    run.heartbeat_at = None
+    run.error_message = None
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Another run is already active for this source",
+        )
+    return {"id": run.id, "status": run.status.value}
