@@ -12,6 +12,7 @@ import {
   getDownloadUrl,
   getZipDownloadUrl,
   listExports,
+  deleteExport,
 } from "../api/client";
 
 interface Props {
@@ -52,6 +53,16 @@ export default function ExportPanel({ source }: Props) {
       setRecentExports(res.exports);
     } catch {
       /* non-fatal: the recent-exports list is supplementary */
+    }
+  }
+
+  async function handleDeleteExport(exportId: string) {
+    if (!confirm("Delete this export? The generated files will be removed from the server.")) return;
+    try {
+      await deleteExport(exportId);
+      await loadRecentExports();
+    } catch {
+      setError("Failed to delete export");
     }
   }
 
@@ -403,6 +414,14 @@ export default function ExportPanel({ source }: Props) {
                       </a>
                     ))
                   )}
+                  <button
+                    type="button"
+                    className="btn-danger-sm"
+                    title="Delete this export from the server"
+                    onClick={() => handleDeleteExport(ex.export_id)}
+                  >
+                    Delete
+                  </button>
                 </div>
               </li>
             ))}

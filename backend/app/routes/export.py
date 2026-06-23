@@ -1,6 +1,7 @@
 """Export routes — async export enqueue, job status, and file download."""
 
 import os
+import shutil
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -207,3 +208,31 @@ async def list_exports(db: AsyncSession = Depends(get_db)):
         })
 
     return {"exports": exports}
+
+
+@router.delete("/{export_id}", status_code=204)
+async def delete_export(export_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Delete a generated export now — its on-disk directory and its export_jobs
+    row — so a user can reclaim space without waiting for the retention sweep.
+
+    Idempotent: removing the directory and row together keeps the listing and the
+    filesystem consistent (the same invariant retention relies on). 404 only when
+    no matching export exists at all.
+    """
+    job = (
+        await db.execute(
+            select(ExportJob).where(ExportJob.export_id == export_id)
+        )
+    ).scalar_one_or_none()
+
+    subdir = os.path.join(export_engine.export_dir, str(export_id))
+    dir_exists = os.path.isdir(subdir)
+    if job is None and not dir_exists:
+        raise HTTPException(status_code=404, detail="Export not found")
+
+    if dir_exists:
+        shutil.rmtree(subdir, ignore_errors=True)
+    if job is not None:
+        await db.delete(job)
+        await db.commit()
+    return None
