@@ -304,6 +304,11 @@ rather than `0`/`22`.
 > "Recent Exports" list. Decision taken: purge deletes the dir **and** the `export_jobs`
 > row (no tombstone). **Still open (Phase 3):** manual delete endpoint/button; object-
 > storage backend for export artifacts.
+>
+> **Update 2026-06-23:** manual delete shipped — `DELETE /api/export/{export_id}`
+> removes the on-disk directory + `export_jobs` row (same dir+row invariant as
+> retention), with a "Delete" button on each Recent Exports row. **Still open:**
+> object-storage backend for export artifacts.
 
 ### Problem
 

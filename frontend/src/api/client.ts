@@ -257,6 +257,11 @@ export async function listExports(): Promise<ExportListResponse> {
   return data;
 }
 
+/** Delete a generated export (its files + record) now, before it expires. */
+export async function deleteExport(exportId: string): Promise<void> {
+  await api.delete(`/export/${exportId}`);
+}
+
 /** List export jobs (the export queue) with names, for the Jobs view. */
 export async function listExportJobs(
   status?: string,
