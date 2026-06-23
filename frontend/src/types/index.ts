@@ -134,6 +134,22 @@ export interface RunLogs {
   log_text: string;
 }
 
+export interface ExportJobItem {
+  id: string;
+  source_id: string;
+  source_name: string;
+  product_name: string;
+  vendor_name: string;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  format: "markdown" | "pdf";
+  attempts: number;
+  export_id: string | null;
+  error_message: string | null;
+  created_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
 export interface ScheduleListItem {
   source_id: string;
   source_name: string;

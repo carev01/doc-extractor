@@ -21,9 +21,10 @@ from app.core.config import settings
 from app.core.database import Base, get_db
 from app.main import app
 from app.models import (
-    Vendor, Product, DocumentationSource, ExtractionRun, Schedule,
+    Vendor, Product, DocumentationSource, ExtractionRun, Schedule, ExportJob,
 )
 from app.models.extraction_run import RunStatus
+from app.models.export_job import ExportStatus
 
 TEST_DATABASE_URL = settings.database_url.rsplit("/", 1)[0] + "/docextractor_test"
 pytestmark = pytest.mark.asyncio
@@ -125,3 +126,43 @@ async def test_list_schedules_with_names(client):
     # enabled_only filter
     empty = (await c.get("/api/schedules", params={"enabled_only": True})).json()
     assert len(empty["schedules"]) == 1
+
+
+async def test_list_export_jobs_with_names(client):
+    c, factory = client
+    sid = await _source(factory)
+    async with factory() as s:
+        s.add(ExportJob(source_id=sid, status=ExportStatus.PENDING,
+                        request={"source_id": str(sid), "format": "pdf"}))
+        await s.commit()
+    body = (await c.get("/api/export/jobs")).json()
+    assert len(body["jobs"]) == 1
+    j = body["jobs"][0]
+    assert j["vendor_name"] == "Acme" and j["source_name"] == "Docs"
+    assert j["format"] == "pdf" and j["status"] == "pending"
+
+
+async def test_cancel_queued_export_job(client):
+    c, factory = client
+    sid = await _source(factory)
+    async with factory() as s:
+        job = ExportJob(source_id=sid, status=ExportStatus.PENDING,
+                        request={"source_id": str(sid), "format": "markdown"})
+        s.add(job); await s.commit()
+        jid = job.id
+
+    resp = await c.post(f"/api/export/jobs/{jid}/cancel")
+    assert resp.status_code == 200 and resp.json()["status"] == "cancelled"
+
+
+async def test_cannot_cancel_running_export_job(client):
+    c, factory = client
+    sid = await _source(factory)
+    async with factory() as s:
+        job = ExportJob(source_id=sid, status=ExportStatus.RUNNING,
+                        request={"source_id": str(sid), "format": "markdown"})
+        s.add(job); await s.commit()
+        jid = job.id
+
+    resp = await c.post(f"/api/export/jobs/{jid}/cancel")
+    assert resp.status_code == 409

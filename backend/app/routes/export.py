@@ -11,7 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.export_job import ExportJob, ExportStatus
+from app.models.product import Product
 from app.models.source import DocumentationSource
+from app.models.vendor import Vendor
 from app.schemas.export import (
     ExportJobCreatedResponse,
     ExportJobStatusResponse,
@@ -33,6 +35,71 @@ async def create_export(body: ExportRequest, db: AsyncSession = Depends(get_db))
         raise HTTPException(status_code=404, detail="Source not found")
     job = await enqueue_export(db, body.source_id, body.model_dump(mode="json"))
     return ExportJobCreatedResponse(export_job_id=job.id, status="pending")
+
+
+@router.get("/jobs")
+async def list_export_jobs(
+    status: str | None = None,
+    limit: int = 100,
+    db: AsyncSession = Depends(get_db),
+):
+    """List export jobs (newest first) with vendor/product/source names.
+
+    Powers the Exports section of the Jobs view. Optionally filter by status.
+    """
+    limit = max(1, min(limit, 500))
+    query = (
+        select(
+            ExportJob,
+            DocumentationSource.name.label("source_name"),
+            Product.name.label("product_name"),
+            Vendor.name.label("vendor_name"),
+        )
+        .join(DocumentationSource, ExportJob.source_id == DocumentationSource.id)
+        .join(Product, DocumentationSource.product_id == Product.id)
+        .join(Vendor, Product.vendor_id == Vendor.id)
+        .order_by(ExportJob.created_at.desc())
+    )
+    if status:
+        query = query.where(ExportJob.status == status)
+    rows = (await db.execute(query.limit(limit))).all()
+    return {
+        "jobs": [
+            {
+                "id": j.id,
+                "source_id": j.source_id,
+                "source_name": source_name,
+                "product_name": product_name,
+                "vendor_name": vendor_name,
+                "status": j.status.value,
+                "format": (j.request or {}).get("format", "markdown"),
+                "attempts": j.attempts,
+                "export_id": j.export_id,
+                "error_message": j.error_message,
+                "created_at": j.created_at.isoformat() if j.created_at else None,
+                "started_at": j.started_at.isoformat() if j.started_at else None,
+                "completed_at": j.completed_at.isoformat() if j.completed_at else None,
+            }
+            for j, source_name, product_name, vendor_name in rows
+        ]
+    }
+
+
+@router.post("/jobs/{job_id}/cancel")
+async def cancel_export_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Cancel a *queued* export job. Running jobs can't be cancelled (one-shot
+    generation); they finish or fail on their own."""
+    job = (await db.execute(select(ExportJob).where(ExportJob.id == job_id))).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Export job not found")
+    if job.status != ExportStatus.PENDING:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only queued export jobs can be cancelled (status={job.status.value})",
+        )
+    job.status = ExportStatus.CANCELLED
+    await db.commit()
+    return {"id": job.id, "status": job.status.value}
 
 
 @router.get("/jobs/{job_id}", response_model=ExportJobStatusResponse)

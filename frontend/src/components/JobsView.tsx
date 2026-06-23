@@ -1,6 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { ExtractionRun, ScheduleListItem } from "../types";
-import { listRuns, listSchedules, getRunLogs } from "../api/client";
+import type { ExtractionRun, ScheduleListItem, ExportJobItem } from "../types";
+import {
+  listRuns,
+  listSchedules,
+  getRunLogs,
+  listExportJobs,
+  cancelExportJob,
+} from "../api/client";
 
 const STATUS_COLORS: Record<string, string> = {
   pending: "#6f8087",
@@ -49,18 +55,33 @@ const ACTIVE = new Set(["running", "pending"]);
 export default function JobsView() {
   const [runs, setRuns] = useState<ExtractionRun[]>([]);
   const [schedules, setSchedules] = useState<ScheduleListItem[]>([]);
+  const [exportJobs, setExportJobs] = useState<ExportJobItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState("");
 
   const refresh = useCallback(async () => {
     try {
-      const [r, s] = await Promise.all([listRuns(undefined, undefined, 200), listSchedules()]);
+      const [r, s, e] = await Promise.all([
+        listRuns(undefined, undefined, 200),
+        listSchedules(),
+        listExportJobs(undefined, 100),
+      ]);
       setRuns(r.runs);
       setSchedules(s.schedules);
+      setExportJobs(e.jobs);
     } catch {
       setError("Failed to load jobs");
     }
   }, []);
+
+  const cancelExport = async (id: string) => {
+    try {
+      await cancelExportJob(id);
+      await refresh();
+    } catch {
+      setError("Failed to cancel export");
+    }
+  };
 
   useEffect(() => {
     refresh();
@@ -132,6 +153,37 @@ export default function JobsView() {
                   Next run: {s.next_run_at ? new Date(s.next_run_at).toLocaleString() : "—"}
                 </span>
               </div>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section className="jobs-section">
+        <h3>Exports ({exportJobs.length})</h3>
+        {exportJobs.length === 0 && <p className="empty">No export jobs.</p>}
+        <ul className="item-list">
+          {exportJobs.map((j) => (
+            <li key={j.id} className="non-clickable">
+              <div className="item-info">
+                <strong>{[j.vendor_name, j.product_name, j.source_name].join(" › ")}</strong>
+                <div className="item-meta">
+                  {statusBadge(j.status)}
+                  <span className="sub">{j.format}</span>
+                  <span className="sub">
+                    {j.created_at ? new Date(j.created_at).toLocaleString() : "—"}
+                  </span>
+                </div>
+                {j.status === "failed" && j.error_message && (
+                  <span className="sub">{j.error_message}</span>
+                )}
+              </div>
+              {j.status === "pending" && (
+                <div className="item-actions">
+                  <button className="btn-danger-sm" onClick={() => cancelExport(j.id)}>
+                    Cancel
+                  </button>
+                </div>
+              )}
             </li>
           ))}
         </ul>
