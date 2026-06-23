@@ -209,7 +209,22 @@ stretch, **pause/resume**).
 
 ## Backfill: re-sanitize already-stored articles
 
-**Status:** Open · **Priority:** Medium · **Filed:** 2026-06-19
+**Status:** ✅ DONE (deployed) · **Priority:** Medium · **Filed:** 2026-06-19 · **Done:** 2026-06-23
+
+> Shipped **Option 1** — `POST /api/extraction/resanitize/{source_id}`. Loads a
+> source's stored articles, re-applies `sanitize_markdown`, and for each article
+> whose content changes: preserves the pre-sanitize content as an `ArticleVersion`
+> (audit trail + reversibility, `extraction_run_id` NULL, diff computed via
+> `compute_unified_diff`) and updates the article in place (content, hash, size,
+> tokens). **Decision: healing records an `ArticleVersion`** so the change is
+> auditable and shows in the changelog/side-by-side like any other content change.
+> Idempotent — already-clean articles are skipped, so re-runs create no new
+> versions. Rejected with 409 while a run is active for the source, so it never
+> races the writer. Triggerable from the source list ("Re-sanitize" button).
+>
+> Also added a sanitizer rule (`_strip_lead_font_license`) for the Intercom-hosted
+> leading font/Apache-license preamble (used by Druva — all 624 articles opened with
+> it); re-sanitize was validated against that source.
 
 ### Problem
 

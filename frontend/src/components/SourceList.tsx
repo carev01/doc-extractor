@@ -12,6 +12,7 @@ import {
   triggerExtraction,
   getRunStatus,
   listRuns,
+  resanitizeSource,
 } from "../api/client";
 
 const PLATFORM_OPTIONS: { value: string; label: string }[] = [
@@ -179,6 +180,8 @@ function SourceItem({
   const [history, setHistory] = useState<ExtractionRun[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [itemError, setItemError] = useState("");
+  const [resanitizing, setResanitizing] = useState(false);
+  const [resanitizeMsg, setResanitizeMsg] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const isExtracting =
@@ -244,6 +247,25 @@ function SourceItem({
       onSourceChanged();
     } catch (e: any) {
       setItemError(e.response?.data?.detail || "Failed to trigger extraction");
+    }
+  };
+
+  const handleResanitize = async () => {
+    setItemError("");
+    setResanitizeMsg("");
+    setResanitizing(true);
+    try {
+      const res = await resanitizeSource(source.id);
+      setResanitizeMsg(
+        res.changed > 0
+          ? `Re-sanitized ${res.changed} of ${res.total} articles.`
+          : `All ${res.total} articles already clean.`
+      );
+      onSourceChanged();
+    } catch (e: any) {
+      setItemError(e.response?.data?.detail || "Failed to re-sanitize");
+    } finally {
+      setResanitizing(false);
     }
   };
 
@@ -374,6 +396,7 @@ function SourceItem({
         </div>
 
         {itemError && <div className="error">{itemError}</div>}
+        {resanitizeMsg && <span className="sub run-done">{resanitizeMsg}</span>}
         {activeRun && (
           <div className="run-status">{renderRunResult(activeRun)}</div>
         )}
@@ -420,6 +443,17 @@ function SourceItem({
           disabled={isExtracting}
         >
           {isExtracting ? "Extracting..." : "Extract"}
+        </button>
+        <button
+          className="btn-secondary-sm"
+          title="Re-apply the current sanitizer to already-stored articles"
+          disabled={resanitizing || isExtracting}
+          onClick={(e) => {
+            e.stopPropagation();
+            handleResanitize();
+          }}
+        >
+          {resanitizing ? "Cleaning…" : "Re-sanitize"}
         </button>
         <button
           className="btn-secondary-sm"

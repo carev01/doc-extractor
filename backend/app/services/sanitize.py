@@ -72,6 +72,17 @@ _COPYRIGHT_RE = re.compile(r"^\s*\|?\s*Copyright\s*(?:©|\(c\))", re.IGNORECASE)
 # Leading marketing banner signatures.
 _PROMO_RE = re.compile(r"product innovations are live|\[Explore now\]\(", re.IGNORECASE)
 
+# Intercom-hosted help centres (e.g. help.druva.com) prepend a font/Apache-
+# license preamble to every page's first line: an Apache License notice for the
+# embedded Lato font followed by its SIL Open Font License text, with the
+# "[Skip to main content](…)" accessibility link glued onto the end. It is pure
+# boilerplate and carries no documentation value. The signature requires both
+# license names on the head line, so it can never match real prose.
+_FONT_LICENSE_RE = re.compile(
+    r"Apache License.*SIL Open Font License", re.IGNORECASE | re.DOTALL
+)
+_SKIP_TO_MAIN_RE = re.compile(r".*\[Skip to main content\]\([^)]*\)", re.IGNORECASE)
+
 # GitBook leading "llms.txt / available as Markdown" banner that prefaces every
 # page, e.g.:
 #   For the complete documentation index, see [llms.txt](…/llms.txt)
@@ -297,6 +308,29 @@ def _strip_lead_llms_banner(lines: list[str]) -> list[str]:
     return lines[j:]
 
 
+def _strip_lead_font_license(lines: list[str]) -> list[str]:
+    """Drop an Intercom font/Apache-license preamble from the document head.
+
+    Only fires when the first non-blank line carries the license signature. The
+    preamble ends with a glued "[Skip to main content](…)" link; everything up
+    to and including that link is removed, preserving any real content that
+    happens to follow it on the same line. If the link is absent, the whole
+    matched line is dropped.
+    """
+    first = 0
+    while first < len(lines) and not _norm(lines[first]).strip():
+        first += 1
+    if first >= len(lines) or not _FONT_LICENSE_RE.search(lines[first]):
+        return lines
+    m = _SKIP_TO_MAIN_RE.match(lines[first])
+    remainder = lines[first][m.end():] if m else ""
+    out = lines[:first]
+    if remainder.strip():
+        out.append(remainder)
+    out.extend(lines[first + 1:])
+    return out
+
+
 def _strip_lead_promo_banner(lines: list[str]) -> list[str]:
     """Drop a leading marketing banner (and a lone trailing '.') before the title."""
     # Find first non-blank line.
@@ -315,6 +349,7 @@ def _strip_lead_promo_banner(lines: list[str]) -> list[str]:
 
 
 _RULES = (
+    _strip_lead_font_license,
     _strip_lead_breadcrumb,
     _strip_lead_llms_banner,
     _strip_lead_promo_banner,
