@@ -22,6 +22,7 @@ import app.models  # noqa: F401
 
 from app.routes import (
     vendors_router,
+    products_router,
     sources_router,
     extraction_router,
     articles_router,
@@ -62,6 +63,7 @@ app.add_middleware(
 
 # Register routes
 app.include_router(vendors_router)
+app.include_router(products_router)
 app.include_router(sources_router)
 app.include_router(extraction_router)
 app.include_router(articles_router)

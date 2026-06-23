@@ -67,7 +67,10 @@ async def test_get_schedule_404_when_none(client):
     c, sf = client
     async with sf() as db:
         v = Vendor(name="V"); db.add(v); await db.flush()
-        s = DocumentationSource(vendor_id=v.id, name="S", base_url="http://x")
+        s_prod = Product(vendor_id=v.id, name="P")
+        db.add(s_prod)
+        await db.flush()
+        s = DocumentationSource(product_id=s_prod.id, name="S", base_url="http://x")
         db.add(s); await db.commit(); await db.refresh(s)
         sid = str(s.id)
     r = await c.get(f"/api/sources/{sid}/schedule")
@@ -79,7 +82,10 @@ async def test_put_schedule_builds_cron_and_next_run(client):
     c, sf = client
     async with sf() as db:
         v = Vendor(name="V"); db.add(v); await db.flush()
-        s = DocumentationSource(vendor_id=v.id, name="S", base_url="http://x")
+        s_prod = Product(vendor_id=v.id, name="P")
+        db.add(s_prod)
+        await db.flush()
+        s = DocumentationSource(product_id=s_prod.id, name="S", base_url="http://x")
         db.add(s); await db.commit(); await db.refresh(s)
         sid = str(s.id)
     body = {"enabled": True, "frequency": "daily", "time_of_day": "02:00", "timezone": "UTC"}
@@ -103,7 +109,10 @@ async def test_disabled_schedule_has_null_next_run(client):
     c, sf = client
     async with sf() as db:
         v = Vendor(name="V"); db.add(v); await db.flush()
-        s = DocumentationSource(vendor_id=v.id, name="S", base_url="http://x")
+        s_prod = Product(vendor_id=v.id, name="P")
+        db.add(s_prod)
+        await db.flush()
+        s = DocumentationSource(product_id=s_prod.id, name="S", base_url="http://x")
         db.add(s); await db.commit(); await db.refresh(s)
         sid = str(s.id)
     body = {"enabled": False, "frequency": "daily", "time_of_day": "02:00", "timezone": "UTC"}
@@ -116,7 +125,10 @@ async def test_delete_schedule(client):
     c, sf = client
     async with sf() as db:
         v = Vendor(name="V"); db.add(v); await db.flush()
-        s = DocumentationSource(vendor_id=v.id, name="S", base_url="http://x")
+        s_prod = Product(vendor_id=v.id, name="P")
+        db.add(s_prod)
+        await db.flush()
+        s = DocumentationSource(product_id=s_prod.id, name="S", base_url="http://x")
         db.add(s); await db.commit(); await db.refresh(s)
         sid = str(s.id)
     await c.put(f"/api/sources/{sid}/schedule",
@@ -131,7 +143,10 @@ async def test_put_schedule_rejects_bad_time(client):
     c, sf = client
     async with sf() as db:
         v = Vendor(name="V"); db.add(v); await db.flush()
-        s = DocumentationSource(vendor_id=v.id, name="S", base_url="http://x")
+        s_prod = Product(vendor_id=v.id, name="P")
+        db.add(s_prod)
+        await db.flush()
+        s = DocumentationSource(product_id=s_prod.id, name="S", base_url="http://x")
         db.add(s); await db.commit(); await db.refresh(s)
         sid = str(s.id)
     r = await c.put(f"/api/sources/{sid}/schedule",

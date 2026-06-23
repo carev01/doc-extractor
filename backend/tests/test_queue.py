@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.config import settings
 from app.core.database import Base
-from app.models import Vendor, DocumentationSource, ExtractionRun
+from app.models import Vendor, Product, DocumentationSource, ExtractionRun
 from app.models.extraction_run import RunStatus
 from app.services.queue import (
     ActiveRunExists, enqueue_run, claim_next_run, reap_stale_runs,
@@ -40,7 +40,10 @@ async def _make_source(db) -> uuid.UUID:
     vendor = Vendor(name=f"V-{uuid.uuid4().hex[:8]}")
     db.add(vendor)
     await db.flush()
-    src = DocumentationSource(vendor_id=vendor.id, name="S", base_url="http://x")
+    src_prod = Product(vendor_id=vendor.id, name="P")
+    db.add(src_prod)
+    await db.flush()
+    src = DocumentationSource(product_id=src_prod.id, name="S", base_url="http://x")
     db.add(src)
     await db.commit()
     await db.refresh(src)

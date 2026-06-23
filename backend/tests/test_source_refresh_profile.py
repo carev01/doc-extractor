@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.core.config import settings
 from app.core.database import Base, get_db
 from app.main import app
-from app.models import Vendor, DocumentationSource
+from app.models import Vendor, Product, DocumentationSource
 
 TEST_DATABASE_URL = settings.database_url.rsplit("/", 1)[0] + "/docextractor_test"
 
@@ -58,8 +58,11 @@ async def test_refresh_profile_clears_llm_spec_retains_other(client):
     c, sf = client
     async with sf() as db:
         v = Vendor(name="V"); db.add(v); await db.flush()
+        s_prod = Product(vendor_id=v.id, name="P")
+        db.add(s_prod)
+        await db.flush()
         s = DocumentationSource(
-            vendor_id=v.id,
+            product_id=s_prod.id,
             name="S",
             base_url="http://example.com",
             profile_config={
@@ -90,8 +93,11 @@ async def test_refresh_profile_null_profile_config_is_noop(client):
     c, sf = client
     async with sf() as db:
         v = Vendor(name="V2"); db.add(v); await db.flush()
+        s_prod = Product(vendor_id=v.id, name="P")
+        db.add(s_prod)
+        await db.flush()
         s = DocumentationSource(
-            vendor_id=v.id,
+            product_id=s_prod.id,
             name="S2",
             base_url="http://example2.com",
             profile_config=None,
@@ -116,8 +122,11 @@ async def test_refresh_profile_only_llm_spec_sets_profile_config_to_null(client)
     c, sf = client
     async with sf() as db:
         v = Vendor(name="V3"); db.add(v); await db.flush()
+        s_prod = Product(vendor_id=v.id, name="P")
+        db.add(s_prod)
+        await db.flush()
         s = DocumentationSource(
-            vendor_id=v.id,
+            product_id=s_prod.id,
             name="S3",
             base_url="http://example3.com",
             profile_config={"llm_spec": {"strategy": "sidebar", "nav_selector": "#nav"}},

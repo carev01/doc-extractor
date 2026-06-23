@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 from app.core.database import get_db
 from app.models.article import Article
 from app.models.article_version import ArticleVersion
+from app.models.product import Product
 from app.models.source import DocumentationSource
 from app.models.toc import TOCEntry
 from app.schemas.article import (
@@ -87,7 +88,9 @@ async def get_article(article_id: uuid.UUID, db: AsyncSession = Depends(get_db))
         .where(Article.id == article_id)
         .options(
             selectinload(Article.images),
-            selectinload(Article.source).selectinload(DocumentationSource.vendor),
+            selectinload(Article.source)
+            .selectinload(DocumentationSource.product)
+            .selectinload(Product.vendor),
         )
     )
     article = result.scalar_one_or_none()
@@ -95,12 +98,11 @@ async def get_article(article_id: uuid.UUID, db: AsyncSession = Depends(get_db))
         raise HTTPException(status_code=404, detail="Article not found")
 
     vendor = product = None
-    if article.source is not None:
-        product = NamedRef(id=article.source.id, name=article.source.name)
-        if article.source.vendor is not None:
-            vendor = NamedRef(
-                id=article.source.vendor.id, name=article.source.vendor.name
-            )
+    if article.source is not None and article.source.product is not None:
+        prod = article.source.product
+        product = NamedRef(id=prod.id, name=prod.name)
+        if prod.vendor is not None:
+            vendor = NamedRef(id=prod.vendor.id, name=prod.vendor.name)
 
     # Derive parent (one level up) and top-level (root) chapter from the TOC tree.
     parent_chapter = top_level_chapter = None

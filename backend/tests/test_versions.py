@@ -31,6 +31,7 @@ from app.core.database import Base, get_db
 from app.main import app
 from app.models import (
     Vendor,
+    Product,
     DocumentationSource,
     Article,
     ArticleVersion,
@@ -90,8 +91,11 @@ async def _seed(TestSession):
         s.add(vendor)
         await s.flush()
 
+        source_prod = Product(vendor_id=vendor.id, name="P")
+        s.add(source_prod)
+        await s.flush()
         source = DocumentationSource(
-            vendor_id=vendor.id, name="VerSource", base_url="https://docs.ver.com"
+            product_id=source_prod.id, name="VerSource", base_url="https://docs.ver.com"
         )
         s.add(source)
         await s.flush()
@@ -297,8 +301,11 @@ async def _seed_browse(TestSession):
         vendor = Vendor(name="BrowseVendor")
         s.add(vendor)
         await s.flush()
+        source_prod = Product(vendor_id=vendor.id, name="P")
+        s.add(source_prod)
+        await s.flush()
         source = DocumentationSource(
-            vendor_id=vendor.id, name="BrowseSource", base_url="https://b.com"
+            product_id=source_prod.id, name="BrowseSource", base_url="https://b.com"
         )
         s.add(source)
         await s.flush()
@@ -424,8 +431,11 @@ async def test_article_metadata_vendor_product_and_chapters(client):
         vendor = Vendor(name="Acme Corp")
         s.add(vendor)
         await s.flush()
+        source_prod = Product(vendor_id=vendor.id, name="Acme Cloud")
+        s.add(source_prod)
+        await s.flush()
         source = DocumentationSource(
-            vendor_id=vendor.id, name="Acme Cloud", base_url="https://d.acme.com"
+            product_id=source_prod.id, name="Acme Cloud Docs", base_url="https://d.acme.com"
         )
         s.add(source)
         await s.flush()
@@ -476,8 +486,11 @@ async def test_article_metadata_top_level_page_has_no_parent(client):
         vendor = Vendor(name="Solo Vendor")
         s.add(vendor)
         await s.flush()
+        source_prod = Product(vendor_id=vendor.id, name="P")
+        s.add(source_prod)
+        await s.flush()
         source = DocumentationSource(
-            vendor_id=vendor.id, name="Solo Product", base_url="https://d.solo.com"
+            product_id=source_prod.id, name="Solo Product", base_url="https://d.solo.com"
         )
         s.add(source)
         await s.flush()
@@ -509,8 +522,11 @@ async def test_extracted_at_tracks_last_scrape_created_at_is_first(client):
         vendor = Vendor(name="ScrapeVendor")
         s.add(vendor)
         await s.flush()
+        source_prod = Product(vendor_id=vendor.id, name="P")
+        s.add(source_prod)
+        await s.flush()
         source = DocumentationSource(
-            vendor_id=vendor.id, name="ScrapeSource", base_url="https://d.sc.com"
+            product_id=source_prod.id, name="ScrapeSource", base_url="https://d.sc.com"
         )
         s.add(source)
         await s.flush()
@@ -576,8 +592,11 @@ async def test_unchanged_paths_relink_rebuilt_toc(client):
         vendor = Vendor(name="RelinkVendor")
         s.add(vendor)
         await s.flush()
+        source_prod = Product(vendor_id=vendor.id, name="P")
+        s.add(source_prod)
+        await s.flush()
         source = DocumentationSource(
-            vendor_id=vendor.id, name="RelinkSrc", base_url="https://d.rl.com"
+            product_id=source_prod.id, name="RelinkSrc", base_url="https://d.rl.com"
         )
         s.add(source)
         await s.flush()
@@ -659,8 +678,11 @@ async def test_same_status_persists_when_article_missing(client):
         vendor = Vendor(name="SameVendor")
         s.add(vendor)
         await s.flush()
+        source_prod = Product(vendor_id=vendor.id, name="P")
+        s.add(source_prod)
+        await s.flush()
         source = DocumentationSource(
-            vendor_id=vendor.id, name="SameSrc", base_url="https://d.sm.com"
+            product_id=source_prod.id, name="SameSrc", base_url="https://d.sm.com"
         )
         s.add(source)
         await s.flush()
@@ -710,8 +732,11 @@ async def test_reconcile_removals_stamps_clears_and_pins(client):
         vendor = Vendor(name="RemVendor")
         s.add(vendor)
         await s.flush()
+        source_prod = Product(vendor_id=vendor.id, name="P")
+        s.add(source_prod)
+        await s.flush()
         source = DocumentationSource(
-            vendor_id=vendor.id, name="RemSrc", base_url="https://rm.com"
+            product_id=source_prod.id, name="RemSrc", base_url="https://rm.com"
         )
         s.add(source)
         await s.flush()
@@ -783,8 +808,11 @@ async def test_changelog_collapses_baseline_and_merges_events(client):
         vendor = Vendor(name="ClVendor")
         s.add(vendor)
         await s.flush()
+        source_prod = Product(vendor_id=vendor.id, name="P")
+        s.add(source_prod)
+        await s.flush()
         source = DocumentationSource(
-            vendor_id=vendor.id, name="ClSrc", base_url="https://cl.com"
+            product_id=source_prod.id, name="ClSrc", base_url="https://cl.com"
         )
         s.add(source)
         await s.flush()
@@ -842,7 +870,10 @@ async def test_export_enqueue_and_status(client):
     c, sf = client
     async with sf() as db:
         v = Vendor(name="ExpRoute"); db.add(v); await db.flush()
-        s = DocumentationSource(vendor_id=v.id, name="ExpRouteSrc", base_url="https://er.com")
+        s_prod = Product(vendor_id=v.id, name="P")
+        db.add(s_prod)
+        await db.flush()
+        s = DocumentationSource(product_id=s_prod.id, name="ExpRouteSrc", base_url="https://er.com")
         db.add(s); await db.flush()
         db.add(Article(source_id=s.id, title="A", source_url="https://er.com/a",
                        content_markdown="# A\n\nx", sort_order=0,

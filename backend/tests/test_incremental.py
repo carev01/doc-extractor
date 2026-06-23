@@ -49,8 +49,11 @@ def _make_source(db):
     v = Vendor(name="IncVendor")
     db.add(v)
     db.flush()
+    s_prod = Product(vendor_id=v.id, name="P")
+    db.add(s_prod)
+    db.flush()
     s = DocumentationSource(
-        vendor_id=v.id, name="IncSource", base_url="https://docs.inc.com"
+        product_id=s_prod.id, name="IncSource", base_url="https://docs.inc.com"
     )
     db.add(s)
     db.flush()

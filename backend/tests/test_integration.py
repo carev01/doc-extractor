@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.config import settings
 from app.core.database import Base
-from app.models import Vendor, DocumentationSource, Article, TOCEntry
+from app.models import Vendor, Product, DocumentationSource, Article, TOCEntry
 from app.models.image import ArticleImage
 from app.services.exporter import ExportEngine
 
@@ -53,7 +53,10 @@ def test_export_full(db_session):
     db_session.add(v)
     db_session.flush()
 
-    s = DocumentationSource(vendor_id=v.id, name="ExportSource", base_url="https://docs.ex.com")
+    s_prod = Product(vendor_id=v.id, name="P")
+    db_session.add(s_prod)
+    db_session.flush()
+    s = DocumentationSource(product_id=s_prod.id, name="ExportSource", base_url="https://docs.ex.com")
     db_session.add(s)
     db_session.flush()
 
@@ -90,7 +93,10 @@ def test_export_pdf_full(db_session):
     v = Vendor(name="PdfVendor")
     db_session.add(v)
     db_session.flush()
-    s = DocumentationSource(vendor_id=v.id, name="PdfSource", base_url="https://docs.pdf.com")
+    s_prod = Product(vendor_id=v.id, name="P")
+    db_session.add(s_prod)
+    db_session.flush()
+    s = DocumentationSource(product_id=s_prod.id, name="PdfSource", base_url="https://docs.pdf.com")
     db_session.add(s)
     db_session.flush()
     for i in range(3):
@@ -119,7 +125,10 @@ def test_export_pdf_split_produces_multiple_pdfs(db_session):
     v = Vendor(name="PdfSplitVendor")
     db_session.add(v)
     db_session.flush()
-    s = DocumentationSource(vendor_id=v.id, name="PdfSplit", base_url="https://docs.ps.com")
+    s_prod = Product(vendor_id=v.id, name="P")
+    db_session.add(s_prod)
+    db_session.flush()
+    s = DocumentationSource(product_id=s_prod.id, name="PdfSplit", base_url="https://docs.ps.com")
     db_session.add(s)
     db_session.flush()
     for i in range(4):
@@ -146,7 +155,10 @@ def test_export_partial_by_articles(db_session):
     db_session.add(v)
     db_session.flush()
 
-    s = DocumentationSource(vendor_id=v.id, name="PartialSource", base_url="https://docs.px.com")
+    s_prod = Product(vendor_id=v.id, name="P")
+    db_session.add(s_prod)
+    db_session.flush()
+    s = DocumentationSource(product_id=s_prod.id, name="PartialSource", base_url="https://docs.px.com")
     db_session.add(s)
     db_session.flush()
 
@@ -176,7 +188,10 @@ def test_export_by_topic_search(db_session):
     db_session.add(v)
     db_session.flush()
 
-    s = DocumentationSource(vendor_id=v.id, name="TopicSource", base_url="https://docs.tp.com")
+    s_prod = Product(vendor_id=v.id, name="P")
+    db_session.add(s_prod)
+    db_session.flush()
+    s = DocumentationSource(product_id=s_prod.id, name="TopicSource", base_url="https://docs.tp.com")
     db_session.add(s)
     db_session.flush()
 
@@ -224,7 +239,10 @@ def test_export_split_by_articles(db_session):
     db_session.add(v)
     db_session.flush()
 
-    s = DocumentationSource(vendor_id=v.id, name="SplitSource", base_url="https://docs.sp.com")
+    s_prod = Product(vendor_id=v.id, name="P")
+    db_session.add(s_prod)
+    db_session.flush()
+    s = DocumentationSource(product_id=s_prod.id, name="SplitSource", base_url="https://docs.sp.com")
     db_session.add(s)
     db_session.flush()
 
@@ -262,7 +280,10 @@ def test_export_split_by_size(db_session):
     db_session.add(v)
     db_session.flush()
 
-    s = DocumentationSource(vendor_id=v.id, name="SizeSource", base_url="https://docs.sz.com")
+    s_prod = Product(vendor_id=v.id, name="P")
+    db_session.add(s_prod)
+    db_session.flush()
+    s = DocumentationSource(product_id=s_prod.id, name="SizeSource", base_url="https://docs.sz.com")
     db_session.add(s)
     db_session.flush()
 
@@ -294,7 +315,10 @@ def test_export_split_by_tokens(db_session):
     db_session.add(v)
     db_session.flush()
 
-    s = DocumentationSource(vendor_id=v.id, name="TokenSource", base_url="https://docs.tk.com")
+    s_prod = Product(vendor_id=v.id, name="P")
+    db_session.add(s_prod)
+    db_session.flush()
+    s = DocumentationSource(product_id=s_prod.id, name="TokenSource", base_url="https://docs.tk.com")
     db_session.add(s)
     db_session.flush()
 
@@ -323,7 +347,10 @@ def test_export_zip_bundles_images_with_relative_paths(db_session):
     db_session.add(v)
     db_session.flush()
 
-    s = DocumentationSource(vendor_id=v.id, name="ImageSource", base_url="https://docs.img.com")
+    s_prod = Product(vendor_id=v.id, name="P")
+    db_session.add(s_prod)
+    db_session.flush()
+    s = DocumentationSource(product_id=s_prod.id, name="ImageSource", base_url="https://docs.img.com")
     db_session.add(s)
     db_session.flush()
 
@@ -384,7 +411,10 @@ def test_export_empty_selection(db_session):
     db_session.add(v)
     db_session.flush()
 
-    s = DocumentationSource(vendor_id=v.id, name="EmptySource", base_url="https://docs.em.com")
+    s_prod = Product(vendor_id=v.id, name="P")
+    db_session.add(s_prod)
+    db_session.flush()
+    s = DocumentationSource(product_id=s_prod.id, name="EmptySource", base_url="https://docs.em.com")
     db_session.add(s)
     db_session.commit()
 
@@ -398,7 +428,10 @@ def test_split_never_breaks_article(db_session):
     db_session.add(v)
     db_session.flush()
 
-    s = DocumentationSource(vendor_id=v.id, name="InvariantSource", base_url="https://docs.inv.com")
+    s_prod = Product(vendor_id=v.id, name="P")
+    db_session.add(s_prod)
+    db_session.flush()
+    s = DocumentationSource(product_id=s_prod.id, name="InvariantSource", base_url="https://docs.inv.com")
     db_session.add(s)
     db_session.flush()
 
@@ -443,7 +476,10 @@ def test_topic_search_is_ranked_full_text(db_session):
     v = Vendor(name="FtsVendor")
     db_session.add(v)
     db_session.flush()
-    s = DocumentationSource(vendor_id=v.id, name="FtsSource", base_url="https://docs.fts.com")
+    s_prod = Product(vendor_id=v.id, name="P")
+    db_session.add(s_prod)
+    db_session.flush()
+    s = DocumentationSource(product_id=s_prod.id, name="FtsSource", base_url="https://docs.fts.com")
     db_session.add(s)
     db_session.flush()
 
@@ -486,7 +522,10 @@ def _chapter_fixture(db_session):
     v = Vendor(name="ChapVendor")
     db_session.add(v)
     db_session.flush()
-    s = DocumentationSource(vendor_id=v.id, name="ChapSource", base_url="https://docs.ch.com")
+    s_prod = Product(vendor_id=v.id, name="P")
+    db_session.add(s_prod)
+    db_session.flush()
+    s = DocumentationSource(product_id=s_prod.id, name="ChapSource", base_url="https://docs.ch.com")
     db_session.add(s)
     db_session.flush()
 
@@ -547,7 +586,10 @@ def test_split_chapter_larger_than_limit_splits_internally(db_session):
     v = Vendor(name="BigChapVendor")
     db_session.add(v)
     db_session.flush()
-    s = DocumentationSource(vendor_id=v.id, name="BigChapSource", base_url="https://docs.bc.com")
+    s_prod = Product(vendor_id=v.id, name="P")
+    db_session.add(s_prod)
+    db_session.flush()
+    s = DocumentationSource(product_id=s_prod.id, name="BigChapSource", base_url="https://docs.bc.com")
     db_session.add(s)
     db_session.flush()
     ch = TOCEntry(source_id=s.id, title="Solo Chapter", level=0, sort_order=0)
@@ -576,7 +618,10 @@ def test_toc_tree_structure(db_session):
     db_session.add(v)
     db_session.flush()
 
-    s = DocumentationSource(vendor_id=v.id, name="TOCSource", base_url="https://docs.toc.com")
+    s_prod = Product(vendor_id=v.id, name="P")
+    db_session.add(s_prod)
+    db_session.flush()
+    s = DocumentationSource(product_id=s_prod.id, name="TOCSource", base_url="https://docs.toc.com")
     db_session.add(s)
     db_session.flush()
 
@@ -631,7 +676,10 @@ def test_export_pdf_merges_per_chapter(db_session, monkeypatch):
 
     v = Vendor(name="MergeVendor")
     db_session.add(v); db_session.flush()
-    s = DocumentationSource(vendor_id=v.id, name="MergeSrc", base_url="https://m.com")
+    s_prod = Product(vendor_id=v.id, name="P")
+    db_session.add(s_prod)
+    db_session.flush()
+    s = DocumentationSource(product_id=s_prod.id, name="MergeSrc", base_url="https://m.com")
     db_session.add(s); db_session.flush()
     # Two top-level chapters, 2 articles each.
     ch1 = TOCEntry(source_id=s.id, title="Chapter 1", url=None, level=0, sort_order=0, is_article=False)
