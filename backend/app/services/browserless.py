@@ -68,15 +68,15 @@ export default async function ({ page, context }) {
 
 # Browserless /function module that returns the fully-rendered light-DOM HTML
 # after waiting for a selector to appear. Used by profiles whose nav/content is
-# JS-rendered into the light DOM (e.g. Commvault's #nav), so a plain Firecrawl
+# JS-rendered into the light DOM (e.g. a client-built #nav), so a plain Firecrawl
 # scrape catches it mid-"Loading…".
 _HTML_FUNCTION_CODE = r"""
 export default async function ({ page, context }) {
   const { url, waitMs, waitSelector } = context;
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
   if (waitSelector) {
-    // Generous timeout: client-rendered navs can be heavy (e.g. Commvault builds
-    // its tree from a ~515KB manifest). waitForSelector returns as soon as it
+    // Generous timeout: client-rendered navs can be heavy (some build the tree
+    // from a ~515KB manifest). waitForSelector returns as soon as it
     // appears, so this only caps the worst case.
     try { await page.waitForSelector(waitSelector, { timeout: 30000 }); }
     catch (e) { /* fall through with whatever rendered */ }
@@ -92,7 +92,7 @@ export default async function ({ page, context }) {
 
 # Browserless /function that traverses a lazy-loaded sidebar tree depth-first,
 # clicking each parent's toggle to reveal its children, and returns the ordered
-# nodes with depth. Mirrors the proven Commvault Playwright crawler: a SINGLE
+# nodes with depth. Mirrors the proven standalone Playwright crawler: a SINGLE
 # session loads the page once (the ~515KB nav render is the only expensive step)
 # then expands the whole tree with cheap in-page clicks. Selectors:
 # ul.nav-group-root (root) / ul.nav-group (children), li > div.nav-item with
@@ -221,7 +221,7 @@ export default async function ({ page, context }) {
 # (button.menu__caret[aria-expanded="false"]) — each click mounts that category's
 # child <ul>, which may itself contain further collapsed carets — until none
 # remain. In-page el.click() (not page.click) so below-the-fold toggles work,
-# matching the Commvault crawler. Measured on Portworx: 11 → 258 links in 4
+# matching the lazy-tree crawler. Measured on Portworx: 11 → 258 links in 4
 # rounds, links increasing monotonically (no auto-collapse fighting).
 _DOCUSAURUS_EXPAND_CODE = r"""
 export default async function ({ page, context }) {
@@ -250,16 +250,16 @@ export default async function ({ page, context }) {
 
 
 # Browserless /function that fully expands a shadcn/ui + radix Collapsible
-# sidebar (used by docs.cohesity.com) and returns its HTML. Each guide/section is
-# a radix Collapsible whose content (child <ul data-slot="sidebar-menu">) is NOT
-# mounted in the DOM until its trigger is clicked, so a single render exposes only
-# the top-level guides (observed: 74 guides → 10 links). We load the page once,
-# then repeatedly click every collapsed trigger
+# sidebar and returns its HTML. Each guide/section is a radix Collapsible whose
+# content (child <ul data-slot="sidebar-menu">) is NOT mounted in the DOM until
+# its trigger is clicked, so a single render exposes only the top-level guides
+# (observed: 74 guides → 10 links). We load the page once, then repeatedly click
+# every collapsed trigger
 # (button[data-slot="collapsible-trigger"][aria-expanded="false"]) — each click
 # mounts that node's children, which may contain further collapsed triggers —
 # until none remain. In-page el.click() (not page.click) so below-the-fold
 # toggles fire. The round cap bounds by tree depth, not breadth.
-_COHESITY_EXPAND_CODE = r"""
+_COLLAPSIBLE_EXPAND_CODE = r"""
 export default async function ({ page, context }) {
   const { url } = context;
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
@@ -379,7 +379,7 @@ class BrowserlessClient:
                           client: httpx.AsyncClient | None = None) -> str:
         """Return the fully-rendered light-DOM HTML after a JS-rendered element
         (``wait_selector``) appears — for navs/content built client-side into the
-        light DOM (e.g. Commvault's #nav). Raises BrowserlessError."""
+        light DOM (e.g. a client-built #nav). Raises BrowserlessError."""
         data = await self._post(
             _HTML_FUNCTION_CODE,
             {"url": target_url, "waitMs": self.wait_ms, "waitSelector": wait_selector},
@@ -424,14 +424,14 @@ class BrowserlessClient:
 
     async def expand_collapsible_sidebar(self, target_url: str,
                                          client: httpx.AsyncClient | None = None) -> str:
-        """Fully expand a shadcn/ui + radix Collapsible sidebar (docs.cohesity.com),
-        clicking every collapsed ``collapsible-trigger`` until the whole tree is
-        mounted, and return the ``[data-slot='sidebar-inner']`` outerHTML. Raises
+        """Fully expand a shadcn/ui + radix Collapsible sidebar, clicking every
+        collapsed ``collapsible-trigger`` until the whole tree is mounted, and
+        return the ``[data-slot='sidebar-inner']`` outerHTML. Raises
         BrowserlessError. Uses the long TOC session timeout (deep tree → many
         click+mount rounds)."""
         timeout_ms = settings.browserless_toc_timeout_ms
         data = await self._post(
-            _COHESITY_EXPAND_CODE,
+            _COLLAPSIBLE_EXPAND_CODE,
             {"url": target_url},
             target_url, client,
             session_timeout_ms=timeout_ms,

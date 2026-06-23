@@ -16,7 +16,8 @@ import {
 
 const PLATFORM_OPTIONS: { value: string; label: string }[] = [
   { value: "auto", label: "Auto-detect" },
-  { value: "commvault", label: "Commvault" },
+  { value: "lazy_tree", label: "Lazy Tree Nav" },
+  { value: "collapsible_sidebar", label: "Collapsible Sidebar" },
   { value: "docusaurus", label: "Docusaurus" },
   { value: "mkdocs", label: "MkDocs" },
   { value: "gitbook", label: "GitBook" },

@@ -1,18 +1,17 @@
-"""Commvault documentation profile.
+"""Lazy-tree-nav documentation profile.
 
-The current documentation.commvault.com platform renders its sidebar nav
-client-side and lazy-loads each branch only when expanded, so neither static
-HTML nor a one-shot render captures the full tree. We reproduce the real TOC by
-**depth-first expanding the sidebar in Browserless** — clicking each parent's
-toggle to reveal its children and recursing (``scraper.expand_toc``). This gives
-the exact site hierarchy.
+For doc platforms that render the sidebar nav client-side and lazy-load each
+branch only when expanded, so neither static HTML nor a one-shot render captures
+the full tree. We reproduce the real TOC by **depth-first expanding the sidebar
+in Browserless** — clicking each parent's toggle to reveal its children and
+recursing (``scraper.expand_toc``). This gives the exact site hierarchy.
 
 * Rooted at ``index.html`` → the whole product doc set.
 * Rooted at a specific page → that section's subtree (scoped bookshelf).
 
-Some nodes (e.g. "Protect", "Identity") are categories with a toggle but no page
-of their own; they become url-less section entries that their children nest
-under. Article content is server-rendered in ``#doc`` (Firecrawl content path).
+Some nodes are categories with a toggle but no page of their own; they become
+url-less section entries that their children nest under. Article content is
+server-rendered in ``#doc`` (Firecrawl content path).
 """
 
 from urllib.parse import urljoin, urlparse
@@ -21,12 +20,12 @@ from app.services.profiles import registry
 from app.services.profiles.base import TocEntry
 
 
-class CommvaultProfile:
-    name = "commvault"
+class LazyTreeProfile:
+    name = "lazy_tree"
 
     def detect(self, root_html: str, root_url: str) -> bool:
-        # New platform: documentation.commvault.com (nav is "Loading…" client-side,
-        # so key off the host / cv- markers). Old platform: inline #nav + nav-group.
+        # Newer platform: nav is "Loading…" client-side, so key off the host /
+        # cv- markers. Older platform: inline #nav + nav-group.
         host = urlparse(root_url).netloc
         if host.endswith("documentation.commvault.com") or "cv-nav-slug" in root_html:
             return True
@@ -137,5 +136,5 @@ class CommvaultProfile:
         return out
 
 
-PROFILE = CommvaultProfile()
+PROFILE = LazyTreeProfile()
 registry.register(PROFILE)

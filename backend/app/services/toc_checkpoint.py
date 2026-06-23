@@ -1,6 +1,6 @@
 """Persistent checkpoint for a long TOC build, so it resumes after interruption.
 
-Used by profiles whose sidebar is expanded section-by-section (Commvault). Each
+Used by profiles whose sidebar is expanded section-by-section (lazy_tree). Each
 completed section is committed on its **own** short-lived session, independent of
 the run's main work transaction — so progress survives even if that transaction
 later rolls back or the worker dies. Keyed by source (one active run per source).

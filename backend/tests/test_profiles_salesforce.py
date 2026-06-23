@@ -21,7 +21,7 @@ FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures", "platforms")
 SALESFORCE_FIXTURE = os.path.join(FIXTURE_DIR, "salesforce.html")
 
 OTHER_FIXTURES = [
-    "commvault.html", "docusaurus.html", "mkdocs.html", "gitbook.html",
+    "lazy_tree.html", "docusaurus.html", "mkdocs.html", "gitbook.html",
     "flare_webhelp.html", "flare_html5.html", "intercom.html", "freshdesk.html",
     "confluence.html",
 ]

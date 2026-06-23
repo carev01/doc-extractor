@@ -33,7 +33,7 @@ CONFLUENCE_FIXTURE = os.path.join(FIXTURE_DIR, "confluence.html")
 
 # Other platform fixtures — used to verify detect() returns False
 OTHER_FIXTURES = [
-    "commvault.html",
+    "lazy_tree.html",
     "docusaurus.html",
     "mkdocs.html",
     "gitbook.html",

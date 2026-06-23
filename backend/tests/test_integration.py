@@ -676,15 +676,15 @@ def test_firecrawl_service_available():
 
 
 @pytest.mark.asyncio
-async def test_commvault_build_toc_maps_expanded_nodes():
-    """The Commvault profile maps the ordered nodes from the Browserless sidebar
+async def test_lazy_tree_build_toc_maps_expanded_nodes():
+    """The lazy_tree profile maps the ordered nodes from the Browserless sidebar
     expansion (scraper.expand_toc) into a hierarchical TocEntry list.
 
     The old DOM-based ``_parse_nav_items`` was removed when the profile switched
     to depth-first Browserless expansion; this exercises the current path
     (build_toc → expand_toc → _nodes_to_toc).
     """
-    from app.services.profiles.commvault import CommvaultProfile
+    from app.services.profiles.lazy_tree import LazyTreeProfile
     from app.services.profiles.scraper import FakeScraper
 
     root = "https://docs.example.com/index.html"
@@ -702,7 +702,7 @@ async def test_commvault_build_toc_maps_expanded_nodes():
     # No checkpoint on FakeScraper → build_toc takes the single-session path and
     # calls expand_toc(root) with no section_id (keyed by url in the fake).
     scraper = FakeScraper({root: ""}, toc_by_url={root: nodes})
-    toc = await CommvaultProfile().build_toc(root, scraper)
+    toc = await LazyTreeProfile().build_toc(root, scraper)
 
     assert [e.title for e in toc] == ["Section A", "Child", "Protect", "Page B"]
     # Section A: a linked parent — has a url, so is_article (bool(url)) is True.

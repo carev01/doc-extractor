@@ -4,7 +4,7 @@ import os
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from app.services.profiles.commvault import CommvaultProfile
+from app.services.profiles.lazy_tree import LazyTreeProfile
 from app.services.profiles.scraper import FakeScraper
 
 BASE = "https://documentation.commvault.com/11.44/software/"
@@ -76,17 +76,17 @@ class FakeCheckpoint:
 
 # ── Detection ────────────────────────────────────────────────────────────────
 
-def test_detect_matches_commvault_host():
-    assert CommvaultProfile().detect("<html>Loading…</html>", INDEX_ROOT) is True
+def test_detect_matches_lazy_tree_host():
+    assert LazyTreeProfile().detect("<html>Loading…</html>", INDEX_ROOT) is True
 
 
 def test_detect_matches_old_inline_nav():
     html = '<div id="nav"><ul class="nav-group"></ul></div>'
-    assert CommvaultProfile().detect(html, "https://docs.example.com/x.html") is True
+    assert LazyTreeProfile().detect(html, "https://docs.example.com/x.html") is True
 
 
 def test_detect_rejects_other_platforms():
-    assert CommvaultProfile().detect(
+    assert LazyTreeProfile().detect(
         "<html><body><main>hi</main></body></html>", "https://example.com/"
     ) is False
 
@@ -94,7 +94,7 @@ def test_detect_rejects_other_platforms():
 # ── Content config ───────────────────────────────────────────────────────────
 
 def test_content_config_scopes_to_doc_and_drops_breadcrumb():
-    cfg = CommvaultProfile().content_config()
+    cfg = LazyTreeProfile().content_config()
     assert cfg["includeTags"] == ["#doc"]
     assert cfg["excludeTags"] == [".breadcrumbs"]
 
@@ -104,7 +104,7 @@ def test_content_config_scopes_to_doc_and_drops_breadcrumb():
 @pytest.mark.asyncio
 async def test_full_mode_combines_sections_in_order():
     scraper = FakeScraper({}, toc_by_url=FULL_TOC)
-    toc = await CommvaultProfile().build_toc(INDEX_ROOT, scraper)
+    toc = await LazyTreeProfile().build_toc(INDEX_ROOT, scraper)
     got = [(e.title, e.level, e.is_article, e.url) for e in toc]
     assert got == [
         ("Get started", 0, True, BASE + "get_started_with_commvault.html"),
@@ -118,7 +118,7 @@ async def test_full_mode_combines_sections_in_order():
 @pytest.mark.asyncio
 async def test_full_mode_parent_links():
     scraper = FakeScraper({}, toc_by_url=FULL_TOC)
-    toc = await CommvaultProfile().build_toc(INDEX_ROOT, scraper)
+    toc = await LazyTreeProfile().build_toc(INDEX_ROOT, scraper)
     by = {e.title: e for e in toc}
     assert by["Get started"].parent_url is None
     assert by["Deploy infrastructure"].parent_url == by["Get started"].url
@@ -131,7 +131,7 @@ async def test_full_mode_parent_links():
 @pytest.mark.asyncio
 async def test_section_mode_scopes_to_page_subtree():
     scraper = FakeScraper({}, toc_by_url=FULL_TOC)
-    toc = await CommvaultProfile().build_toc(SECTION_ROOT, scraper)
+    toc = await LazyTreeProfile().build_toc(SECTION_ROOT, scraper)
     assert [e.title for e in toc] == ["Get started", "Deploy infrastructure", "Configure network"]
 
 
@@ -145,7 +145,7 @@ async def test_section_id_derivation():
             return await super().expand_toc(url, section_id)
 
     sc = CapturingScraper({}, toc_by_url=FULL_TOC)
-    await CommvaultProfile().build_toc(SECTION_ROOT, sc)
+    await LazyTreeProfile().build_toc(SECTION_ROOT, sc)
     assert captured == [GS]
 
 
@@ -161,7 +161,7 @@ async def test_index_root_no_checkpoint_expands_whole_tree_in_one_call():
             return await super().expand_toc(url, section_id)
 
     sc = CapturingScraper({}, toc_by_url=FULL_TOC)  # checkpoint defaults to None
-    await CommvaultProfile().build_toc(INDEX_ROOT, sc)
+    await LazyTreeProfile().build_toc(INDEX_ROOT, sc)
     assert captured == [None]
 
 
@@ -181,7 +181,7 @@ class _CapturingScraper(FakeScraper):
 async def test_checkpointed_index_lists_top_then_expands_each_section():
     ckpt = FakeCheckpoint()
     sc = _CapturingScraper({}, toc_by_url=CKPT_TOC, checkpoint=ckpt)
-    toc = await CommvaultProfile().build_toc(INDEX_ROOT, sc)
+    toc = await LazyTreeProfile().build_toc(INDEX_ROOT, sc)
     # __TOP__ first, then one call per top-level section, in order.
     assert sc.expanded == ["__TOP__", GS, "nav__protect"]
     assert [(e.title, e.level) for e in toc] == [
@@ -201,7 +201,7 @@ async def test_checkpointed_index_resumes_and_skips_done_sections():
         "sections": {GS: CKPT_TOC[GS]},
     })
     sc = _CapturingScraper({}, toc_by_url=CKPT_TOC, checkpoint=ckpt)
-    toc = await CommvaultProfile().build_toc(INDEX_ROOT, sc)
+    toc = await LazyTreeProfile().build_toc(INDEX_ROOT, sc)
     # Neither __TOP__ nor the done section is re-expanded — only "Protect".
     assert sc.expanded == ["nav__protect"]
     titles = [e.title for e in toc]
@@ -223,6 +223,6 @@ async def test_checkpointed_index_persists_each_section_as_it_completes():
 
     ckpt.save_section = tracking_save
     sc = _CapturingScraper({}, toc_by_url=CKPT_TOC, checkpoint=ckpt)
-    await CommvaultProfile().build_toc(INDEX_ROOT, sc)
+    await LazyTreeProfile().build_toc(INDEX_ROOT, sc)
     # Each expanded section was persisted before the build finished.
     assert saved == [GS, "nav__protect"]

@@ -1,6 +1,6 @@
 """TOC build checkpoint.
 
-A large lazy sidebar (e.g. Commvault's ~9,670-node tree) is expanded one
+A large lazy sidebar (e.g. a ~9,670-node tree) is expanded one
 top-level section at a time. Each completed section is persisted here so that if
 the worker/pod is interrupted mid-build, the requeued run resumes from the
 sections already done instead of restarting the ~14-minute walk from zero.

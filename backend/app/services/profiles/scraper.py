@@ -43,7 +43,7 @@ class Scraper:
 
     async def get_rendered_html(self, url: str, wait_for: str | None = None) -> str:
         """Fully-rendered light-DOM HTML via Browserless, after ``wait_for``
-        appears — for navs/content built client-side (e.g. Commvault's #nav)."""
+        appears — for navs/content built client-side (e.g. a client-built #nav)."""
         from app.services.browserless import browserless_client
         return await browserless_client.render_html(url, wait_selector=wait_for)
 
@@ -67,8 +67,8 @@ class Scraper:
         return await browserless_client.expand_docusaurus_sidebar(url)
 
     async def expand_collapsible_sidebar(self, url: str) -> str:
-        """Fully expand a shadcn/ui + radix Collapsible sidebar (docs.cohesity.com)
-        via Browserless and return the ``[data-slot='sidebar-inner']`` HTML with
+        """Fully expand a shadcn/ui + radix Collapsible sidebar via Browserless
+        and return the ``[data-slot='sidebar-inner']`` HTML with
         every collapsed node mounted — children aren't in the DOM until expanded."""
         from app.services.browserless import browserless_client
         return await browserless_client.expand_collapsible_sidebar(url)

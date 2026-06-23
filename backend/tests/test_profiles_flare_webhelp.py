@@ -36,7 +36,7 @@ FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures", "platforms")
 
 FLARE_WEBHELP_FIXTURE = os.path.join(FIXTURE_DIR, "flare_webhelp.html")
 FLARE_HTML5_FIXTURE = os.path.join(FIXTURE_DIR, "flare_html5.html")
-COMMVAULT_FIXTURE = os.path.join(FIXTURE_DIR, "commvault.html")
+LAZY_TREE_FIXTURE = os.path.join(FIXTURE_DIR, "lazy_tree.html")
 DOCUSAURUS_FIXTURE = os.path.join(FIXTURE_DIR, "docusaurus.html")
 MKDOCS_FIXTURE = os.path.join(FIXTURE_DIR, "mkdocs.html")
 GITBOOK_FIXTURE = os.path.join(FIXTURE_DIR, "gitbook.html")
@@ -73,8 +73,8 @@ def test_detect_rejects_flare_html5():
     assert FlareWebHelpProfile().detect(_read(FLARE_HTML5_FIXTURE), ROOT) is False
 
 
-def test_detect_rejects_commvault():
-    assert FlareWebHelpProfile().detect(_read(COMMVAULT_FIXTURE), ROOT) is False
+def test_detect_rejects_lazy_tree():
+    assert FlareWebHelpProfile().detect(_read(LAZY_TREE_FIXTURE), ROOT) is False
 
 
 def test_detect_rejects_docusaurus():

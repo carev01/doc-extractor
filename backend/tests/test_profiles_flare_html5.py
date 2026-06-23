@@ -30,7 +30,7 @@ FLARE_HTML5_FIXTURE = os.path.join(FIXTURE_DIR, "flare_html5.html")
 # The Arcserve MadCap Flare WebHelp / TriPane fixture (frame-based)
 FLARE_WEBHELP_FIXTURE = os.path.join(FIXTURE_DIR, "flare_webhelp.html")
 # Other platform fixtures (must all be rejected)
-COMMVAULT_FIXTURE = os.path.join(FIXTURE_DIR, "commvault.html")
+LAZY_TREE_FIXTURE = os.path.join(FIXTURE_DIR, "lazy_tree.html")
 DOCUSAURUS_FIXTURE = os.path.join(FIXTURE_DIR, "docusaurus.html")
 MKDOCS_FIXTURE = os.path.join(FIXTURE_DIR, "mkdocs.html")
 GITBOOK_FIXTURE = os.path.join(FIXTURE_DIR, "gitbook.html")
@@ -63,8 +63,8 @@ def test_detect_rejects_flare_webhelp():
     assert FlareHtml5Profile().detect(_read(FLARE_WEBHELP_FIXTURE), ROOT) is False
 
 
-def test_detect_rejects_commvault():
-    assert FlareHtml5Profile().detect(_read(COMMVAULT_FIXTURE), ROOT) is False
+def test_detect_rejects_lazy_tree():
+    assert FlareHtml5Profile().detect(_read(LAZY_TREE_FIXTURE), ROOT) is False
 
 
 def test_detect_rejects_docusaurus():
