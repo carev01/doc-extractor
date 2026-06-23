@@ -7,7 +7,7 @@ promoted to a spec/plan when picked up.
 
 ## Scheduled Jobs + parallel processing
 
-**Status:** 🔨 IN PROGRESS (Phase 1 done) · **Priority:** High · **Filed:** 2026-06-23
+**Status:** Jobs ✅ DONE (Phases 1+2, PR #48, pending deploy) · Parallelism ⏸️ DEFERRED (Phases 3–4) · **Priority:** High · **Filed:** 2026-06-23
 
 Move scheduling off individual sources and introduce **jobs** (like backup jobs
 in Veeam): a job owns a schedule and a set of sources, and firing it fans out
@@ -37,13 +37,33 @@ governing ceiling — two big jobs at once tipped it into 502/503 before.
   un-assign, Run now, recent JobRuns with rollup, rename/delete); source list gains
   a "Job" assignment dropdown. Per-source Schedule tab/`ScheduleControl` + dead
   schedule client fns/types removed. Phases 1+2 ship together.
-- **Phase 3 — Parallelism:** global Browserless render-token budget (process-wide
-  semaphore), worker runs N concurrent extractions, fast lane so small sources
-  coexist with big ones. **Prereq:** per-run log routing (the worker attaches a
-  handler to the *root* logger per run — concurrent runs would interleave logs).
+- **Phase 3 — Parallelism: ⏸️ DEFERRED (2026-06-23, likely not worth it).** See
+  findings below — the realistic upside is "stop a big job blocking a small one,"
+  not faster big jobs, and on the current shared Browserless pool it's fiddly and
+  risky. Revisit only if we split the pool.
 - **Phase 4 — Big-job speed:** cheap change-detection on the Browserless path
   (skip unchanged pages via sitemap `lastmod`/conditional fetch); expose
-  `concurrency`/`wait_ms` knobs.
+  `concurrency`/`wait_ms` knobs. Not started.
+
+### Findings: why parallelism is hard here (recorded 2026-06-23)
+
+Browserless is **one Deployment / 4 Chrome pods behind one Service** (no explicit
+concurrency cap; ~1.4 GB RAM each), shared by two consumers:
+1. **Our direct calls** — TOC sidebar expansion + `_scrape_via_browserless`
+   (`browserless_concurrency=4`).
+2. **Firecrawl** — its own `playwright` deploy is scaled to **0**; it renders via
+   **`fc-bl-adapter` (2)** fed by **`nuq-worker` ×5**, so Firecrawl alone can drive
+   **~5 concurrent renders** into the same 4 pods.
+
+So one big Firecrawl-path run already puts ~5 sessions on 4 pods — almost no
+headroom, which is why any extra request during an active extraction has tipped
+the stack into 502/503. A process-wide render budget can only meter *our* direct
+calls, not Firecrawl's, so on the shared pool parallelism mostly means interleaving
+a small job under near-zero headroom. **The real unlock is splitting the pool** (a
+second Browserless Deployment/Service dedicated to our direct renders, e.g. 2+2,
+with `DOCEXTRACTOR_BROWSERLESS_URL` pointing at ours) — then a per-pool budget +
+in-process concurrency (prereq: per-run log routing via a `contextvar`) is safe by
+construction. Single-node RAM (~1.4 GB/Chrome) is the hard ceiling either way.
 
 ---
 
