@@ -10,8 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.extraction_run import ExtractionRun
+from app.models.product import Product
 from app.models.source import DocumentationSource
 from app.models.toc import TOCEntry
+from app.models.vendor import Vendor
 from app.schemas.export import ExtractionTriggerResponse
 from app.services.firecrawl import firecrawl_service
 from app.services.queue import enqueue_run, ActiveRunExists
@@ -171,22 +173,43 @@ async def get_run_status(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 @router.get("/runs")
 async def list_runs(
     source_id: uuid.UUID | None = None,
+    status: str | None = None,
+    limit: int = 100,
     db: AsyncSession = Depends(get_db),
 ):
-    """List extraction runs, optionally filtered by source."""
-    query = select(ExtractionRun).order_by(ExtractionRun.started_at.desc())
+    """List extraction runs (newest first) with vendor/product/source names.
 
+    Optionally filter by ``source_id`` or ``status``. Used by the per-source run
+    history and by the unified Jobs view (no source filter = all runs).
+    """
+    limit = max(1, min(limit, 500))
+    query = (
+        select(
+            ExtractionRun,
+            DocumentationSource.name.label("source_name"),
+            Product.name.label("product_name"),
+            Vendor.name.label("vendor_name"),
+        )
+        .join(DocumentationSource, ExtractionRun.source_id == DocumentationSource.id)
+        .join(Product, DocumentationSource.product_id == Product.id)
+        .join(Vendor, Product.vendor_id == Vendor.id)
+        .order_by(ExtractionRun.started_at.desc())
+    )
     if source_id:
         query = query.where(ExtractionRun.source_id == source_id)
+    if status:
+        query = query.where(ExtractionRun.status == status)
 
-    result = await db.execute(query.limit(50))
-    runs = result.scalars().all()
+    rows = (await db.execute(query.limit(limit))).all()
 
     return {
         "runs": [
             {
                 "id": r.id,
                 "source_id": r.source_id,
+                "source_name": source_name,
+                "product_name": product_name,
+                "vendor_name": vendor_name,
                 "status": r.status,
                 "trigger": r.trigger,
                 "current_phase": r.current_phase,
@@ -195,10 +218,32 @@ async def list_runs(
                 "articles_total": r.articles_total,
                 "articles_updated": r.articles_updated,
                 "articles_unchanged": r.articles_unchanged,
+                "attempts": r.attempts,
                 "error_message": r.error_message,
                 "started_at": r.started_at.isoformat() if r.started_at else None,
                 "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+                "heartbeat_at": r.heartbeat_at.isoformat() if r.heartbeat_at else None,
             }
-            for r in runs
+            for r, source_name, product_name, vendor_name in rows
         ]
     }
+
+
+@router.get("/runs/{run_id}/logs")
+async def get_run_logs(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Return the captured raw worker logs for a run (tail-capped at write time)."""
+    log_text = (
+        await db.execute(
+            select(ExtractionRun.log_text).where(ExtractionRun.id == run_id)
+        )
+    ).scalar_one_or_none()
+    if log_text is None:
+        # Distinguish missing run from a run with no logs yet.
+        exists = (
+            await db.execute(
+                select(ExtractionRun.id).where(ExtractionRun.id == run_id)
+            )
+        ).scalar_one_or_none()
+        if exists is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+    return {"run_id": run_id, "log_text": log_text or ""}

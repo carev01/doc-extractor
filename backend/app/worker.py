@@ -6,10 +6,11 @@ Run with: python -m app.worker
 import asyncio
 import logging
 import socket
+import threading
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 # Ensure models are registered before any query runs.
 import app.models  # noqa: F401
@@ -25,7 +26,73 @@ logger = logging.getLogger(__name__)
 
 POLL_INTERVAL = 2.0
 HEARTBEAT_INTERVAL = 15.0
+LOG_FLUSH_INTERVAL = 10.0
+LOG_TEXT_CAP = 200_000  # keep the last ~200KB of a run's logs
 WORKER_ID = socket.gethostname()
+
+
+class _RunLogHandler(logging.Handler):
+    """Buffers formatted log records so the worker can persist a run's logs.
+
+    The worker handles one run at a time, so this is attached to the root logger
+    for the duration of a single run and detached afterwards. Thread-safe drain
+    (logging may emit from worker threads).
+    """
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.INFO)
+        self.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", "%H:%M:%S")
+        )
+        self._lock = threading.Lock()
+        self._buf: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            line = self.format(record)
+        except Exception:  # never let logging crash the run
+            return
+        with self._lock:
+            self._buf.append(line)
+
+    def drain(self) -> str:
+        with self._lock:
+            if not self._buf:
+                return ""
+            chunk = "\n".join(self._buf) + "\n"
+            self._buf.clear()
+            return chunk
+
+
+async def _flush_logs(run_id: uuid.UUID, handler: "_RunLogHandler", session_factory) -> None:
+    """Periodically append the handler's buffered lines to the run's log_text.
+
+    Append + tail-cap happen in one UPDATE via right(coalesce(log_text,'')||chunk,
+    cap), so stored logs never exceed LOG_TEXT_CAP. Must never crash the worker.
+    """
+    while True:
+        await asyncio.sleep(LOG_FLUSH_INTERVAL)
+        await _flush_once(run_id, handler, session_factory)
+
+
+async def _flush_once(run_id: uuid.UUID, handler: "_RunLogHandler", session_factory) -> None:
+    chunk = handler.drain()
+    if not chunk:
+        return
+    try:
+        async with session_factory() as db:
+            await db.execute(
+                update(ExtractionRun)
+                .where(ExtractionRun.id == run_id)
+                .values(
+                    log_text=func.right(
+                        func.coalesce(ExtractionRun.log_text, "") + chunk, LOG_TEXT_CAP
+                    )
+                )
+            )
+            await db.commit()
+    except Exception:
+        logger.exception("Log flush failed for run %s", run_id)
 
 
 async def _heartbeat(run_id: uuid.UUID, session_factory) -> None:
@@ -75,6 +142,11 @@ async def run_one(claim_session_factory=None, work_session_factory=None) -> bool
 
     if run_id is not None:
         hb = asyncio.create_task(_heartbeat(run_id, work_session_factory))
+        # Capture this run's logs into extraction_runs.log_text for the UI.
+        log_handler = _RunLogHandler()
+        root_logger = logging.getLogger()
+        root_logger.addHandler(log_handler)
+        flush = asyncio.create_task(_flush_logs(run_id, log_handler, work_session_factory))
         try:
             async with work_session_factory() as db:
                 await firecrawl_service.extract_source(db, source_id, run_id=run_id)
@@ -104,6 +176,10 @@ async def run_one(claim_session_factory=None, work_session_factory=None) -> bool
                     await db.commit()
         finally:
             hb.cancel()
+            flush.cancel()
+            root_logger.removeHandler(log_handler)
+            # Final flush of anything buffered after the last interval tick.
+            await _flush_once(run_id, log_handler, work_session_factory)
         return True
 
     # 2) No extraction run — try an export job — open, claim, close.

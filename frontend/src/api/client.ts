@@ -12,6 +12,8 @@ import type {
   ArticleList,
   TOCResponse,
   ExtractionRun,
+  RunLogs,
+  ScheduleListItem,
   ExtractionTrigger,
   ExportRequest,
   ExportJobCreated,
@@ -155,10 +157,26 @@ export async function getRunStatus(runId: string): Promise<ExtractionRun> {
 }
 
 export async function listRuns(
-  sourceId?: string
+  sourceId?: string,
+  status?: string,
+  limit?: number
 ): Promise<{ runs: ExtractionRun[] }> {
   const res = await api.get("/extraction/runs", {
-    params: { source_id: sourceId },
+    params: { source_id: sourceId, status, limit },
+  });
+  return res.data;
+}
+
+export async function getRunLogs(runId: string): Promise<RunLogs> {
+  const res = await api.get(`/extraction/runs/${runId}/logs`);
+  return res.data;
+}
+
+export async function listSchedules(
+  enabledOnly = false
+): Promise<{ schedules: ScheduleListItem[] }> {
+  const res = await api.get("/schedules", {
+    params: { enabled_only: enabledOnly },
   });
   return res.data;
 }
