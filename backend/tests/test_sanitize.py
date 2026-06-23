@@ -399,6 +399,58 @@ def test_last_updated_does_not_eat_real_prose():
     assert "a long time ago and it works well" in out
 
 
+# Real captured head from a stored Druva (Intercom-hosted) article: every page
+# opens with a font/Apache-license preamble glued to a "Skip to main content"
+# link, then the real content.
+DRUVA_HEAD = (
+    'Copyright 2023. Intercom Inc. Licensed under the Apache License, Version 2.0 '
+    '(the "License"); you may not use this file except in compliance with the '
+    'License. You may obtain a copy of the License at '
+    'http://www.apache.org/licenses/LICENSE-2.0 Unless required by applicable law '
+    'or agreed to in writing, software distributed under the License is distributed '
+    'on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either '
+    'express or implied. See the License for the specific language governing '
+    'permissions and limitations under the License.Copyright (c) 2023, Intercom, '
+    'Inc. (legal@intercom.io) with Reserved Font Name "Lato". This Font Software is '
+    'licensed under the SIL Open Font License, Version 1.1.'
+    '[Skip to main content](https://help.druva.com/en/collections/6094377#main-content)\n'
+    "\n"
+    "![](/media/x/d69ad44d9c5d.png)\n"
+    "\n"
+    "Druva Cloud Platform\n"
+    "====================\n"
+    "\n"
+    "Getting started with Druva, configuration, and reporting\n"
+)
+
+
+def test_removes_leading_font_license_preamble():
+    out = sanitize_markdown(DRUVA_HEAD)
+    assert "Apache License" not in out
+    assert "SIL Open Font License" not in out
+    assert "Skip to main content" not in out
+    # real content survives, and is now the document head
+    assert out.startswith("![](/media/x/d69ad44d9c5d.png)")
+    assert "Druva Cloud Platform" in out
+
+
+def test_font_license_preserves_content_glued_after_skip_link():
+    md = DRUVA_HEAD.split("\n", 1)[0].replace(
+        "#main-content)", "#main-content)Real heading"
+    ) + "\n\nbody\n"
+    out = sanitize_markdown(md)
+    assert out.startswith("Real heading")
+
+
+def test_font_license_only_fires_at_head_on_signature():
+    """A mid-prose mention of both license names must not be stripped."""
+    md = (
+        "# Licensing\n\nThis product is under the Apache License; fonts use the "
+        "SIL Open Font License.\n"
+    )
+    assert sanitize_markdown(md).strip() == md.strip()
+
+
 def test_empty_input():
     assert sanitize_markdown("") == ""
     assert sanitize_markdown("   \n  ") == "   \n  "

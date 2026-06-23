@@ -185,6 +185,16 @@ export async function resumeRun(runId: string): Promise<void> {
   await api.post(`/extraction/runs/${runId}/resume`);
 }
 
+/** Re-apply the current sanitizer to a source's already-stored articles. */
+export async function resanitizeSource(
+  sourceId: string
+): Promise<{ source_id: string; total: number; changed: number; unchanged: number }> {
+  const res = await api.post(`/extraction/resanitize/${sourceId}`, null, {
+    timeout: 120000,
+  });
+  return res.data;
+}
+
 export async function listSchedules(
   enabledOnly = false
 ): Promise<{ schedules: ScheduleListItem[] }> {

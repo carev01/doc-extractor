@@ -9,3 +9,6 @@ backend/exports/
 
 # Canonical article images downloaded at extraction time
 backend/media/
+
+# macOS
+.DS_Store

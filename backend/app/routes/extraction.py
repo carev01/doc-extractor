@@ -10,6 +10,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.models.article import Article
+from app.models.article_version import ArticleVersion
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.product import Product
 from app.models.source import DocumentationSource
@@ -17,8 +19,10 @@ from app.models.toc import TOCEntry
 from app.models.toc_checkpoint import TocCheckpoint
 from app.models.vendor import Vendor
 from app.schemas.export import ExtractionTriggerResponse
-from app.services.firecrawl import firecrawl_service
+from app.services.diffing import compute_unified_diff
+from app.services.firecrawl import compute_content_hash, firecrawl_service
 from app.services.queue import enqueue_run, ActiveRunExists
+from app.services.sanitize import sanitize_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -336,3 +340,82 @@ async def resume_run(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
             detail="Another run is already active for this source",
         )
     return {"id": run.id, "status": run.status.value}
+
+
+@router.post("/resanitize/{source_id}")
+async def resanitize_source(source_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Re-apply the current sanitizer to a source's stored articles.
+
+    Content sanitization runs at write time, so existing articles are only
+    healed when their source page actually changes. When the *sanitizer* itself
+    improves, this endpoint re-cleans already-stored content without re-scraping.
+
+    For each article whose content changes under the current rules, the previous
+    content is preserved as an ``ArticleVersion`` (audit trail + reversibility,
+    with a computed diff) and the article is updated in place; ``extraction_run_id``
+    on the version is left NULL since no extraction run is involved. Idempotent:
+    articles that are already clean are skipped, so re-running creates no spurious
+    versions. Rejected with 409 while a run is active for the source, so it never
+    races the writer.
+    """
+    source = (
+        await db.execute(
+            select(DocumentationSource).where(DocumentationSource.id == source_id)
+        )
+    ).scalar_one_or_none()
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    active = (
+        await db.execute(
+            select(ExtractionRun.id).where(
+                ExtractionRun.source_id == source_id,
+                ExtractionRun.status.in_(
+                    [RunStatus.PENDING, RunStatus.RUNNING, RunStatus.PAUSED]
+                ),
+            )
+        )
+    ).first()
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="A run is active for this source; re-sanitize when it finishes",
+        )
+
+    articles = (
+        await db.execute(select(Article).where(Article.source_id == source_id))
+    ).scalars().all()
+
+    changed = 0
+    for article in articles:
+        cleaned = sanitize_markdown(article.content_markdown)
+        if cleaned == article.content_markdown:
+            continue
+        new_hash = compute_content_hash(cleaned)
+        # Preserve the pre-sanitize content for audit / side-by-side comparison.
+        db.add(
+            ArticleVersion(
+                article_id=article.id,
+                extraction_run_id=None,
+                content_markdown=article.content_markdown,
+                content_hash=article.content_hash,
+                diff_text=compute_unified_diff(
+                    article.content_markdown, cleaned,
+                    from_label="pre-sanitize", to_label="sanitized",
+                ),
+            )
+        )
+        article.content_markdown = cleaned
+        article.content_hash = new_hash
+        article.content_size_bytes = len(cleaned.encode("utf-8"))
+        article.estimated_tokens = len(cleaned) // 4
+        changed += 1
+
+    await db.commit()
+    total = len(articles)
+    return {
+        "source_id": source_id,
+        "total": total,
+        "changed": changed,
+        "unchanged": total - changed,
+    }
