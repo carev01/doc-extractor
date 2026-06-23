@@ -18,6 +18,7 @@ import type {
   ExportRequest,
   ExportJobCreated,
   ExportJobStatus,
+  ExportJobItem,
   ExportListResponse,
   ArticleVersionList,
   ArticleVersionDetail,
@@ -232,6 +233,20 @@ export function getZipDownloadUrl(exportId: string): string {
 export async function listExports(): Promise<ExportListResponse> {
   const { data } = await api.get<ExportListResponse>("/export/list");
   return data;
+}
+
+/** List export jobs (the export queue) with names, for the Jobs view. */
+export async function listExportJobs(
+  status?: string,
+  limit?: number
+): Promise<{ jobs: ExportJobItem[] }> {
+  const { data } = await api.get("/export/jobs", { params: { status, limit } });
+  return data;
+}
+
+/** Cancel a queued export job. */
+export async function cancelExportJob(jobId: string): Promise<void> {
+  await api.post(`/export/jobs/${jobId}/cancel`);
 }
 
 /** Resolve a served /media image path to an absolute backend URL. */
