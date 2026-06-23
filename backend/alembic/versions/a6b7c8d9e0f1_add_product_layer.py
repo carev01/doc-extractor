@@ -51,18 +51,21 @@ def upgrade() -> None:
     )
 
     # 3. Backfill: one product per source, carrying the source's vendor + name.
-    #    UUIDs are passed as text with explicit ::uuid casts so this works the
-    #    same regardless of the DBAPI's uuid adapter.
+    #    UUIDs are passed as text and cast with CAST(:x AS uuid). NOTE: the
+    #    Postgres ``:x::uuid`` shorthand must NOT be used here — SQLAlchemy's
+    #    text() does not recognise a bind param immediately followed by ``::``,
+    #    so it would be left literal and fail. CAST(...) keeps the param distinct.
     conn = op.get_bind()
     sources = conn.execute(
         sa.text("SELECT id::text AS id, vendor_id::text AS vid, name FROM documentation_sources")
     ).fetchall()
     ins = sa.text(
         "INSERT INTO products (id, vendor_id, name, created_at, updated_at) "
-        "VALUES (:id::uuid, :vid::uuid, :name, now(), now())"
+        "VALUES (CAST(:id AS uuid), CAST(:vid AS uuid), :name, now(), now())"
     )
     upd = sa.text(
-        "UPDATE documentation_sources SET product_id = :pid::uuid WHERE id = :sid::uuid"
+        "UPDATE documentation_sources SET product_id = CAST(:pid AS uuid) "
+        "WHERE id = CAST(:sid AS uuid)"
     )
     for s in sources:
         pid = str(uuid.uuid4())
