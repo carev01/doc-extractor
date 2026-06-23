@@ -249,6 +249,43 @@ export default async function ({ page, context }) {
 """
 
 
+# Browserless /function that fully expands a shadcn/ui + radix Collapsible
+# sidebar (used by docs.cohesity.com) and returns its HTML. Each guide/section is
+# a radix Collapsible whose content (child <ul data-slot="sidebar-menu">) is NOT
+# mounted in the DOM until its trigger is clicked, so a single render exposes only
+# the top-level guides (observed: 74 guides → 10 links). We load the page once,
+# then repeatedly click every collapsed trigger
+# (button[data-slot="collapsible-trigger"][aria-expanded="false"]) — each click
+# mounts that node's children, which may contain further collapsed triggers —
+# until none remain. In-page el.click() (not page.click) so below-the-fold
+# toggles fire. The round cap bounds by tree depth, not breadth.
+_COHESITY_EXPAND_CODE = r"""
+export default async function ({ page, context }) {
+  const { url } = context;
+  await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+  await page.waitForSelector("[data-slot='sidebar-inner']", { timeout: 30000 });
+  let rounds = 0;
+  while (rounds++ < 120) {
+    const clicked = await page.evaluate(() => {
+      const btns = Array.from(
+        document.querySelectorAll("button[data-slot='collapsible-trigger']")
+      ).filter(b => b.getAttribute('aria-expanded') === 'false');
+      btns.forEach(b => { try { b.scrollIntoView({ block: 'center' }); b.click(); } catch (e) {} });
+      return btns.length;
+    });
+    if (clicked === 0) break;
+    // Let the expanded node mount its child <ul> (and any nested triggers).
+    await new Promise(r => setTimeout(r, 400));
+  }
+  const html = await page.evaluate(() => {
+    const el = document.querySelector("[data-slot='sidebar-inner']");
+    return el ? el.outerHTML : '';
+  });
+  return { data: { html }, type: 'application/json' };
+}
+"""
+
+
 class BrowserlessError(Exception):
     """Raised when Browserless is unreachable or returns an unusable response."""
 
@@ -378,6 +415,23 @@ class BrowserlessClient:
         timeout_ms = settings.browserless_toc_timeout_ms
         data = await self._post(
             _DOCUSAURUS_EXPAND_CODE,
+            {"url": target_url},
+            target_url, client,
+            session_timeout_ms=timeout_ms,
+            http_timeout_s=timeout_ms / 1000 + 30,
+        )
+        return data.get("html", "")
+
+    async def expand_collapsible_sidebar(self, target_url: str,
+                                         client: httpx.AsyncClient | None = None) -> str:
+        """Fully expand a shadcn/ui + radix Collapsible sidebar (docs.cohesity.com),
+        clicking every collapsed ``collapsible-trigger`` until the whole tree is
+        mounted, and return the ``[data-slot='sidebar-inner']`` outerHTML. Raises
+        BrowserlessError. Uses the long TOC session timeout (deep tree → many
+        click+mount rounds)."""
+        timeout_ms = settings.browserless_toc_timeout_ms
+        data = await self._post(
+            _COHESITY_EXPAND_CODE,
             {"url": target_url},
             target_url, client,
             session_timeout_ms=timeout_ms,
