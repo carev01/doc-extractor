@@ -1596,3 +1596,67 @@ a.btn-primary {
     transition-duration: 0.001ms !important;
   }
 }
+
+/* ── Jobs view ───────────────────────────────────────────────────────────── */
+.jobs-view h2 {
+  margin-bottom: 0.5rem;
+}
+.jobs-section {
+  margin: 1.4rem 0;
+}
+.jobs-section h3 {
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--line-soft);
+  padding-bottom: 0.3rem;
+  margin-bottom: 0.6rem;
+}
+.jobs-view .item-list li.non-clickable {
+  cursor: default;
+}
+.jobs-view .item-list li.non-clickable:hover {
+  background: var(--ink-1);
+}
+
+/* Run detail stat grid */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.6rem 1.2rem;
+  margin: 0.8rem 0;
+}
+.stat-grid > div {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.7rem;
+  background: var(--ink-1);
+}
+.stat-grid dt {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+.stat-grid dd {
+  margin: 0.2rem 0 0;
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  color: var(--text);
+}
+
+/* Raw log viewer */
+.log-box {
+  background: var(--ink-0);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0.8rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-dim);
+  max-height: 60vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

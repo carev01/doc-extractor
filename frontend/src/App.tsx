@@ -3,6 +3,7 @@ import type { Vendor, Product, DocumentationSource } from "./types";
 import VendorList from "./components/VendorList";
 import ProductList from "./components/ProductList";
 import SourceList from "./components/SourceList";
+import JobsView from "./components/JobsView";
 import ExportPanel from "./components/ExportPanel";
 import ChangelogPanel from "./components/ChangelogPanel";
 import DocsBrowser from "./components/DocsBrowser";
@@ -16,7 +17,8 @@ type View =
   | "browse"
   | "export"
   | "changelog"
-  | "schedule";
+  | "schedule"
+  | "jobs";
 const SOURCE_TABS = ["browse", "export", "changelog", "schedule"] as const;
 const SOURCE_TAB_LABELS: Record<string, string> = {
   browse: "Browse",
@@ -109,10 +111,19 @@ export default function App() {
               <button className="active">{selectedSource.name}</button>
             </>
           )}
+          <span className="sep">│</span>
+          <button
+            className={view === "jobs" ? "active" : ""}
+            onClick={() => setView("jobs")}
+          >
+            Jobs
+          </button>
         </nav>
       </header>
 
       <main className="app-main">
+        {view === "jobs" && <JobsView />}
+
         {view === "vendors" && (
           <VendorList
             onSelect={handleSelectVendor}

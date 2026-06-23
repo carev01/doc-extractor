@@ -111,6 +111,9 @@ export interface TOCResponse {
 export interface ExtractionRun {
   id: string;
   source_id: string;
+  source_name?: string;
+  product_name?: string;
+  vendor_name?: string;
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
   trigger?: "manual" | "scheduled";
   current_phase: "toc_discovery" | "content_scraping" | null;
@@ -119,9 +122,30 @@ export interface ExtractionRun {
   articles_total: number;
   articles_updated?: number;
   articles_unchanged?: number;
+  attempts?: number;
   error_message: string | null;
   started_at: string | null;
   completed_at: string | null;
+  heartbeat_at?: string | null;
+}
+
+export interface RunLogs {
+  run_id: string;
+  log_text: string;
+}
+
+export interface ScheduleListItem {
+  source_id: string;
+  source_name: string;
+  product_name: string;
+  vendor_name: string;
+  enabled: boolean;
+  frequency: string;
+  time_of_day: string;
+  cron: string;
+  timezone: string;
+  next_run_at: string | null;
+  last_run_at: string | null;
 }
 
 export interface ExtractionTrigger {
