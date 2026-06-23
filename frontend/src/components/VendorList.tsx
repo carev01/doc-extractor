@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import type { Vendor } from "../types";
-import { listVendors, createVendor, deleteVendor } from "../api/client";
+import { listVendors, createVendor, updateVendor, deleteVendor } from "../api/client";
 
 interface Props {
   onSelect: (vendor: Vendor) => void;
@@ -41,6 +41,17 @@ export default function VendorList({ onSelect, selectedId }: Props) {
       setError(e.response?.data?.detail || "Failed to create vendor");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleRename = async (id: string, current: string) => {
+    const next = prompt("Rename vendor", current);
+    if (next === null || !next.trim() || next.trim() === current) return;
+    try {
+      await updateVendor(id, { name: next.trim() });
+      await fetchVendors();
+    } catch (e: any) {
+      setError(e.response?.data?.detail || "Failed to rename vendor");
     }
   };
 
@@ -90,15 +101,27 @@ export default function VendorList({ onSelect, selectedId }: Props) {
               <strong>{v.name}</strong>
               {v.website && <span className="sub">{v.website}</span>}
             </div>
-            <button
-              className="btn-danger-sm"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleDelete(v.id);
-              }}
-            >
-              ×
-            </button>
+            <div className="item-actions">
+              <button
+                className="btn-secondary-sm"
+                title="Rename"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleRename(v.id, v.name);
+                }}
+              >
+                ✎
+              </button>
+              <button
+                className="btn-danger-sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleDelete(v.id);
+                }}
+              >
+                ×
+              </button>
+            </div>
           </li>
         ))}
         {vendors.length === 0 && (

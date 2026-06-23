@@ -422,6 +422,23 @@ function SourceItem({
           {isExtracting ? "Extracting..." : "Extract"}
         </button>
         <button
+          className="btn-secondary-sm"
+          title="Rename"
+          onClick={async (e) => {
+            e.stopPropagation();
+            const next = prompt("Rename source", source.name);
+            if (next === null || !next.trim() || next.trim() === source.name) return;
+            try {
+              await updateSource(source.id, { name: next.trim() });
+              onSourceChanged();
+            } catch {
+              setItemError("Failed to rename source");
+            }
+          }}
+        >
+          ✎
+        </button>
+        <button
           className="btn-danger-sm"
           onClick={(e) => {
             e.stopPropagation();

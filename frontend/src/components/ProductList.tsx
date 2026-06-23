@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import type { Vendor, Product } from "../types";
-import { listProducts, createProduct, deleteProduct } from "../api/client";
+import { listProducts, createProduct, updateProduct, deleteProduct } from "../api/client";
 
 interface Props {
   vendor: Vendor;
@@ -43,6 +43,17 @@ export default function ProductList({ vendor, onSelect, selectedId }: Props) {
     }
   };
 
+  const handleRename = async (id: string, current: string) => {
+    const next = prompt("Rename product", current);
+    if (next === null || !next.trim() || next.trim() === current) return;
+    try {
+      await updateProduct(id, { name: next.trim() });
+      await fetchProducts();
+    } catch (e: any) {
+      setError(e.response?.data?.detail || "Failed to rename product");
+    }
+  };
+
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this product and all its documentation sources?")) return;
     try {
@@ -82,15 +93,27 @@ export default function ProductList({ vendor, onSelect, selectedId }: Props) {
             <div className="item-info">
               <strong>{p.name}</strong>
             </div>
-            <button
-              className="btn-danger-sm"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleDelete(p.id);
-              }}
-            >
-              ×
-            </button>
+            <div className="item-actions">
+              <button
+                className="btn-secondary-sm"
+                title="Rename"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleRename(p.id, p.name);
+                }}
+              >
+                ✎
+              </button>
+              <button
+                className="btn-danger-sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleDelete(p.id);
+                }}
+              >
+                ×
+              </button>
+            </div>
           </li>
         ))}
         {products.length === 0 && (
