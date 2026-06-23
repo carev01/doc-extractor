@@ -271,7 +271,7 @@ stretch, **pause/resume**).
 
 ## Backfill: re-sanitize already-stored articles
 
-**Status:** ✅ DONE (deployed) · **Priority:** Medium · **Filed:** 2026-06-19 · **Done:** 2026-06-23
+**Status:** ✅ DONE (PR #47 merged; **pending deploy** — held for active Cohesity run) · **Priority:** Medium · **Filed:** 2026-06-19 · **Done:** 2026-06-23
 
 > Shipped **Option 1** — `POST /api/extraction/resanitize/{source_id}`. Loads a
 > source's stored articles, re-applies `sanitize_markdown`, and for each article
