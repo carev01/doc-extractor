@@ -7,7 +7,17 @@ promoted to a spec/plan when picked up.
 
 ## Product layer: group documentation URLs under a product (Vendor → Product → Source)
 
-**Status:** Open · **Priority:** High (data model) · **Filed:** 2026-06-23
+**Status:** ✅ DONE (PRs #37/#38; migration hotfixes #39/#40; deployed) · **Filed:** 2026-06-23
+
+> **Done 2026-06-23:** `products` table + `product_id` on `documentation_sources`
+> (migration `a6b7c8d9e0f1`); one-product-per-source backfill (non-destructive,
+> `product_id` NOT NULL, `vendor_id` dropped — vendor reached via product).
+> `/api/products` CRUD; `create/list/update(move) sources` by product;
+> `/articles/{id}` returns the real product. UI: Vendor → Product → Source.
+> Decisions taken: one product per source; `product_id` mandatory; per-source
+> scope for v1 (product-level aggregate export/browse is a future follow-up).
+> Two migration bugs caught at deploy (wrong parent revision; `:x::uuid` bind);
+> both fixed, DB never corrupted (transactional).
 
 ### Problem
 
@@ -67,7 +77,11 @@ TOC, runs, and versions). Browse / export / changelog can eventually operate at
 
 ## Enable renaming vendors, products, and documentation (bookshelf) names
 
-**Status:** Open · **Priority:** Medium · **Filed:** 2026-06-23
+**Status:** ✅ DONE (PR #41; deployed) · **Filed:** 2026-06-23
+
+> **Done 2026-06-23:** inline "✎ Rename" affordance on every vendor, product,
+> and source list item, wired to the existing `PATCH …{name}` endpoints
+> (product rename landed with the product-layer work). Frontend-only.
 
 ### Problem
 
@@ -113,7 +127,22 @@ validation and conflict handling.
 
 ## Dedicated task-monitoring view: progress, logs, pause/cancel
 
-**Status:** Open · **Priority:** Medium-High · **Filed:** 2026-06-23
+**Status:** ✅ DONE (PRs #42/#43/#45; deployed) · **Filed:** 2026-06-23
+
+> **Done 2026-06-23:** unified **Jobs** view (top-level nav) — Active/queued/
+> paused, Scheduled, Exports, and Recent sections, polled live. Per-run stats
+> (progress %, elapsed, processed/total, phase) + a **Logs** tab backed by
+> `extraction_runs.log_text` (worker captures logs, tail-capped at ~200KB).
+> Enriched `/api/extraction/runs` (+ `/{id}/logs`), `/api/schedules`,
+> `/api/export/jobs`. **Cancel/pause/resume** via a cooperative `control` flag +
+> `RunStatus.PAUSED` (migrations `b7c8d9e0f1a2`, `c8d9e0f1a2b3`): cancel discards
+> the checkpoint, pause keeps it, resume re-queues and continues.
+>
+> **v1 scope notes / follow-ups:** cancel/pause is honored **between content
+> batches**, not mid-batch, and the TOC-discovery phase isn't interruptible;
+> exports support **cancel-while-queued** only (one-shot generation isn't
+> pausable); export jobs are listed but have no per-job progress; logs are
+> captured **going forward** (runs completed before the deploy have none).
 
 ### Problem
 
