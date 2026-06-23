@@ -105,6 +105,18 @@ class FirecrawlUnavailableError(Exception):
     pass
 
 
+class RunControlSignal(Exception):
+    """Raised inside extract_source when a cooperative control signal is seen.
+
+    ``action`` is "cancel" or "pause". Caught by extract_source to stop cleanly
+    (cancel discards the resume checkpoint; pause keeps it) — not a failure.
+    """
+
+    def __init__(self, action: str) -> None:
+        super().__init__(action)
+        self.action = action
+
+
 class FirecrawlService:
     """Handles documentation extraction via local Firecrawl instance."""
 
@@ -1123,6 +1135,16 @@ class FirecrawlService:
                     run.articles_extracted = resumed
                     await db.commit()
                 for i in range(0, len(pending), self.MAX_BATCH_URLS):
+                    # Cooperative cancel/pause: the API sets run.control; we
+                    # observe it (fresh read; committed by the API on another
+                    # session) at each batch boundary and stop cleanly.
+                    ctrl = (
+                        await db.execute(
+                            select(ExtractionRun.control).where(ExtractionRun.id == run.id)
+                        )
+                    ).scalar_one_or_none()
+                    if ctrl:
+                        raise RunControlSignal(ctrl)
                     chunk = pending[i:i + self.MAX_BATCH_URLS]
                     chunk_map = {u: url_to_entry[u] for u in chunk}
                     job_id = await self._submit_batch(
@@ -1148,6 +1170,25 @@ class FirecrawlService:
             source.status = SourceStatus.COMPLETED
             source.last_extracted_at = datetime.now(timezone.utc)
 
+            await db.flush()
+            return run
+
+        except RunControlSignal as sig:
+            now = datetime.now(timezone.utc)
+            run.control = None  # consume the signal
+            if sig.action == "pause":
+                # Keep the resume checkpoint so the next claim continues.
+                logger.info("Run %s paused at user request", run.id)
+                run.status = RunStatus.PAUSED
+                run.completed_at = None
+            else:  # cancel
+                logger.info("Run %s cancelled at user request", run.id)
+                run.status = RunStatus.CANCELLED
+                run.completed_at = now
+                await checkpoint.clear()  # discard resume state
+            # Either way, the source is no longer actively extracting.
+            source.status = SourceStatus.PENDING
+            source.error_message = None
             await db.flush()
             return run
 

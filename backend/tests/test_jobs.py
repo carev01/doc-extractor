@@ -166,3 +166,70 @@ async def test_cannot_cancel_running_export_job(client):
 
     resp = await c.post(f"/api/export/jobs/{jid}/cancel")
     assert resp.status_code == 409
+
+
+# ── Run cancel / pause / resume ──
+
+async def _run(factory, sid, status):
+    async with factory() as s:
+        run = ExtractionRun(source_id=sid, status=status)
+        s.add(run); await s.commit()
+        return run.id
+
+
+async def test_cancel_pending_run_ends_immediately(client):
+    c, factory = client
+    sid = await _source(factory)
+    rid = await _run(factory, sid, RunStatus.PENDING)
+    resp = await c.post(f"/api/extraction/runs/{rid}/cancel")
+    assert resp.status_code == 200 and resp.json()["status"] == "cancelled"
+
+
+async def test_cancel_running_run_sets_control_flag(client):
+    c, factory = client
+    sid = await _source(factory)
+    rid = await _run(factory, sid, RunStatus.RUNNING)
+    resp = await c.post(f"/api/extraction/runs/{rid}/cancel")
+    assert resp.status_code == 200
+    # Still RUNNING; worker honours the flag at the next batch boundary.
+    body = (await c.get(f"/api/extraction/runs/{rid}")).json()
+    assert body["status"] == "running" and body["control"] == "cancel"
+
+
+async def test_pause_running_then_resume(client):
+    c, factory = client
+    sid = await _source(factory)
+    rid = await _run(factory, sid, RunStatus.RUNNING)
+    # pause → control flag set
+    assert (await c.post(f"/api/extraction/runs/{rid}/pause")).status_code == 200
+    assert (await c.get(f"/api/extraction/runs/{rid}")).json()["control"] == "pause"
+    # simulate the worker having paused the run
+    async with factory() as s:
+        run = await s.get(ExtractionRun, rid)
+        run.status = RunStatus.PAUSED; run.control = None
+        await s.commit()
+    # resume → back to pending for re-claim
+    resp = await c.post(f"/api/extraction/runs/{rid}/resume")
+    assert resp.status_code == 200 and resp.json()["status"] == "pending"
+
+
+async def test_pause_pending_run_holds_it(client):
+    c, factory = client
+    sid = await _source(factory)
+    rid = await _run(factory, sid, RunStatus.PENDING)
+    resp = await c.post(f"/api/extraction/runs/{rid}/pause")
+    assert resp.status_code == 200 and resp.json()["status"] == "paused"
+
+
+async def test_resume_non_paused_is_409(client):
+    c, factory = client
+    sid = await _source(factory)
+    rid = await _run(factory, sid, RunStatus.RUNNING)
+    assert (await c.post(f"/api/extraction/runs/{rid}/resume")).status_code == 409
+
+
+async def test_cancel_completed_run_is_409(client):
+    c, factory = client
+    sid = await _source(factory)
+    rid = await _run(factory, sid, RunStatus.COMPLETED)
+    assert (await c.post(f"/api/extraction/runs/{rid}/cancel")).status_code == 409

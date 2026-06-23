@@ -114,7 +114,8 @@ export interface ExtractionRun {
   source_name?: string;
   product_name?: string;
   vendor_name?: string;
-  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  status: "pending" | "running" | "completed" | "failed" | "cancelled" | "paused";
+  control?: "cancel" | "pause" | null;
   trigger?: "manual" | "scheduled";
   current_phase: "toc_discovery" | "content_scraping" | null;
   firecrawl_job_id: string | null;

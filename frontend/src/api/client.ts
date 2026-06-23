@@ -173,6 +173,18 @@ export async function getRunLogs(runId: string): Promise<RunLogs> {
   return res.data;
 }
 
+export async function cancelRun(runId: string): Promise<void> {
+  await api.post(`/extraction/runs/${runId}/cancel`);
+}
+
+export async function pauseRun(runId: string): Promise<void> {
+  await api.post(`/extraction/runs/${runId}/pause`);
+}
+
+export async function resumeRun(runId: string): Promise<void> {
+  await api.post(`/extraction/runs/${runId}/resume`);
+}
+
 export async function listSchedules(
   enabledOnly = false
 ): Promise<{ schedules: ScheduleListItem[] }> {

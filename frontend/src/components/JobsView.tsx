@@ -6,6 +6,9 @@ import {
   getRunLogs,
   listExportJobs,
   cancelExportJob,
+  cancelRun,
+  pauseRun,
+  resumeRun,
 } from "../api/client";
 
 const STATUS_COLORS: Record<string, string> = {
@@ -14,6 +17,7 @@ const STATUS_COLORS: Record<string, string> = {
   completed: "#58c08a",
   failed: "#e0685f",
   cancelled: "#6f8087",
+  paused: "#5a7fa3",
 };
 
 function statusBadge(status: string) {
@@ -50,7 +54,7 @@ function path(run: ExtractionRun): string {
     .join(" › ");
 }
 
-const ACTIVE = new Set(["running", "pending"]);
+const ACTIVE = new Set(["running", "pending", "paused"]);
 
 export default function JobsView() {
   const [runs, setRuns] = useState<ExtractionRun[]>([]);
@@ -83,6 +87,15 @@ export default function JobsView() {
     }
   };
 
+  const runAction = async (fn: (id: string) => Promise<void>, id: string, label: string) => {
+    try {
+      await fn(id);
+      await refresh();
+    } catch (e: any) {
+      setError(e.response?.data?.detail || `Failed to ${label} run`);
+    }
+  };
+
   useEffect(() => {
     refresh();
     const id = setInterval(refresh, 4000);
@@ -104,7 +117,7 @@ export default function JobsView() {
       {error && <div className="error">{error}</div>}
 
       <section className="jobs-section">
-        <h3>Active &amp; queued ({active.length})</h3>
+        <h3>Active, queued &amp; paused ({active.length})</h3>
         {active.length === 0 && <p className="empty">Nothing running.</p>}
         <ul className="item-list">
           {active.map((run) => {
@@ -115,6 +128,11 @@ export default function JobsView() {
                   <strong>{path(run)}</strong>
                   <div className="item-meta">
                     {statusBadge(run.status)}
+                    {run.control && (
+                      <span className="sub" style={{ color: "var(--amber)" }}>
+                        {run.control === "cancel" ? "cancelling…" : "pausing…"}
+                      </span>
+                    )}
                     <span className="sub">{run.current_phase || "—"}</span>
                     <span className="sub">{run.trigger}</span>
                     <span className="sub">elapsed {fmtDuration(run.started_at, null)}</span>
@@ -128,6 +146,28 @@ export default function JobsView() {
                       <div className="progress-fill" style={{ width: `${pct}%` }} />
                     </div>
                   )}
+                </div>
+                <div className="item-actions" onClick={(e) => e.stopPropagation()}>
+                  {run.status === "paused" ? (
+                    <button className="btn-primary-sm" onClick={() => runAction(resumeRun, run.id, "resume")}>
+                      Resume
+                    </button>
+                  ) : (
+                    <button
+                      className="btn-secondary-sm"
+                      disabled={!!run.control}
+                      onClick={() => runAction(pauseRun, run.id, "pause")}
+                    >
+                      Pause
+                    </button>
+                  )}
+                  <button
+                    className="btn-danger-sm"
+                    disabled={run.control === "cancel"}
+                    onClick={() => runAction(cancelRun, run.id, "cancel")}
+                  >
+                    Cancel
+                  </button>
                 </div>
               </li>
             );
