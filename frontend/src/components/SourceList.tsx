@@ -32,6 +32,7 @@ const PLATFORM_OPTIONS: { value: string; label: string }[] = [
   { value: "freshdesk", label: "Freshdesk" },
   { value: "confluence", label: "Confluence" },
   { value: "salesforce", label: "Salesforce" },
+  { value: "dell", label: "Dell Support Manuals" },
   { value: "generic", label: "Generic (sitemap)" },
   { value: "llm", label: "LLM fallback" },
 ];

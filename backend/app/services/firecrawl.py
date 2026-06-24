@@ -22,6 +22,7 @@ from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.image import ArticleImage
 from app.models.source import DocumentationSource, SourceStatus
 from app.models.toc import TOCEntry
+from app.services.blockpage import is_block_page
 from app.services.profiles import registry as profile_registry
 from app.services.profiles.detector import detect_platform
 import app.services.profiles.llm as llm_mod
@@ -32,6 +33,14 @@ from app.core.database import async_session
 
 # Default content scrape options when no profile config is supplied (legacy #doc).
 _LEGACY_CONTENT = {"includeTags": ["#doc"], "onlyMainContent": False, "waitFor": 1500}
+
+# Recorded on a run's error_message when a scraped page is a bot-protection /
+# WAF block page (so it isn't stored). If nothing else is persisted, the run is
+# failed with this message rather than reported as an empty success.
+_BLOCKED_MSG = (
+    "Bot protection (e.g. Akamai/Cloudflare) blocked one or more pages; those "
+    "pages were not stored. The site likely needs a warm-up/stealth profile."
+)
 
 # Browser User-Agent so bot-gated sites (e.g. Confluence Cloud) render real
 # content instead of a JS "unsupported browser" shell.
@@ -461,6 +470,24 @@ class FirecrawlService:
             logger.warning("Empty content from %s — skipping", url)
             return "empty"
 
+        # Reject bot-protection / WAF challenge pages (Akamai "Access Denied",
+        # Cloudflare interstitials, …). They're non-empty, so without this they'd
+        # be stored as a real article — silently corrupting the source. Record the
+        # condition on the run so a fully-blocked extraction fails loudly (see the
+        # completion path) instead of reporting COMPLETED with junk.
+        if is_block_page(markdown_content):
+            logger.warning(
+                "Bot-protection/interstitial page from %s (len=%d) — not storing",
+                url, len(markdown_content),
+            )
+            await db.execute(
+                update(ExtractionRun)
+                .where(ExtractionRun.id == run_id)
+                .values(error_message=_BLOCKED_MSG)
+            )
+            await db.commit()
+            return "blocked"
+
         # Strip recurring site chrome (feedback widgets, back-to-top anchors,
         # copyright footers, …) before hashing/persisting so stored content is
         # clean and boilerplate churn (e.g. a yearly copyright bump) doesn't
@@ -727,9 +754,16 @@ class FirecrawlService:
         source_id: uuid.UUID,
         run_id: uuid.UUID,
         url_to_entry: dict[str, dict],
+        content_spec: dict | None = None,
     ) -> None:
-        """Content scrape for shadow-DOM platforms: render each article in
-        Browserless (real Chrome) and persist the extracted body.
+        """Content scrape for Browserless-rendered platforms: render each article
+        in Browserless (real Chrome) and persist the extracted body.
+
+        Two render modes:
+        * Default (e.g. Salesforce shadow DOM): ``browserless_client.render`` walks
+          light + shadow DOM for ``{contentHtml, contentText, title}``.
+        * ``content_spec`` given (e.g. Dell behind Akamai): ``warmup_render`` does a
+          warm-up navigation then takes the innerHTML of ``content_spec['selector']``.
 
         Articles are rendered in bounded-concurrency chunks (Browserless calls
         are network-bound and slow — a full SPA render each), but persisted
@@ -745,10 +779,21 @@ class FirecrawlService:
         total = len(items)
         completed = 0
         chunk_size = max(1, settings.browserless_concurrency)
-        client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0))
+        client = httpx.AsyncClient(timeout=httpx.Timeout(160.0, connect=10.0))
 
         async def _render(url: str):
             try:
+                if content_spec:
+                    data = await browserless_client.warmup_render(
+                        url, selector=content_spec["selector"],
+                        warmup_url=content_spec.get("warmup_url"), client=client,
+                    )
+                    # Normalise to the shape the persist loop expects.
+                    return {
+                        "contentHtml": (data or {}).get("innerHtml", ""),
+                        "contentText": "",
+                        "title": (data or {}).get("title", ""),
+                    }
                 return await browserless_client.render(url, client=client)
             except BrowserlessError as exc:
                 logger.warning("Browserless render failed for %s: %s", url, exc)
@@ -1110,9 +1155,15 @@ class FirecrawlService:
             url_to_entry = {e["url"]: e for e in toc_entries if e.get("url")}
 
             if getattr(profile, "render_engine", None) == "browserless":
-                # Shadow-DOM platforms (e.g. Salesforce Help): Firecrawl can't
-                # serialise the content, so render each article in Browserless.
-                await self._scrape_via_browserless(db, source_id, run.id, url_to_entry)
+                # Browserless-rendered platforms: Firecrawl can't get the content
+                # (shadow DOM for Salesforce; Akamai block for Dell), so render
+                # each article in Browserless. A profile may supply a content_spec
+                # (selector + warm-up) for the simple light-DOM extraction path.
+                spec_fn = getattr(profile, "browserless_content_spec", None)
+                content_spec = spec_fn() if callable(spec_fn) else None
+                await self._scrape_via_browserless(
+                    db, source_id, run.id, url_to_entry, content_spec=content_spec
+                )
             else:
                 # Submit in capped chunks (≤ MAX_BATCH_URLS) processed
                 # sequentially, so a huge doc set doesn't overwhelm Firecrawl
@@ -1165,10 +1216,36 @@ class FirecrawlService:
             # Whole run succeeded — drop the resume checkpoint (TOC + content).
             await checkpoint.clear()
 
+            now = datetime.now(timezone.utc)
+
+            # If bot protection blocked every page (nothing persisted), fail
+            # loudly instead of reporting a misleading COMPLETED/0. Counters are
+            # bumped via SQL UPDATE in process_article_result, so re-read them
+            # rather than trusting the stale in-memory run.
+            extracted, updated, unchanged, err = (
+                await db.execute(
+                    select(
+                        ExtractionRun.articles_extracted,
+                        ExtractionRun.articles_updated,
+                        ExtractionRun.articles_unchanged,
+                        ExtractionRun.error_message,
+                    ).where(ExtractionRun.id == run.id)
+                )
+            ).one()
+            persisted = (extracted or 0) + (updated or 0) + (unchanged or 0)
+            if persisted == 0 and err == _BLOCKED_MSG:
+                run.status = RunStatus.FAILED
+                run.error_message = err
+                run.completed_at = now
+                source.status = SourceStatus.FAILED
+                source.last_extracted_at = now
+                await db.flush()
+                return run
+
             run.status = RunStatus.COMPLETED
-            run.completed_at = datetime.now(timezone.utc)
+            run.completed_at = now
             source.status = SourceStatus.COMPLETED
-            source.last_extracted_at = datetime.now(timezone.utc)
+            source.last_extracted_at = now
 
             await db.flush()
             return run
