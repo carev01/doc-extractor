@@ -719,7 +719,8 @@ async def test_same_status_persists_when_article_missing(client):
             await s.execute(select(Article).where(Article.source_url == url))
         ).scalar_one_or_none()
     assert row is not None, "article was silently dropped on change_status='same'"
-    assert row.content_markdown == "# Athena\nreal athena content"
+    # sanitize_markdown normalises a trailing newline onto stored content.
+    assert row.content_markdown.rstrip() == "# Athena\nreal athena content"
     assert row.toc_entry_id == toc_id
     assert outcome == "new"
 
@@ -786,10 +787,14 @@ async def test_reconcile_removals_stamps_clears_and_pins(client):
     g_removed2, g_run2, _ = await fetch(gone_id)
     assert g_removed2 == g_removed1 and g_run2 == run1_id
 
-    # 'gone' is re-added (re-linked to a toc entry), then reconcile clears it.
+    # 'gone' is re-added to the rebuilt TOC (a new entry with ITS url) — reconcile
+    # re-links by URL and clears the removal flag. (Manually pointing it at a
+    # different page's TOC entry would be re-NULLed, since relink is by url.)
     async with TestSession() as s:
-        a = (await s.execute(select(Article).where(Article.id == gone_id))).scalar_one()
-        a.toc_entry_id = toc_id
+        s.add(TOCEntry(
+            source_id=source_id, title="Gone", url="https://rm.com/g",
+            level=0, sort_order=1, is_article=True,
+        ))
         await s.commit()
     async with TestSession() as s:
         await firecrawl_service._reconcile_removals(s, source_id, run2_id)

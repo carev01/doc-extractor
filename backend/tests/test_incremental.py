@@ -20,6 +20,7 @@ from app.core.config import settings
 from app.core.database import Base
 from app.models import (
     Vendor,
+    Product,
     DocumentationSource,
     Article,
     ArticleVersion,
