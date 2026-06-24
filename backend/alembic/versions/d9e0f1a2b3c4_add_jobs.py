@@ -18,7 +18,7 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import ENUM, UUID
 
 revision: str = "d9e0f1a2b3c4"
 down_revision: Union[str, Sequence[str], None] = "c8d9e0f1a2b3"
@@ -46,9 +46,12 @@ def upgrade() -> None:
     )
 
     # 2. job_runs table.
-    job_run_status = sa.Enum(
+    # create_type=False so create_table() below does NOT also emit CREATE TYPE
+    # (which would be a second, un-guarded creation and fail). We create the type
+    # once here with checkfirst=True, which is idempotent across retries.
+    job_run_status = ENUM(
         "PENDING", "RUNNING", "COMPLETED", "PARTIAL", "FAILED", "CANCELLED",
-        name="jobrunstatus",
+        name="jobrunstatus", create_type=False,
     )
     job_run_status.create(op.get_bind(), checkfirst=True)
     op.create_table(
