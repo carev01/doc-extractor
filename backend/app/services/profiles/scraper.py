@@ -73,6 +73,17 @@ class Scraper:
         from app.services.browserless import browserless_client
         return await browserless_client.expand_collapsible_sidebar(url)
 
+    async def warmup_render(self, url: str, selector: str | None = None,
+                            warmup_url: str | None = None) -> dict:
+        """Render via Browserless after a warm-up navigation (to clear a WAF such
+        as Akamai), returning ``{outerHtml, innerHtml, title}`` for ``selector`` —
+        used by the Dell profile for both its CSS-collapsed TOC and its article
+        bodies, neither reachable via a cold Firecrawl scrape."""
+        from app.services.browserless import browserless_client
+        return await browserless_client.warmup_render(
+            url, selector=selector, warmup_url=warmup_url
+        )
+
 
 class FakeScraper:
     """Test double: serves canned HTML per URL and a canned URL list."""
@@ -88,6 +99,7 @@ class FakeScraper:
         gitbook_sidebars_by_url: dict[str, str] | None = None,
         docusaurus_sidebar_by_url: dict[str, str] | None = None,
         collapsible_sidebar_by_url: dict[str, str] | None = None,
+        warmup_render_by_url: dict[str, dict] | None = None,
         checkpoint=None,
     ):
         self._h = html_by_url
@@ -99,6 +111,7 @@ class FakeScraper:
         self._gitbook = gitbook_sidebars_by_url or {}
         self._docusaurus = docusaurus_sidebar_by_url or {}
         self._collapsible = collapsible_sidebar_by_url or {}
+        self._warmup = warmup_render_by_url or {}
         self.checkpoint = checkpoint
 
     async def get_html(self, url: str, wait_ms: int = 1500) -> str:
@@ -137,3 +150,10 @@ class FakeScraper:
         if url not in self._collapsible:
             raise BrowserlessError(f"no collapsible sidebar fixture for {url}")
         return self._collapsible[url]
+
+    async def warmup_render(self, url: str, selector: str | None = None,
+                            warmup_url: str | None = None) -> dict:
+        from app.services.browserless import BrowserlessError
+        if url not in self._warmup:
+            raise BrowserlessError(f"no warmup_render fixture for {url}")
+        return self._warmup[url]

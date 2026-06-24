@@ -286,6 +286,46 @@ export default async function ({ page, context }) {
 """
 
 
+# Browserless /function that performs a **warm-up navigation** before fetching
+# the target, defeating WAFs that reject a cold hit (e.g. Dell behind Akamai
+# returns "Access Denied" on a direct scrape). It sets a realistic desktop UA,
+# visits ``warmupUrl`` first so the WAF's JS sets its clearance cookies
+# (``_abck``/``bm_sz``/``ak_bmsc`` for Akamai) in this session, then navigates to
+# the target, waits for ``selector`` to appear, and returns that element's outer
+# and inner HTML plus the page <h1>. ``selector`` serves double duty: the TOC
+# build wants the nav container's outerHTML; the content scrape wants the article
+# container's innerHTML. Language is controlled by the caller via the URL's
+# ``lang=`` query param (geo may redirect the path/chrome, but the article body
+# honours the param).
+_WARMUP_RENDER_CODE = r"""
+export default async function ({ page, context }) {
+  const { url, warmupUrl, selector, waitMs } = context;
+  const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  await page.setUserAgent(ua);
+  await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
+  if (warmupUrl) {
+    try { await page.goto(warmupUrl, { waitUntil: 'networkidle2', timeout: 60000 }); } catch (e) {}
+    await new Promise(r => setTimeout(r, 4000));
+  }
+  await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+  if (selector) {
+    try { await page.waitForSelector(selector, { timeout: 30000 }); } catch (e) {}
+  }
+  await new Promise(r => setTimeout(r, waitMs || 2000));
+  const out = await page.evaluate((s) => {
+    const el = s ? document.querySelector(s) : null;
+    const h1 = document.querySelector('h1');
+    return {
+      outerHtml: el ? el.outerHTML : '',
+      innerHtml: el ? el.innerHTML : '',
+      title: h1 ? (h1.textContent || '').trim() : '',
+    };
+  }, selector || null);
+  return { data: out, type: 'application/json' };
+}
+"""
+
+
 class BrowserlessError(Exception):
     """Raised when Browserless is unreachable or returns an unusable response."""
 
@@ -438,6 +478,22 @@ class BrowserlessClient:
             http_timeout_s=timeout_ms / 1000 + 30,
         )
         return data.get("html", "")
+
+    async def warmup_render(self, target_url: str, selector: str | None = None,
+                            warmup_url: str | None = None, wait_ms: int | None = None,
+                            client: httpx.AsyncClient | None = None) -> dict:
+        """Render ``target_url`` after a warm-up navigation to ``warmup_url`` (to
+        clear a WAF like Akamai), and return ``{outerHtml, innerHtml, title}`` for
+        ``selector``. Raises BrowserlessError. Used by the Dell profile for both
+        TOC (outerHtml of the nav container) and content (innerHtml of the article
+        container)."""
+        return await self._post(
+            _WARMUP_RENDER_CODE,
+            {"url": target_url, "warmupUrl": warmup_url, "selector": selector,
+             "waitMs": wait_ms if wait_ms is not None else 2000},
+            target_url, client,
+            session_timeout_ms=120000, http_timeout_s=150,
+        )
 
     async def gitbook_sidebars(self, urls: list[str],
                                client: httpx.AsyncClient | None = None) -> dict[str, str]:
