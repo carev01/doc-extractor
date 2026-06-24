@@ -35,13 +35,16 @@ async def sessions():
 
 
 async def _source(db, job_id=None) -> uuid.UUID:
-    v = Vendor(name="V")
+    # Unique vendor/product names per call — vendors.name is UNIQUE, and a test
+    # may create several sources in one DB.
+    sfx = uuid.uuid4().hex[:8]
+    v = Vendor(name=f"V-{sfx}")
     db.add(v)
     await db.flush()
-    prod = Product(vendor_id=v.id, name="P")
+    prod = Product(vendor_id=v.id, name=f"P-{sfx}")
     db.add(prod)
     await db.flush()
-    s = DocumentationSource(product_id=prod.id, name="S", base_url="http://x", job_id=job_id)
+    s = DocumentationSource(product_id=prod.id, name=f"S-{sfx}", base_url=f"http://x/{sfx}", job_id=job_id)
     db.add(s)
     await db.commit()
     await db.refresh(s)

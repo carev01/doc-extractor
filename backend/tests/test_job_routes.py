@@ -47,10 +47,13 @@ async def client():
 
 
 async def _source(factory, name="Docs") -> uuid.UUID:
+    # Unique vendor/product per call (vendors.name is UNIQUE; some tests create
+    # several sources). Vendor name stays "Acme"-prefixed for the join assertion.
+    sfx = uuid.uuid4().hex[:8]
     async with factory() as s:
-        v = Vendor(name="Acme"); s.add(v); await s.flush()
-        p = Product(vendor_id=v.id, name="Cloud"); s.add(p); await s.flush()
-        src = DocumentationSource(product_id=p.id, name=name, base_url="https://d/" + name)
+        v = Vendor(name=f"Acme-{sfx}"); s.add(v); await s.flush()
+        p = Product(vendor_id=v.id, name=f"Cloud-{sfx}"); s.add(p); await s.flush()
+        src = DocumentationSource(product_id=p.id, name=name, base_url=f"https://d/{sfx}/{name}")
         s.add(src); await s.commit()
         return src.id
 
@@ -88,7 +91,7 @@ async def test_assign_and_unassign_source(client):
     assigned = (await c.put(f"/api/jobs/{job['id']}/sources/{sid}")).json()
     assert assigned["source_count"] == 1
     assert assigned["sources"][0]["id"] == str(sid)
-    assert assigned["sources"][0]["vendor_name"] == "Acme"
+    assert assigned["sources"][0]["vendor_name"].startswith("Acme")
 
     unassigned = (await c.delete(f"/api/jobs/{job['id']}/sources/{sid}")).json()
     assert unassigned["source_count"] == 0
