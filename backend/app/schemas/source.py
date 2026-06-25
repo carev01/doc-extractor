@@ -57,3 +57,23 @@ class PickableSource(BaseModel):
 
 class PickableSourceList(BaseModel):
     sources: list[PickableSource]
+
+
+class SourceImportRequest(BaseModel):
+    csv: str
+
+
+class SourceImportRow(BaseModel):
+    row: int
+    result: str  # "created" | "skipped" | "error"
+    vendor: str | None = None
+    product: str | None = None
+    source_name: str | None = None
+    message: str = ""
+
+
+class SourceImportResult(BaseModel):
+    created: int
+    skipped: int
+    errors: int
+    rows: list[SourceImportRow]
