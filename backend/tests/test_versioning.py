@@ -37,6 +37,13 @@ def test_derive_topic_key_passthrough_when_not_templated():
     assert derive_topic_key(url, None, None) == url
 
 
+def test_derive_topic_key_none_url_returns_none():
+    # url-less structural TOC node (Flare "book"/section header with no page):
+    # must not crash even for a templated source with a version.
+    assert derive_topic_key(None, ARC, "19.0") is None
+    assert derive_topic_key("", ARC, "19.0") == ""
+
+
 def test_detect_version_token_builds_template():
     base = "https://www.dell.com/manuals/pp-dm_20.1_cloud.htm"
     assert detect_version_token(base, "20.1") == \
