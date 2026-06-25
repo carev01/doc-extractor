@@ -317,6 +317,119 @@ async def flare_helpsystem_toc(scraper, root_url: str) -> list[TocEntry]:
     return out
 
 
+def parse_json_toc(
+    data,
+    base_url: str,
+    *,
+    items_key: str | None,
+    children_key: str,
+    title_keys: tuple[str, ...],
+    href_key: str,
+    host_allow: set[str] | None = None,
+    strip_query: bool = False,
+) -> list[TocEntry]:
+    """Parse a nested JSON table-of-contents into an ordered, hierarchical TOC.
+
+    Many documentation platforms ship their sidebar as a sibling JSON file
+    instead of server-rendered markup (AWS' ``toc-contents.json``, the DocFX /
+    Open-Publishing ``toc.json``), so the nav never appears in the page HTML —
+    we fetch and resolve that file directly, mirroring ``flare_helpsystem_toc``.
+
+    Parameters
+    ----------
+    data:
+        The parsed JSON. The root node list is ``data[items_key]`` when
+        *items_key* is set, else ``data`` itself (already a list).
+    children_key:
+        Key holding a node's child list (may equal *items_key*, e.g. AWS).
+    title_keys:
+        Title keys tried in order (DocFX uses ``toc_title``/``name``).
+    href_key:
+        Key holding the node's link (relative or absolute).
+    host_allow:
+        When given, hrefs whose resolved host isn't in this set are treated as
+        url-less structural nodes (skips off-site links, e.g. a pricing page).
+    strip_query:
+        Drop the query string from resolved URLs (DocFX appends breadcrumb
+        ``?toc=…&bc=…`` hints that aren't part of the canonical page URL).
+    """
+    roots = data.get(items_key, []) if (items_key and isinstance(data, dict)) else data
+    out: list[TocEntry] = []
+
+    def resolve(href) -> str | None:
+        if not href or not isinstance(href, str):
+            return None
+        full = urljoin(base_url, href)
+        parsed = urlparse(full)
+        if parsed.scheme not in ("http", "https"):
+            return None
+        if host_allow is not None and parsed.netloc not in host_allow:
+            return None
+        if strip_query:
+            full = full.split("?", 1)[0]
+        return full.split("#", 1)[0]
+
+    def title_of(node: dict) -> str:
+        for k in title_keys:
+            v = node.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+
+    def walk(nodes, level: int, parent_url: str | None) -> None:
+        if not isinstance(nodes, list):
+            return
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            url = resolve(node.get(href_key))
+            kids = node.get(children_key) or []
+            title = title_of(node) or (url or "")
+            if not title and not kids:
+                continue
+            out.append(TocEntry(
+                title=title, url=url, level=level,
+                is_article=bool(url) and not kids, parent_url=parent_url,
+            ))
+            if kids:
+                walk(kids, level + 1, url)
+
+    walk(roots, 0, None)
+    return out
+
+
+async def json_toc(
+    scraper,
+    toc_url: str,
+    *,
+    items_key: str | None,
+    children_key: str,
+    title_keys: tuple[str, ...],
+    href_key: str,
+    base_url: str | None = None,
+    host_allow: set[str] | None = None,
+    strip_query: bool = False,
+) -> list[TocEntry]:
+    """Fetch a sibling JSON TOC file verbatim and parse it.
+
+    Thin wrapper over :func:`parse_json_toc`: the file is fetched with a plain
+    GET (``scraper.get_raw``) and hrefs resolve against *base_url* (defaults to
+    *toc_url*'s own location). Returns ``[]`` on fetch or parse failure so the
+    caller falls back to its generic behaviour.
+    """
+    try:
+        raw = await scraper.get_raw(toc_url)
+        data = json.loads(raw)
+    except Exception:
+        return []
+    return parse_json_toc(
+        data, base_url or toc_url,
+        items_key=items_key, children_key=children_key,
+        title_keys=title_keys, href_key=href_key,
+        host_allow=host_allow, strip_query=strip_query,
+    )
+
+
 async def sitemap_urls(scraper, root_url: str) -> list[str]:
     """Return all <loc> URLs from the site's sitemap.xml, in document order."""
     parsed = urlparse(root_url)

@@ -31,8 +31,13 @@ from app.core.config import settings
 # ---------------------------------------------------------------------------
 
 def test_static_profiles_opt_into_raw_http():
+    from app.services.profiles.devsite import DevsiteProfile
+    from app.services.profiles.json_toc import JsonTocProfile
+    from app.services.profiles.docfx import DocFxProfile
+    from app.services.profiles.zoomin import ZoominProfile
     for P in (FlareHtml5Profile, MkDocsProfile, ConfluenceProfile,
-              DocusaurusProfile, LazyTreeProfile, CategoryAccordionProfile):
+              DocusaurusProfile, LazyTreeProfile, CategoryAccordionProfile,
+              DevsiteProfile, JsonTocProfile, DocFxProfile, ZoominProfile):
         assert P().content_engine == "raw_http", P.__name__
 
 
