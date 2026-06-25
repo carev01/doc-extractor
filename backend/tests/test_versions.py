@@ -104,6 +104,7 @@ async def _seed(TestSession):
             source_id=source.id,
             title="Versioned Article",
             source_url="https://docs.ver.com/a",
+            topic_key="https://docs.ver.com/a",
             content_markdown="line one\nnew content\n",
             content_hash="current-hash",
             sort_order=0,
@@ -247,6 +248,7 @@ async def test_source_changelog_newest_first_across_articles(client):
             source_id=source_id,
             title="Second Article",
             source_url="https://docs.ver.com/b",
+            topic_key="https://docs.ver.com/b",
             content_markdown="b new\n",
             content_hash="b-current",
             sort_order=1,
@@ -341,7 +343,7 @@ async def _seed_browse(TestSession):
         def mk(title, url, toc_id, created_at):
             return Article(
                 source_id=source.id, toc_entry_id=toc_id, title=title,
-                source_url=url, content_markdown="x", content_hash="h",
+                source_url=url, topic_key=url, content_markdown="x", content_hash="h",
                 sort_order=0, estimated_tokens=1, content_size_bytes=1,
                 created_at=created_at,
             )
@@ -460,6 +462,7 @@ async def test_article_metadata_vendor_product_and_chapters(client):
         article = Article(
             source_id=source.id, toc_entry_id=install.id, title="Install",
             source_url="https://d.acme.com/install",
+            topic_key="https://d.acme.com/install",
             content_markdown="# Install\n\nSteps.", sort_order=0,
             estimated_tokens=5, content_size_bytes=20,
         )
@@ -500,6 +503,7 @@ async def test_article_metadata_top_level_page_has_no_parent(client):
         article = Article(
             source_id=source.id, toc_entry_id=top.id, title="Announcements",
             source_url="https://d.solo.com/news",
+            topic_key="https://d.solo.com/news",
             content_markdown="news", sort_order=0,
             estimated_tokens=5, content_size_bytes=10,
         )
@@ -757,7 +761,7 @@ async def test_reconcile_removals_stamps_clears_and_pins(client):
         def mk(title, url, toc_id):
             return Article(
                 source_id=source.id, toc_entry_id=toc_id, title=title,
-                source_url=url, content_markdown="x", content_hash="h",
+                source_url=url, topic_key=url, content_markdown="x", content_hash="h",
                 sort_order=0, estimated_tokens=1, content_size_bytes=1,
             )
 
@@ -828,19 +832,22 @@ async def test_changelog_collapses_baseline_and_merges_events(client):
         # Baseline articles A and B (created in run1). A is later changed; B removed.
         a = Article(
             source_id=source.id, toc_entry_id=None, created_run_id=run1.id, title="Page A",
-            source_url="https://cl.com/a", content_markdown="now", content_hash="h2",
+            source_url="https://cl.com/a", topic_key="https://cl.com/a",
+            content_markdown="now", content_hash="h2",
             sort_order=0, estimated_tokens=1, content_size_bytes=1, created_at=T_OLD,
         )
         b = Article(
             source_id=source.id, toc_entry_id=None, created_run_id=run1.id, title="Page B",
-            source_url="https://cl.com/b", content_markdown="x", content_hash="h",
+            source_url="https://cl.com/b", topic_key="https://cl.com/b",
+            content_markdown="x", content_hash="h",
             sort_order=0, estimated_tokens=1, content_size_bytes=1,
             created_at=T_OLD, removed_at=T_NEW, removal_run_id=run2.id,
         )
         # New article C, added in the incremental run2 → per-page 'added' event.
         c = Article(
             source_id=source.id, toc_entry_id=None, created_run_id=run2.id, title="New C",
-            source_url="https://cl.com/c", content_markdown="c", content_hash="hc",
+            source_url="https://cl.com/c", topic_key="https://cl.com/c",
+            content_markdown="c", content_hash="hc",
             sort_order=0, estimated_tokens=1, content_size_bytes=1, created_at=T_NEW,
         )
         s.add_all([a, b, c])
@@ -881,6 +888,7 @@ async def test_export_enqueue_and_status(client):
         s = DocumentationSource(product_id=s_prod.id, name="ExpRouteSrc", base_url="https://er.com")
         db.add(s); await db.flush()
         db.add(Article(source_id=s.id, title="A", source_url="https://er.com/a",
+                       topic_key="https://er.com/a",
                        content_markdown="# A\n\nx", sort_order=0,
                        estimated_tokens=1, content_size_bytes=1))
         await db.commit()

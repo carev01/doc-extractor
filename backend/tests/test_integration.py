@@ -64,6 +64,7 @@ def test_export_full(db_session):
         a = Article(
             source_id=s.id, title=f"Article {i}",
             source_url=f"https://docs.ex.com/{i}",
+            topic_key=f"https://docs.ex.com/{i}",
             content_markdown=f"# Article {i}\n\nContent for article {i}.",
             sort_order=i, estimated_tokens=50, content_size_bytes=200,
         )
@@ -103,6 +104,7 @@ def test_export_pdf_full(db_session):
         db_session.add(Article(
             source_id=s.id, title=f"Article {i}",
             source_url=f"https://docs.pdf.com/{i}",
+            topic_key=f"https://docs.pdf.com/{i}",
             content_markdown=f"# Article {i}\n\nContent {i}.",
             sort_order=i, estimated_tokens=50, content_size_bytes=200,
         ))
@@ -134,6 +136,7 @@ def test_export_pdf_split_produces_multiple_pdfs(db_session):
     for i in range(4):
         db_session.add(Article(
             source_id=s.id, title=f"A{i}", source_url=f"https://docs.ps.com/{i}",
+            topic_key=f"https://docs.ps.com/{i}",
             content_markdown=f"# A{i}\n\nx", sort_order=i,
             estimated_tokens=50, content_size_bytes=200,
         ))
@@ -167,6 +170,7 @@ def test_export_partial_by_articles(db_session):
         a = Article(
             source_id=s.id, title=f"Article {i}",
             source_url=f"https://docs.px.com/{i}",
+            topic_key=f"https://docs.px.com/{i}",
             content_markdown=f"# Article {i}\n\nContent {i}.",
             sort_order=i, estimated_tokens=50, content_size_bytes=200,
         )
@@ -198,18 +202,21 @@ def test_export_by_topic_search(db_session):
     a1 = Article(
         source_id=s.id, title="Installation Guide",
         source_url="https://docs.tp.com/install",
+        topic_key="https://docs.tp.com/install",
         content_markdown="# Install\n\nRun pip install foo.",
         sort_order=0, estimated_tokens=20, content_size_bytes=100,
     )
     a2 = Article(
         source_id=s.id, title="API Reference",
         source_url="https://docs.tp.com/api",
+        topic_key="https://docs.tp.com/api",
         content_markdown="# API\n\nUse the /v1/foo endpoint.",
         sort_order=1, estimated_tokens=20, content_size_bytes=100,
     )
     a3 = Article(
         source_id=s.id, title="Troubleshooting",
         source_url="https://docs.tp.com/trouble",
+        topic_key="https://docs.tp.com/trouble",
         content_markdown="# Troubleshoot\n\nIf pip install fails, check Python version.",
         sort_order=2, estimated_tokens=20, content_size_bytes=100,
     )
@@ -250,6 +257,7 @@ def test_export_split_by_articles(db_session):
         a = Article(
             source_id=s.id, title=f"Article {i:02d}",
             source_url=f"https://docs.sp.com/{i}",
+            topic_key=f"https://docs.sp.com/{i}",
             content_markdown=f"# Article {i:02d}\n\nFull content of article {i}.",
             sort_order=i, estimated_tokens=100, content_size_bytes=500,
         )
@@ -293,6 +301,7 @@ def test_export_split_by_size(db_session):
         a = Article(
             source_id=s.id, title=f"Article {i}",
             source_url=f"https://docs.sz.com/{i}",
+            topic_key=f"https://docs.sz.com/{i}",
             content_markdown=f"# Article {i}\n\n{content}",
             sort_order=i, estimated_tokens=size // 4, content_size_bytes=size,
         )
@@ -326,6 +335,7 @@ def test_export_split_by_tokens(db_session):
         a = Article(
             source_id=s.id, title=f"Article {i}",
             source_url=f"https://docs.tk.com/{i}",
+            topic_key=f"https://docs.tk.com/{i}",
             content_markdown=f"# Article {i}\n\nContent.",
             sort_order=i, estimated_tokens=30, content_size_bytes=120,
         )
@@ -357,6 +367,7 @@ def test_export_zip_bundles_images_with_relative_paths(db_session):
     article = Article(
         source_id=s.id, title="With Image",
         source_url="https://docs.img.com/a",
+        topic_key="https://docs.img.com/a",
         content_markdown="",  # set below once we know the article id
         sort_order=0, estimated_tokens=50, content_size_bytes=200,
     )
@@ -438,6 +449,7 @@ def test_split_never_breaks_article(db_session):
     big = Article(
         source_id=s.id, title="Big Article",
         source_url="https://docs.inv.com/big",
+        topic_key="https://docs.inv.com/big",
         content_markdown="# Big\n\n" + ("x" * 10000),
         sort_order=0, estimated_tokens=2500, content_size_bytes=11000,
     )
@@ -445,6 +457,7 @@ def test_split_never_breaks_article(db_session):
         a = Article(
             source_id=s.id, title=f"Small {i}",
             source_url=f"https://docs.inv.com/small/{i}",
+            topic_key=f"https://docs.inv.com/small/{i}",
             content_markdown=f"# Small {i}\n\nContent.",
             sort_order=i + 1, estimated_tokens=10, content_size_bytes=50,
         )
@@ -486,18 +499,21 @@ def test_topic_search_is_ranked_full_text(db_session):
     high = Article(
         source_id=s.id, title="Backups",
         source_url="https://docs.fts.com/1",
+        topic_key="https://docs.fts.com/1",
         content_markdown="Backup policy. Backup schedule. Backup retention and backup windows.",
         sort_order=0, estimated_tokens=10, content_size_bytes=80,
     )
     low = Article(
         source_id=s.id, title="Overview",
         source_url="https://docs.fts.com/2",
+        topic_key="https://docs.fts.com/2",
         content_markdown="A broad overview mentioning backup once amid networking, billing, and users.",
         sort_order=1, estimated_tokens=10, content_size_bytes=90,
     )
     unrelated = Article(
         source_id=s.id, title="Networking",
         source_url="https://docs.fts.com/3",
+        topic_key="https://docs.fts.com/3",
         content_markdown="Routing, firewalls, and VPN tunnels.",
         sort_order=2, estimated_tokens=10, content_size_bytes=60,
     )
@@ -544,6 +560,7 @@ def _chapter_fixture(db_session):
         return Article(
             source_id=s.id, toc_entry_id=toc_id, title=title,
             source_url=f"https://docs.ch.com/{title}",
+            topic_key=f"https://docs.ch.com/{title}",
             content_markdown="x" * 480, sort_order=order,
             estimated_tokens=120, content_size_bytes=500,
         )
@@ -598,7 +615,8 @@ def test_split_chapter_larger_than_limit_splits_internally(db_session):
     for i in range(3):
         db_session.add(Article(
             source_id=s.id, toc_entry_id=ch.id, title=f"P{i}",
-            source_url=f"https://docs.bc.com/{i}", content_markdown="y" * 480,
+            source_url=f"https://docs.bc.com/{i}", topic_key=f"https://docs.bc.com/{i}",
+            content_markdown="y" * 480,
             sort_order=i, estimated_tokens=120, content_size_bytes=500,
         ))
     db_session.commit()
@@ -644,7 +662,8 @@ def test_toc_tree_structure(db_session):
 
     a = Article(
         source_id=s.id, toc_entry_id=art.id, title="Article A",
-        source_url="https://docs.toc.com/a", content_markdown="# Hello",
+        source_url="https://docs.toc.com/a", topic_key="https://docs.toc.com/a",
+        content_markdown="# Hello",
         sort_order=0, estimated_tokens=10, content_size_bytes=100,
     )
     db_session.add(a)
@@ -693,7 +712,8 @@ def test_export_pdf_merges_per_chapter(db_session, monkeypatch):
             db_session.add(t); db_session.flush()
             arts.append(Article(
                 source_id=s.id, toc_entry_id=t.id, title=f"c{ci}a{j}",
-                source_url=f"https://m.com/{ci}/{j}", content_markdown=f"# c{ci}a{j}\n\nbody",
+                source_url=f"https://m.com/{ci}/{j}", topic_key=f"https://m.com/{ci}/{j}",
+                content_markdown=f"# c{ci}a{j}\n\nbody",
                 sort_order=ci * 10 + j + 1, estimated_tokens=50, content_size_bytes=200,
             ))
     db_session.add_all(arts); db_session.commit()
