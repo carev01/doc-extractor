@@ -100,7 +100,7 @@ export default function VersionOverlay({
                       onClick={() => selectVersion(v.id)}
                     >
                       {new Date(v.extracted_at).toLocaleString()}
-                      {v.version && (
+                      {v.version !== null && (
                         <span className="version-tag">v{v.version}</span>
                       )}
                     </button>

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, Fragment } from "react";
 import type { DocumentationSource, ChangelogEntry, ArticleDetail } from "../types";
 import { getSourceChangelog, getArticle } from "../api/client";
 import MarkdownView from "./MarkdownView";
@@ -65,7 +65,7 @@ export default function ChangelogPanel({ source }: Props) {
     let lastVersion: string | null = null;
     for (const e of flat) {
       result.push(lastVersion);
-      if (e.version !== null) lastVersion = e.version;
+      lastVersion = e.version;   // update on every entry, incl. null, so nulls break the chain
     }
     return result;
   }, [groups]);
@@ -116,7 +116,7 @@ export default function ChangelogPanel({ source }: Props) {
                 const showBoundary =
                   e.version !== null && prevV !== null && e.version !== prevV;
                 return (
-                  <>
+                  <Fragment key={`row-${flatIdx}`}>
                     {showBoundary && (
                       <li key={`vb-${flatIdx}`} className="version-boundary">
                         {prevV} → {e.version}
@@ -130,17 +130,17 @@ export default function ChangelogPanel({ source }: Props) {
                         <div className="timeline-event timeline-initial">
                           <span className="badge-initial">{BADGE.initial}</span>
                           <span className="timeline-title">{e.title}</span>
-                          {e.version && <span className="version-tag">v{e.version}</span>}
+                          {e.version !== null && <span className="version-tag">v{e.version}</span>}
                         </div>
                       ) : (
                         <button className="timeline-event" onClick={() => openEntry(e)}>
                           <span className={`badge-${e.change_type}`}>{BADGE[e.change_type]}</span>
                           <span className="timeline-title">{e.title}</span>
-                          {e.version && <span className="version-tag">v{e.version}</span>}
+                          {e.version !== null && <span className="version-tag">v{e.version}</span>}
                         </button>
                       )}
                     </li>
-                  </>
+                  </Fragment>
                 );
               })}
             </ul>
