@@ -108,11 +108,16 @@ class HelpTreeProfile:
         return parse_help_tree(html, root_url)
 
     def content_config(self) -> dict:
-        # Content is client-rendered into div.help-page; render (not raw_http)
-        # with a long wait so the SPA has mounted the article body.
+        # Content is client-rendered; render (not raw_http) with a long wait so
+        # the SPA has mounted the article body. Scope to #kb_help_body (the KB
+        # article container) rather than div.help-page — the latter also wraps
+        # the entire #js-sidebar nav (hundreds of links rendered before the
+        # article) and the subheader tab bar. Drop the in-body feedback widget
+        # (".feedBackForm" — a sibling of the prose) and the empty section
+        # selector so neither leaks into the markdown.
         return {
-            "includeTags": ["div.help-page"],
-            "excludeTags": [".feedback", ".article-feedback", ".dw-feedback"],
+            "includeTags": ["#kb_help_body"],
+            "excludeTags": [".feedBackForm", ".section-selector-container"],
             "onlyMainContent": False,
             "waitFor": _RENDER_WAIT_MS,
         }
