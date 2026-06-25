@@ -179,7 +179,7 @@ def test_extract_content_html_prefers_html5_attr():
     """When a topic carries the HTML5 [data-mc-content-body] attribute it is
     preferred over #mc-main-content (first selector in includeTags)."""
     html_doc = (
-        '<html><body><div data-mc-content-body><p>html5 body</p></div>'
+        '<html><body><div data-mc-content-body="True"><p>html5 body</p></div>'
         '<div id="mc-main-content"><p>webhelp body</p></div></body></html>'
     )
     out = FlareWebHelpProfile().extract_content_html(html_doc, TOPIC_URL)
