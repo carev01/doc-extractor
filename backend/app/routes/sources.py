@@ -121,14 +121,6 @@ async def update_source(
         source.name = body.name
     if body.base_url is not None:
         source.base_url = body.base_url
-    if body.url_template is not None:
-        source.url_template = body.url_template
-        # Resolve base_url from the new template if the product has a version.
-        product = (
-            await db.execute(select(Product).where(Product.id == source.product_id))
-        ).scalar_one_or_none()
-        if product and product.version:
-            source.base_url = resolve_template(body.url_template, product.version)
     if body.product_id is not None and body.product_id != source.product_id:
         # Move the source to another product (must exist).
         target = (
@@ -137,6 +129,15 @@ async def update_source(
         if not target:
             raise HTTPException(status_code=404, detail="Target product not found")
         source.product_id = body.product_id
+    if body.url_template is not None:
+        source.url_template = body.url_template
+        # Resolve base_url from the new template against the source's EFFECTIVE
+        # product (i.e. the new product if product_id was just reassigned above).
+        product = (
+            await db.execute(select(Product).where(Product.id == source.product_id))
+        ).scalar_one_or_none()
+        if product and product.version:
+            source.base_url = resolve_template(body.url_template, product.version)
     if body.platform is not None:
         # "" / "auto" clears the override so detection runs again next extraction.
         source.platform = None if body.platform in ("", "auto") else body.platform

@@ -197,3 +197,44 @@ async def test_update_source_with_url_template_resolves_base_url(client):
     body = resp.json()
     assert body["url_template"] == "https://new.example.com/{version}/docs"
     assert body["base_url"] == "https://new.example.com/3.0/docs"
+
+
+async def test_update_source_combined_product_id_and_url_template_resolves_against_new_product(
+    client,
+):
+    """PATCH with both product_id and url_template must resolve base_url against
+    the NEW product's version, not the old one."""
+    c, session_factory = client
+    async with session_factory() as s:
+        vendor = Vendor(name="V_combo")
+        s.add(vendor)
+        await s.flush()
+        product_old = Product(vendor_id=vendor.id, name="P_old", version="10.0")
+        product_new = Product(vendor_id=vendor.id, name="P_new", version="11.0")
+        s.add(product_old)
+        s.add(product_new)
+        await s.flush()
+        source = DocumentationSource(
+            product_id=product_old.id,
+            name="Combo Docs",
+            base_url="https://docs.example.com/10.0/guide",
+        )
+        s.add(source)
+        await s.commit()
+        sid = source.id
+        new_pid = product_new.id
+
+    resp = await c.patch(
+        f"/api/sources/{sid}",
+        json={
+            "product_id": str(new_pid),
+            "url_template": "https://docs.example.com/{version}/guide",
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    # url_template stored as provided
+    assert body["url_template"] == "https://docs.example.com/{version}/guide"
+    # base_url must resolve against the NEW product's version (11.0), not old (10.0)
+    assert body["base_url"] == "https://docs.example.com/11.0/guide"
+    assert body["product_id"] == str(new_pid)
