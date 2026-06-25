@@ -135,6 +135,9 @@ _BREADCRUMB_RE = re.compile(r"^\s*you are here\s*:?\s*$", re.IGNORECASE)
 # A setext heading underline (=== or ---) marks the real title start.
 _SETEXT_UNDERLINE_RE = re.compile(r"^\s*[=\-]{3,}\s*$")
 
+# An ATX heading line: "# Title" … "###### Title" (optional closing #'s).
+_ATX_HEADING_RE = re.compile(r"^\s*(#{1,6})\s+(.+?)\s*#*\s*$")
+
 # A feedback-link table contains the JS feedback link or its known row texts.
 _FEEDBACK_TABLE_SIG_RE = re.compile(
     r"SendLinkByMail|Provide feedback for the Documentation team",
@@ -348,11 +351,64 @@ def _strip_lead_promo_banner(lines: list[str]) -> list[str]:
     return lines[drop_to:]
 
 
+def _heading_at(lines: list[str], i: int) -> tuple[str, int, str, int] | None:
+    """Return ``(style, level, text, span)`` for a heading starting at line *i*,
+    else None.
+
+    ``style`` is ``"atx"`` (span 1, e.g. ``## X``) or ``"setext"`` (span 2: a
+    text line followed by a ``===``/``---`` underline).
+    """
+    norm = _norm(lines[i])
+    m = _ATX_HEADING_RE.match(norm)
+    if m:
+        return ("atx", len(m.group(1)), m.group(2).strip(), 1)
+    if (
+        norm.strip()
+        and i + 1 < len(lines)
+        and _SETEXT_UNDERLINE_RE.match(_norm(lines[i + 1]))
+    ):
+        level = 1 if _norm(lines[i + 1]).strip()[0] == "=" else 2
+        return ("setext", level, norm.strip(), 2)
+    return None
+
+
+def _strip_duplicate_title(lines: list[str]) -> list[str]:
+    """Drop later headings that exactly repeat the document's first (title) heading.
+
+    Some templates wrap one article in several responsive blocks that each
+    re-emit the H1 (e.g. Keepit's two ``<article>`` blocks), so the title shows
+    up two+ times. Only an exact match of the *first* heading — same style,
+    level, and text — is removed, so legitimately repeated section headings are
+    left untouched.
+    """
+    idx = 0
+    title = None
+    while idx < len(lines):
+        title = _heading_at(lines, idx)
+        if title:
+            break
+        idx += 1
+    if not title or not title[2]:
+        return lines
+    style, level, text, span = title
+    out = lines[: idx + span]
+    i = idx + span
+    while i < len(lines):
+        h = _heading_at(lines, i)
+        if h and (h[0], h[1], h[2]) == (style, level, text):
+            i += h[3]  # skip the duplicate heading's line(s)
+            continue
+        out.append(lines[i])
+        i += 1
+    return out
+
+
 _RULES = (
     _strip_lead_font_license,
     _strip_lead_breadcrumb,
     _strip_lead_llms_banner,
     _strip_lead_promo_banner,
+    _strip_duplicate_title,
     _strip_cookie_consent,
     _strip_feedback_table,
     _strip_helpful_widget,

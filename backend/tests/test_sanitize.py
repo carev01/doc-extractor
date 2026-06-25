@@ -454,3 +454,56 @@ def test_font_license_only_fires_at_head_on_signature():
 def test_empty_input():
     assert sanitize_markdown("") == ""
     assert sanitize_markdown("   \n  ") == "   \n  "
+
+
+# ── Duplicate title heading (e.g. Keepit's two responsive <article> blocks each
+#    repeat the H1) ──────────────────────────────────────────────────────────
+
+def test_removes_duplicated_setext_title():
+    md = (
+        "Jira Service Management backup coverage\n"
+        "=======================================\n"
+        "\n"
+        "The table below shows the coverage.\n"
+        "\n"
+        "Jira Service Management backup coverage\n"
+        "=======================================\n"
+        "\n"
+        "### Restore limitations\n"
+        "\n"
+        "| Element | Backup |\n"
+        "| --- | --- |\n"
+        "| Projects | Yes |\n"
+    )
+    out = sanitize_markdown(md)
+    # The title survives exactly once; the body and table are untouched.
+    assert out.count("Jira Service Management backup coverage") == 1
+    assert "The table below shows the coverage." in out
+    assert "### Restore limitations" in out
+    assert "| Projects | Yes |" in out
+
+
+def test_keeps_repeated_non_title_section_headings():
+    # Only an exact repeat of the *document title* is removed; legitimately
+    # repeated section headings stay.
+    md = (
+        "My Guide\n"
+        "========\n"
+        "\n"
+        "## Notes\n"
+        "\n"
+        "first\n"
+        "\n"
+        "## Notes\n"
+        "\n"
+        "second\n"
+    )
+    out = sanitize_markdown(md)
+    assert out.count("## Notes") == 2
+
+
+def test_single_title_is_unchanged():
+    md = "Only Title\n==========\n\nBody text here.\n"
+    out = sanitize_markdown(md)
+    assert out.count("Only Title") == 1
+    assert "Body text here." in out
