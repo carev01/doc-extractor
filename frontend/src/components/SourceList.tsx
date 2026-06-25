@@ -19,6 +19,9 @@ import {
   unassignSourceFromJob,
 } from "../api/client";
 
+// Keep in sync with the backend profile registry (app/services/profiles).
+// Order mirrors registry registration order; "auto" is a UI-only value that
+// maps to auto-detection (no stored platform override).
 const PLATFORM_OPTIONS: { value: string; label: string }[] = [
   { value: "auto", label: "Auto-detect" },
   { value: "lazy_tree", label: "Lazy Tree Nav" },
@@ -26,13 +29,15 @@ const PLATFORM_OPTIONS: { value: string; label: string }[] = [
   { value: "docusaurus", label: "Docusaurus" },
   { value: "mkdocs", label: "MkDocs" },
   { value: "gitbook", label: "GitBook" },
-  { value: "flare_html5", label: "Flare HTML5" },
   { value: "flare_webhelp", label: "Flare WebHelp" },
+  { value: "flare_html5", label: "Flare HTML5" },
   { value: "intercom", label: "Intercom" },
   { value: "freshdesk", label: "Freshdesk" },
   { value: "confluence", label: "Confluence" },
   { value: "salesforce", label: "Salesforce" },
-  { value: "dell", label: "Dell Support Manuals" },
+  { value: "warmup_listgroup", label: "Warm-up + List Group" },
+  { value: "category_accordion", label: "Category Accordion" },
+  { value: "release_notes", label: "Release Notes" },
   { value: "generic", label: "Generic (sitemap)" },
   { value: "llm", label: "LLM fallback" },
 ];
