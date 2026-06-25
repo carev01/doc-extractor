@@ -345,3 +345,9 @@ export interface BrowseResponse {
   entries: BrowseTOCEntry[];
   removed: RemovedArticle[];
 }
+
+/** A platform-selector option, sourced from the backend profile registry. */
+export interface ProfileOption {
+  value: string;
+  label: string;
+}

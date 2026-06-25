@@ -28,6 +28,7 @@ from app.routes import (
     articles_router,
     export_router,
     jobs_router,
+    profiles_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,7 @@ app.include_router(extraction_router)
 app.include_router(articles_router)
 app.include_router(export_router)
 app.include_router(jobs_router)
+app.include_router(profiles_router)
 
 # Serve canonical article images. The directory must exist before StaticFiles
 # is mounted, so create it here at import time.
