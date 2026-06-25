@@ -21,6 +21,8 @@ class ProductResponse(BaseModel):
     id: uuid.UUID
     vendor_id: uuid.UUID
     name: str
+    version: str | None = None
+    previous_version: str | None = None
     created_at: datetime
     updated_at: datetime
 
