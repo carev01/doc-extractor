@@ -125,6 +125,57 @@ def test_parse_json_toc_docfx_shape_skips_external_and_query():
 
 
 # ---------------------------------------------------------------------------
+# docfx content: scope to .content and drop the trailing "Next steps" nav
+# ---------------------------------------------------------------------------
+
+def _docfx_body(*, last_heading_id="next-steps", last_heading="Next steps"):
+    return (
+        '<html><body><div class="content">'
+        '<h1>Overview</h1><p>Real intro prose.</p>'
+        '<h2 id="how-it-works">How it works</h2><p>Body about how it works.</p>'
+        f'<h2 id="{last_heading_id}">{last_heading}</h2>'
+        '<ul><li><a href="next">Do the next thing</a></li>'
+        '<li><a href="other">And another</a></li></ul>'
+        '</div></body></html>'
+    )
+
+
+def test_docfx_strips_trailing_next_steps_by_id():
+    out = DocFxProfile().extract_content_html(_docfx_body(), "https://learn.example.com/x")
+    assert "Real intro prose" in out and "how it works" in out.lower()
+    assert "Next steps" not in out
+    assert "Do the next thing" not in out  # the link list went with the heading
+
+
+def test_docfx_strips_trailing_next_steps_by_text_when_no_id():
+    out = DocFxProfile().extract_content_html(
+        _docfx_body(last_heading_id="", last_heading="Related content"),
+        "https://learn.example.com/x",
+    )
+    assert "Body about how it works" in out
+    assert "Related content" not in out and "And another" not in out
+
+
+def test_docfx_keeps_next_steps_when_not_the_last_section():
+    # A "Next steps" heading followed by a further real section must NOT be cut.
+    html = (
+        '<div class="content"><h1>T</h1>'
+        '<h2 id="next-steps">Next steps</h2><ul><li><a href="a">a</a></li></ul>'
+        '<h2 id="troubleshooting">Troubleshooting</h2><p>Important tail content.</p>'
+        '</div>'
+    )
+    out = DocFxProfile().extract_content_html(html, "https://learn.example.com/x")
+    assert "Next steps" in out          # not the last heading -> preserved
+    assert "Important tail content" in out
+
+
+def test_docfx_extract_absolutises_images_via_scoper():
+    html = '<div class="content"><p>x</p><img src="media/a.png"/></div>'
+    out = DocFxProfile().extract_content_html(html, "https://learn.example.com/en/azure/backup/overview")
+    assert 'src="https://learn.example.com/en/azure/backup/media/a.png"' in out
+
+
+# ---------------------------------------------------------------------------
 # devsite — target the book <ul>, not the outer product-tab nav
 # ---------------------------------------------------------------------------
 

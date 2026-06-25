@@ -15,11 +15,19 @@ content path is a plain GET (``raw_http``).
 
 from urllib.parse import urljoin, urlparse
 
+from bs4 import BeautifulSoup
+
 from app.services.profiles import registry
+from app.services.profiles.content_scope import scope_content_html
 from app.services.profiles.strategies import json_toc
 from app.services.profiles.base import TocEntry
 
 _TOC_FILENAME = "toc.json"
+
+# Terminal navigation sections MS Learn appends to an article: a heading
+# (id "next-steps"/"next-step" or matching text) followed by a list of links.
+_NEXT_SECTION_IDS = {"next-steps", "next-step"}
+_NEXT_SECTION_TEXT = ("next steps", "next step", "related content", "related links")
 
 
 class DocFxProfile:
@@ -56,12 +64,41 @@ class DocFxProfile:
     def content_config(self) -> dict:
         return {
             "includeTags": [".content"],
-            # The metadata bar / feedback / "next steps" chrome the platform
-            # renders alongside the article body.
+            # The metadata bar / feedback chrome the platform renders alongside
+            # the article body. (The trailing "Next steps" link list is a
+            # heading+list with no wrapping element, so it's removed in
+            # extract_content_html rather than by a CSS exclude.)
             "excludeTags": [".page-metadata", ".feedback-verbatim", ".ms-feedback"],
             "onlyMainContent": False,
             "waitFor": 1500,
         }
+
+    def extract_content_html(self, raw: str, url: str) -> str | None:
+        """Scope to ``.content`` then drop a trailing "Next steps" nav section.
+
+        MS Learn ends most articles with a "Next steps" / "Related content"
+        heading followed by a bare list of links (no wrapping element to target
+        with an excludeTags selector). It's navigation, not article content, so
+        we strip it — but only when it's the *last* heading in the body, so a
+        mid-article section is never affected.
+        """
+        cfg = self.content_config()
+        html = scope_content_html(
+            raw, url, cfg.get("includeTags") or [], cfg.get("excludeTags") or []
+        )
+        if not html:
+            return html
+        soup = BeautifulSoup(html, "html.parser")
+        headings = soup.find_all(["h2", "h3"])
+        if headings:
+            last = headings[-1]
+            text = last.get_text(strip=True).lower().rstrip(":")
+            hid = (last.get("id") or "").lower()
+            if hid in _NEXT_SECTION_IDS or text in _NEXT_SECTION_TEXT:
+                for sib in list(last.find_next_siblings()):
+                    sib.decompose()
+                last.decompose()
+        return str(soup)
 
 
 PROFILE = DocFxProfile()
