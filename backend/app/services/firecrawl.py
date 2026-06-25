@@ -109,6 +109,16 @@ def _resolve_toc_parents(entries: list[dict]) -> list[int | None]:
     return parents
 
 
+def _content_selector_for(entry: dict, content_spec: dict | None) -> str | None:
+    """Pick the content selector for a single TOC entry on the browserless path.
+
+    An entry may carry its own ``content_selector`` (so two articles can be
+    sliced from different sections of one page); otherwise fall back to the
+    run-wide selector from the profile's ``browserless_content_spec``.
+    """
+    return (entry or {}).get("content_selector") or (content_spec or {}).get("selector")
+
+
 class FirecrawlUnavailableError(Exception):
     """Raised when the Firecrawl service is not reachable."""
     pass
@@ -781,12 +791,15 @@ class FirecrawlService:
         chunk_size = max(1, settings.browserless_concurrency)
         client = httpx.AsyncClient(timeout=httpx.Timeout(160.0, connect=10.0))
 
-        async def _render(url: str):
+        async def _render(url: str, entry: dict):
             try:
-                if content_spec:
+                # A per-entry selector (e.g. a changelog page split into two
+                # section documents) overrides the run-wide content_spec.
+                selector = _content_selector_for(entry, content_spec)
+                if selector:
                     data = await browserless_client.warmup_render(
-                        url, selector=content_spec["selector"],
-                        warmup_url=content_spec.get("warmup_url"), client=client,
+                        url, selector=selector,
+                        warmup_url=(content_spec or {}).get("warmup_url"), client=client,
                     )
                     # Normalise to the shape the persist loop expects.
                     return {
@@ -802,7 +815,7 @@ class FirecrawlService:
         try:
             for i in range(0, len(items), chunk_size):
                 chunk = items[i:i + chunk_size]
-                rendered = await asyncio.gather(*(_render(u) for u, _ in chunk))
+                rendered = await asyncio.gather(*(_render(u, e) for u, e in chunk))
                 for (url, entry), data in zip(chunk, rendered):
                     if not data:
                         continue
@@ -1087,6 +1100,7 @@ class FirecrawlService:
                 {
                     "title": e.title, "url": e.url, "level": e.level,
                     "is_article": e.is_article, "parent_url": e.parent_url,
+                    "content_selector": e.content_selector,
                 }
                 for e in toc_objs
             ]

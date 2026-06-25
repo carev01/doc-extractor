@@ -74,6 +74,20 @@ def test_detect_rejects_other_platforms(fixture_name: str):
     )
 
 
+def test_detect_rejects_page_that_merely_mentions_atlassian_confluence():
+    """A page that only *talks about* Atlassian Confluence (e.g. a changelog for
+    a Confluence backup connector) is NOT a Confluence instance — it lacks the
+    structural markers. Words alone must not trigger detection."""
+    html = (
+        "<html><body>"
+        "<h3>Confluence backups</h3>"
+        "<p>Your backups are fully segregated from Atlassian, so you keep "
+        "access to your Confluence data even during an Atlassian outage.</p>"
+        "</body></html>"
+    )
+    assert ConfluenceProfile().detect(html, "https://www.keepit.com/help/product-updates/") is False
+
+
 # ---------------------------------------------------------------------------
 # Content config
 # ---------------------------------------------------------------------------

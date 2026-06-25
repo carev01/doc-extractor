@@ -11,6 +11,9 @@ class TocEntry:
     level: int
     is_article: bool = True
     parent_url: str | None = None
+    # Optional CSS selector for this entry's content, overriding the profile's
+    # run-wide selector — lets one page yield several section documents.
+    content_selector: str | None = None
 
 
 class ExtractionProfile(Protocol):
