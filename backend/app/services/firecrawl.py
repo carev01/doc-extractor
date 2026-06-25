@@ -350,11 +350,19 @@ class FirecrawlService:
         Used for non-HTML resources a profile needs verbatim — e.g. MadCap Flare's
         ``Data/*.xml``/``Data/Tocs/*.js`` TOC files, which Firecrawl would strip or
         mangle. Sends a browser UA; raises on HTTP error.
+
+        Retries transient failures (429/5xx, connect/read timeouts) with backoff:
+        the raw_http content path fetches hundreds of pages, so without this a
+        single momentary blip or short-lived rate-limit permanently drops a page,
+        and enough of those trip the run's failure-rate guard (observed on a
+        700-page MadCap source). Non-transient errors (e.g. 404) still raise at once.
         """
-        resp = await self.client.get(
-            url, headers={"User-Agent": _BROWSER_UA}, follow_redirects=True
+        resp = await self._request_with_retry(
+            lambda: self.client.get(
+                url, headers={"User-Agent": _BROWSER_UA}, follow_redirects=True
+            ),
+            what=f"raw GET {url}",
         )
-        resp.raise_for_status()
         return resp.text
 
     async def _request_with_retry(

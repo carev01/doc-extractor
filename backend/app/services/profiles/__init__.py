@@ -27,6 +27,8 @@ from app.services.profiles import devsite  # noqa: F401,E402
 from app.services.profiles import json_toc  # noqa: F401,E402
 from app.services.profiles import docfx  # noqa: F401,E402
 from app.services.profiles import zoomin  # noqa: F401,E402
+from app.services.profiles import zendesk  # noqa: F401,E402
+from app.services.profiles import help_tree  # noqa: F401,E402
 from app.services.profiles import generic  # noqa: F401,E402
 from app.services.profiles import llm  # noqa: F401,E402
 
