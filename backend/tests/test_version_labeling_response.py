@@ -97,3 +97,49 @@ async def test_article_versions_carry_run_version(client):
     r = await client.get(f"/api/articles/{aid}/versions")
     assert r.status_code == 200
     assert r.json()["versions"][0]["version"] == "11.0"
+
+
+async def test_article_versions_null_run_version_serializes_null(client):
+    """A pre-versioning run (version column NULL) must serialize version: null,
+    not drop the snapshot (the join is LEFT OUTER)."""
+    client, TestSession = client
+    from app.models import Vendor, Product, DocumentationSource, Article, ArticleVersion
+    from app.models.extraction_run import ExtractionRun, RunStatus
+
+    async with TestSession() as s:
+        v = Vendor(name="Vn")
+        s.add(v)
+        await s.flush()
+        p = Product(vendor_id=v.id, name="Pn")  # no version
+        s.add(p)
+        await s.flush()
+        src = DocumentationSource(product_id=p.id, name="Sn", base_url="https://x/a")
+        s.add(src)
+        await s.flush()
+        run = ExtractionRun(source_id=src.id, status=RunStatus.COMPLETED)  # version NULL
+        s.add(run)
+        await s.flush()
+        art = Article(
+            source_id=src.id,
+            title="A",
+            source_url="https://x/a",
+            topic_key="https://x/a",
+            content_markdown="now",
+        )
+        s.add(art)
+        await s.flush()
+        ver = ArticleVersion(
+            article_id=art.id,
+            extraction_run_id=run.id,
+            content_markdown="old",
+            content_hash="h",
+        )
+        s.add(ver)
+        await s.commit()
+        aid = art.id
+
+    r = await client.get(f"/api/articles/{aid}/versions")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["versions"]) == 1  # snapshot not dropped by the join
+    assert body["versions"][0]["version"] is None

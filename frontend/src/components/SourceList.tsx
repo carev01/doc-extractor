@@ -144,7 +144,7 @@ export default function SourceList({
 
   return (
     <div className="source-list">
-      <ProductVersionBar product={product} sources={sources} onChanged={fetchSources} />
+      <ProductVersionBar key={product.id} product={product} sources={sources} onChanged={fetchSources} />
       <h2>Documentation Sources — {product.name}</h2>
 
       {error && <div className="error">{error}</div>}
@@ -530,9 +530,9 @@ function SourceItem({
                   >
                     Templatize
                   </button>
-                  {versionMsg && <span className="sub">{versionMsg}</span>}
                 </>
               )}
+              {versionMsg && <span className="sub">{versionMsg}</span>}
             </span>
           </div>
         )}
