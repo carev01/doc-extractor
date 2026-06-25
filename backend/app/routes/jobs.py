@@ -19,6 +19,7 @@ from app.models.source import DocumentationSource
 from app.models.vendor import Vendor
 from app.schemas.job import (
     JobCreate, JobUpdate, JobResponse, JobList, JobSourceRef, JobRunResponse,
+    JobSourcesAssign,
 )
 from app.services.cron import build_cron, compute_next_run
 from app.services.scheduling import fan_out_job
@@ -155,6 +156,28 @@ async def delete_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     await db.delete(job)
     await db.commit()
     return None
+
+
+@router.put("/{job_id}/sources", response_model=JobResponse)
+async def assign_sources(
+    job_id: uuid.UUID, body: JobSourcesAssign, db: AsyncSession = Depends(get_db)
+):
+    """Assign (or reassign) many sources to this job at once."""
+    job = await _load(db, job_id)
+    if body.source_ids:
+        found = (
+            await db.execute(
+                select(DocumentationSource).where(
+                    DocumentationSource.id.in_(body.source_ids)
+                )
+            )
+        ).scalars().all()
+        if len(found) != len(set(body.source_ids)):
+            raise HTTPException(status_code=404, detail="One or more sources not found")
+        for src in found:
+            src.job_id = job.id
+        await db.commit()
+    return await _response(db, job)
 
 
 @router.put("/{job_id}/sources/{source_id}", response_model=JobResponse)
