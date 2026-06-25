@@ -8,6 +8,7 @@ from app.routes.articles import router as articles_router
 from app.routes.export import router as export_router
 from app.routes.jobs import router as jobs_router
 from app.routes.profiles import router as profiles_router
+from app.routes.dashboard import router as dashboard_router
 
 __all__ = [
     "vendors_router",
@@ -18,4 +19,5 @@ __all__ = [
     "export_router",
     "jobs_router",
     "profiles_router",
+    "dashboard_router",
 ]
