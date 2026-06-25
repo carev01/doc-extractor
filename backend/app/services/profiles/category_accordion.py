@@ -104,9 +104,22 @@ class CategoryAccordionProfile:
 
     def content_config(self) -> dict:
         return {
-            # The article body is wrapped in <article class="m article">; keep
-            # only that, dropping the category sidebar, nav and footer chrome.
-            "includeTags": ["article.article"],
+            # The article body is <article class="m article">, but tables and
+            # other embedded blocks render in sibling <div class="m embed">
+            # *outside* the article — include both or tables get dropped. The
+            # sidebar (also .m.embed) is removed again via excludeTags below.
+            "includeTags": ["article.article", ".m.embed"],
+            # Strip the page chrome that rides inside those containers: the
+            # breadcrumb, the under-title byline, the bottom category chips, the
+            # author box, the nav sidebar, and the related-articles block.
+            "excludeTags": [
+                ".m.breadcrumb",
+                ".sub",
+                ".tags",
+                ".author",
+                ".category-sidebar",
+                ".m.related",
+            ],
             "onlyMainContent": False,
             "waitFor": 1500,
         }
