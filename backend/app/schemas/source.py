@@ -44,3 +44,16 @@ class SourceResponse(BaseModel):
 class SourceListResponse(BaseModel):
     sources: list[SourceResponse]
     total: int
+
+
+class PickableSource(BaseModel):
+    id: uuid.UUID
+    name: str
+    vendor_name: str
+    product_name: str
+    job_id: uuid.UUID | None
+    job_name: str | None
+
+
+class PickableSourceList(BaseModel):
+    sources: list[PickableSource]

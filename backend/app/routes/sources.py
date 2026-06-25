@@ -12,15 +12,19 @@ from app.core.database import get_db
 from app.models.article import Article
 from app.models.article_version import ArticleVersion
 from app.models.extraction_run import ExtractionRun, RunStatus
+from app.models.job import Job
 from app.models.product import Product
 from app.models.source import DocumentationSource
 from app.models.toc import TOCEntry
+from app.models.vendor import Vendor
 from app.schemas.browse import BrowseTOCEntry, RemovedArticle, BrowseResponse
 from app.schemas.source import (
     SourceCreate,
     SourceUpdate,
     SourceResponse,
     SourceListResponse,
+    PickableSource,
+    PickableSourceList,
 )
 from app.schemas.version import ChangelogEntry, ChangelogResponse
 from app.services.versioning import detect_version_token, resolve_template
@@ -91,6 +95,35 @@ async def list_sources(
     sources = result.scalars().all()
 
     return SourceListResponse(sources=sources, total=total)
+
+
+@router.get("/pickable", response_model=PickableSourceList)
+async def list_pickable_sources(db: AsyncSession = Depends(get_db)):
+    """All sources with vendor/product labels and their current job (if any),
+    for the job view's source picker."""
+    rows = (
+        await db.execute(
+            select(
+                DocumentationSource.id,
+                DocumentationSource.name,
+                Vendor.name.label("vendor_name"),
+                Product.name.label("product_name"),
+                DocumentationSource.job_id,
+                Job.name.label("job_name"),
+            )
+            .join(Product, DocumentationSource.product_id == Product.id)
+            .join(Vendor, Product.vendor_id == Vendor.id)
+            .outerjoin(Job, DocumentationSource.job_id == Job.id)
+            .order_by(Vendor.name, Product.name, DocumentationSource.name)
+        )
+    ).all()
+    return PickableSourceList(sources=[
+        PickableSource(
+            id=r.id, name=r.name, vendor_name=r.vendor_name,
+            product_name=r.product_name, job_id=r.job_id, job_name=r.job_name,
+        )
+        for r in rows
+    ])
 
 
 @router.get("/{source_id}", response_model=SourceResponse)
