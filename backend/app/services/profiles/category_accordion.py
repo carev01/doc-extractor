@@ -55,6 +55,11 @@ def _category_root(root_url: str) -> str:
 
 class CategoryAccordionProfile:
     name = "category_accordion"
+    # Article bodies are static server-rendered HTML — the <article class="m
+    # article"> plus sibling .m.embed table blocks (see content_config). The
+    # generic scoper keeps that union and drops the chrome, so fetch directly
+    # rather than rendering through Browserless.
+    content_engine = "raw_http"
 
     def detect(self, root_html: str, root_url: str) -> bool:
         host = urlparse(root_url).netloc.lower()

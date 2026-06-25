@@ -74,6 +74,16 @@ class Settings(BaseSettings):
     # (each checkpointed for resume), so this caps a single section's walk.
     browserless_toc_timeout_ms: int = 1_800_000  # 30 min
 
+    # raw_http content engine — direct httpx GET + local body scoping for
+    # statically-served docs (no Firecrawl/Browserless). Fetches are cheap, so
+    # this concurrency is higher than the browserless one. The failure guard
+    # aborts a run when too large a fraction of pages fail to fetch/scope (a site
+    # that changed structure or started bot-gating) rather than silently storing
+    # a partial doc set; min-attempts avoids tripping on tiny sources.
+    raw_http_concurrency: int = 8
+    raw_http_max_failure_rate: float = 0.3
+    raw_http_min_attempts: int = 10
+
     model_config = {
         "env_prefix": "DOCEXTRACTOR_",
         "case_sensitive": False,

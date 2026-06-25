@@ -35,6 +35,11 @@ from app.services.profiles.strategies import flare_helpsystem_toc, sidebar_tree_
 
 class FlareHtml5Profile:
     name = "flare_html5"
+    # Topic bodies are static server-rendered HTML scoped by
+    # [data-mc-content-body] (see content_config); fetch them directly rather
+    # than rendering. The generic scoper in _scrape_via_raw_http uses this
+    # profile's content_config selectors.
+    content_engine = "raw_http"
 
     def detect(self, root_html: str, root_url: str) -> bool:
         """Return True for MadCap Flare HTML5 Side Navigation output.

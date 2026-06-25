@@ -25,6 +25,10 @@ _NAV_SELECTOR = ".theme-doc-sidebar-menu"
 
 class DocusaurusProfile:
     name = "docusaurus"
+    # Hybrid: TOC discovery still renders the sidebar via Browserless
+    # (build_toc), but article bodies are static HTML under .theme-doc-markdown
+    # (see content_config), so the content phase fetches directly — no render.
+    content_engine = "raw_http"
 
     def detect(self, root_html: str, root_url: str) -> bool:
         return (

@@ -25,6 +25,7 @@ from app.models.source import DocumentationSource, SourceStatus
 from app.models.toc import TOCEntry
 from app.services.blockpage import is_block_page
 from app.services.profiles import registry as profile_registry
+from app.services.profiles.content_scope import scope_content_html
 from app.services.profiles.detector import detect_platform
 import app.services.profiles.llm as llm_mod
 from app.services.profiles.scraper import Scraper
@@ -136,6 +137,40 @@ class RunControlSignal(Exception):
     def __init__(self, action: str) -> None:
         super().__init__(action)
         self.action = action
+
+
+class RawContentScrapeError(Exception):
+    """Raised when the raw_http content path fails too large a fraction of pages.
+
+    Signals a likely structural change or new bot-gating on the source, so the
+    run fails loudly (via extract_source's generic handler) instead of reporting
+    COMPLETED with a silently-partial doc set. The resume checkpoint is kept, so
+    a re-trigger retries only the pages that failed.
+    """
+
+
+def _resolve_content_engine(source, profile) -> str | None:
+    """Resolve the content-scraping engine for a source.
+
+    A per-source override in ``source.profile_config["content_engine"]`` wins —
+    this is how LLM-derived sources (whose runtime profile is the generic
+    ``DerivedProfile``) opt into ``raw_http`` without a code change. Otherwise
+    fall back to the profile class's ``content_engine`` attribute (e.g.
+    ``flare_webhelp``). Returns ``None`` for the default rendered batch path.
+    """
+    override = (getattr(source, "profile_config", None) or {}).get("content_engine")
+    return override or getattr(profile, "content_engine", None)
+
+
+def _raw_failure_exceeded(attempted: int, failed: int) -> bool:
+    """True when the raw_http run should abort: enough pages were attempted and
+    the failure fraction exceeds the configured ceiling. Below
+    ``raw_http_min_attempts`` we never abort (a tiny source with one dead URL
+    shouldn't fail the run)."""
+    return (
+        attempted >= settings.raw_http_min_attempts
+        and failed / attempted > settings.raw_http_max_failure_rate
+    )
 
 
 class FirecrawlService:
@@ -863,18 +898,41 @@ class FirecrawlService:
         "raw_http"``, e.g. frame-based Flare WebHelp).
 
         Each topic page is fully server-rendered, so we fetch its HTML verbatim
-        with a plain GET (``fetch_raw`` — no JS, no Browserless) and let the
-        profile scope the body. JS rendering is deliberately skipped: the site's
-        own scripts rewrite the page into a dynamic shell that drops the article
-        body, so a rendered scrape captures only navigation chrome.
+        with a plain GET (``fetch_raw`` — no JS, no Browserless) and scope the
+        body. JS rendering is deliberately skipped: some sites' scripts rewrite
+        the page into a dynamic shell that drops the article body, so a rendered
+        scrape captures only navigation chrome.
+
+        Body scoping uses the profile's own ``extract_content_html`` when it
+        defines one (e.g. ``flare_webhelp``); otherwise the generic
+        ``scope_content_html`` applies the profile's ``content_config`` include/
+        exclude selectors — so most static profiles opt in with just a
+        ``content_engine`` flag and no bespoke extractor.
 
         Pages are fetched in bounded-concurrency chunks but persisted
         sequentially (the DB session isn't concurrency-safe). Resumable via the
         content checkpoint and cooperatively cancellable, mirroring the batch
         path. Change detection falls back to content hashing (change_status=None);
         there is no Firecrawl changeTracking baseline on this path.
+
+        If too large a fraction of the pages attempted this run fail to fetch or
+        scope (``raw_http_max_failure_rate``, once ``raw_http_min_attempts`` are
+        tried), the run is failed loudly (``RawContentScrapeError``) rather than
+        completing with a silently-partial doc set.
         """
         from markdownify import markdownify
+
+        # Profile-specific extractor, else the generic selector-based scoper.
+        profile_extractor = getattr(profile, "extract_content_html", None)
+        if callable(profile_extractor):
+            extract_body = profile_extractor
+        else:
+            cfg = profile.content_config()
+            include = cfg.get("includeTags") or []
+            exclude = cfg.get("excludeTags") or []
+
+            def extract_body(raw: str, url: str) -> str | None:
+                return scope_content_html(raw, url, include, exclude)
 
         items = list(url_to_entry.items())
         total = len(items)
@@ -893,7 +951,11 @@ class FirecrawlService:
             )
             await db.commit()
 
-        chunk_size = max(1, settings.browserless_concurrency)
+        chunk_size = max(1, settings.raw_http_concurrency)
+        # Failure tracking is over pages *attempted this run* (not resumed ones),
+        # so the guard reflects the source's current behaviour.
+        attempted = 0
+        failed = 0
 
         async def _fetch(url: str) -> str | None:
             try:
@@ -915,31 +977,49 @@ class FirecrawlService:
             chunk = pending[i:i + chunk_size]
             htmls = await asyncio.gather(*(_fetch(u) for u, _ in chunk))
             for (url, entry), raw in zip(chunk, htmls):
+                attempted += 1
                 if not raw:
+                    failed += 1
                     continue
-                body_html = profile.extract_content_html(raw, url)
+                body_html = extract_body(raw, url)
                 if not body_html:
                     logger.warning("No content body found at %s — skipping", url)
+                    failed += 1
                     continue
                 md = markdownify(body_html).strip()
                 if not md:
                     logger.warning("Empty content from %s — skipping", url)
+                    failed += 1
                     continue
                 try:
-                    await self.process_article_result(
+                    outcome = await self.process_article_result(
                         db=db, source_id=source_id, run_id=run_id, url=url,
                         markdown_content=md, doc_html=body_html,
                         toc_entry_id=entry.get("toc_entry_id"),
                         sort_order=entry.get("sort_order", 0),
                         title=entry["title"], change_status=None,
                     )
-                    completed += 1
+                    if outcome in ("empty", "blocked"):
+                        failed += 1
+                    else:
+                        completed += 1
                 except Exception as exc:
                     logger.warning("Failed to process %s — skipping: %s", url, exc)
                     await db.rollback()
+                    failed += 1
             # Checkpoint the chunk only after it's fully processed.
             await checkpoint.add_content_done([u for u, _ in chunk])
             logger.info("Raw-HTTP content: %d/%d processed", completed, total)
+
+        # Abort a run that mostly failed — a structural change or new bot-gating,
+        # not a healthy partial. The checkpoint is kept so a re-trigger retries
+        # only the failed pages.
+        if _raw_failure_exceeded(attempted, failed):
+            raise RawContentScrapeError(
+                f"raw_http content scrape failed {failed}/{attempted} pages "
+                f"(> {settings.raw_http_max_failure_rate:.0%}) for source "
+                f"{source_id} — likely a structural change or new bot-gating."
+            )
 
     async def _poll_batch_and_process(
         self,
@@ -1300,10 +1380,12 @@ class FirecrawlService:
                 await self._scrape_via_browserless(
                     db, source_id, run.id, url_to_entry, content_spec=content_spec
                 )
-            elif getattr(profile, "content_engine", None) == "raw_http":
-                # Statically-served platforms (e.g. frame-based Flare WebHelp):
-                # fetch each topic verbatim (no JS) and scope the body ourselves.
-                # A JS-rendering scrape would capture only the dynamic shell.
+            elif _resolve_content_engine(source, profile) == "raw_http":
+                # Statically-served content: fetch each page verbatim (no JS) and
+                # scope the body ourselves. A JS-rendering scrape would capture
+                # only the dynamic shell. The engine may come from the profile
+                # class (e.g. flare_webhelp) or a per-source profile_config
+                # override (e.g. LLM-derived category_accordion sources).
                 await self._scrape_via_raw_http(
                     db, source_id, run.id, url_to_entry, profile, checkpoint
                 )

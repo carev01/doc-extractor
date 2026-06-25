@@ -23,6 +23,9 @@ from app.services.profiles.base import TocEntry
 
 class MkDocsProfile:
     name = "mkdocs"
+    # MkDocs (Material) renders article bodies as static HTML under
+    # article.md-content__inner (see content_config) — fetch directly, no render.
+    content_engine = "raw_http"
 
     def detect(self, root_html: str, root_url: str) -> bool:
         return "md-nav__list" in root_html and "md-content" in root_html
