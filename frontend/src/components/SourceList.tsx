@@ -4,6 +4,7 @@ import type {
   DocumentationSource,
   ExtractionRun,
   Job,
+  ProfileOption,
 } from "../types";
 import {
   listSources,
@@ -15,26 +16,17 @@ import {
   listRuns,
   resanitizeSource,
   listJobs,
+  getProfiles,
   assignSourceToJob,
   unassignSourceFromJob,
 } from "../api/client";
 
-const PLATFORM_OPTIONS: { value: string; label: string }[] = [
+// The platform options are fetched from the backend profile registry
+// (GET /api/profiles) so the dropdown can't drift. This is only the fallback
+// shown until that resolves (or if it fails): "auto" auto-detects, which is the
+// safe default for any source.
+const FALLBACK_PLATFORM_OPTIONS: ProfileOption[] = [
   { value: "auto", label: "Auto-detect" },
-  { value: "lazy_tree", label: "Lazy Tree Nav" },
-  { value: "collapsible_sidebar", label: "Collapsible Sidebar" },
-  { value: "docusaurus", label: "Docusaurus" },
-  { value: "mkdocs", label: "MkDocs" },
-  { value: "gitbook", label: "GitBook" },
-  { value: "flare_html5", label: "Flare HTML5" },
-  { value: "flare_webhelp", label: "Flare WebHelp" },
-  { value: "intercom", label: "Intercom" },
-  { value: "freshdesk", label: "Freshdesk" },
-  { value: "confluence", label: "Confluence" },
-  { value: "salesforce", label: "Salesforce" },
-  { value: "dell", label: "Dell Support Manuals" },
-  { value: "generic", label: "Generic (sitemap)" },
-  { value: "llm", label: "LLM fallback" },
 ];
 
 interface Props {
@@ -74,6 +66,19 @@ export default function SourceList({
   const [baseUrl, setBaseUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [platformOptions, setPlatformOptions] = useState<ProfileOption[]>(
+    FALLBACK_PLATFORM_OPTIONS,
+  );
+
+  useEffect(() => {
+    getProfiles()
+      .then((opts) => {
+        if (opts.length) setPlatformOptions(opts);
+      })
+      .catch(() => {
+        /* non-fatal: keep the auto-detect fallback */
+      });
+  }, []);
 
   const fetchSources = useCallback(async () => {
     try {
@@ -164,6 +169,7 @@ export default function SourceList({
             onSelect={onSelectSource}
             onDelete={handleDelete}
             onSourceChanged={fetchSources}
+            platformOptions={platformOptions}
           />
         ))}
         {sources.length === 0 && (
@@ -183,6 +189,7 @@ interface SourceItemProps {
   onSelect: (source: DocumentationSource) => void;
   onDelete: (id: string) => void;
   onSourceChanged: () => void;
+  platformOptions: ProfileOption[];
 }
 
 function SourceItem({
@@ -192,6 +199,7 @@ function SourceItem({
   onSelect,
   onDelete,
   onSourceChanged,
+  platformOptions,
 }: SourceItemProps) {
   const [activeRun, setActiveRun] = useState<ExtractionRun | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
@@ -402,7 +410,7 @@ function SourceItem({
                 }
               }}
             >
-              {PLATFORM_OPTIONS.map((opt) => (
+              {platformOptions.map((opt) => (
                 <option key={opt.value} value={opt.value}>
                   {opt.label}
                 </option>

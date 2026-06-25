@@ -28,6 +28,7 @@ import type {
   VersionDiff,
   ChangelogResponse,
   BrowseResponse,
+  ProfileOption,
 } from "../types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -193,6 +194,13 @@ export async function resanitizeSource(
   const res = await api.post(`/extraction/resanitize/${sourceId}`, null, {
     timeout: 120000,
   });
+  return res.data;
+}
+
+// ── Profiles (platform-selector options) ──
+
+export async function getProfiles(): Promise<ProfileOption[]> {
+  const res = await api.get("/profiles");
   return res.data;
 }
 
