@@ -77,8 +77,8 @@ class Scraper:
                             warmup_url: str | None = None) -> dict:
         """Render via Browserless after a warm-up navigation (to clear a WAF such
         as Akamai), returning ``{outerHtml, innerHtml, title}`` for ``selector`` —
-        used by the Dell profile for both its CSS-collapsed TOC and its article
-        bodies, neither reachable via a cold Firecrawl scrape."""
+        used by the warmup_listgroup profile for both its CSS-collapsed TOC and its
+        article bodies, neither reachable via a cold Firecrawl scrape."""
         from app.services.browserless import browserless_client
         return await browserless_client.warmup_render(
             url, selector=selector, warmup_url=warmup_url

@@ -762,7 +762,7 @@ class FirecrawlService:
         Two render modes:
         * Default (e.g. Salesforce shadow DOM): ``browserless_client.render`` walks
           light + shadow DOM for ``{contentHtml, contentText, title}``.
-        * ``content_spec`` given (e.g. Dell behind Akamai): ``warmup_render`` does a
+        * ``content_spec`` given (e.g. a support site behind Akamai): ``warmup_render`` does a
           warm-up navigation then takes the innerHTML of ``content_spec['selector']``.
 
         Articles are rendered in bounded-concurrency chunks (Browserless calls
@@ -1156,7 +1156,7 @@ class FirecrawlService:
 
             if getattr(profile, "render_engine", None) == "browserless":
                 # Browserless-rendered platforms: Firecrawl can't get the content
-                # (shadow DOM for Salesforce; Akamai block for Dell), so render
+                # (shadow DOM for Salesforce; Akamai block for support manuals), so render
                 # each article in Browserless. A profile may supply a content_spec
                 # (selector + warm-up) for the simple light-DOM extraction path.
                 spec_fn = getattr(profile, "browserless_content_spec", None)

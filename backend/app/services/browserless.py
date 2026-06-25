@@ -287,8 +287,8 @@ export default async function ({ page, context }) {
 
 
 # Browserless /function that performs a **warm-up navigation** before fetching
-# the target, defeating WAFs that reject a cold hit (e.g. Dell behind Akamai
-# returns "Access Denied" on a direct scrape). It sets a realistic desktop UA,
+# the target, defeating WAFs that reject a cold hit (e.g. a support site behind
+# Akamai returns "Access Denied" on a direct scrape). It sets a realistic desktop UA,
 # visits ``warmupUrl`` first so the WAF's JS sets its clearance cookies
 # (``_abck``/``bm_sz``/``ak_bmsc`` for Akamai) in this session, then navigates to
 # the target, waits for ``selector`` to appear, and returns that element's outer
@@ -484,9 +484,9 @@ class BrowserlessClient:
                             client: httpx.AsyncClient | None = None) -> dict:
         """Render ``target_url`` after a warm-up navigation to ``warmup_url`` (to
         clear a WAF like Akamai), and return ``{outerHtml, innerHtml, title}`` for
-        ``selector``. Raises BrowserlessError. Used by the Dell profile for both
-        TOC (outerHtml of the nav container) and content (innerHtml of the article
-        container)."""
+        ``selector``. Raises BrowserlessError. Used by the warmup_listgroup profile
+        for both TOC (outerHtml of the nav container) and content (innerHtml of the
+        article container)."""
         return await self._post(
             _WARMUP_RENDER_CODE,
             {"url": target_url, "warmupUrl": warmup_url, "selector": selector,
