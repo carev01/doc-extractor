@@ -975,7 +975,12 @@ class FirecrawlService:
                 raise RunControlSignal(ctrl)
 
             chunk = pending[i:i + chunk_size]
-            htmls = await asyncio.gather(*(_fetch(u) for u, _ in chunk))
+            # An entry may point its body fetch at a different URL than the
+            # human-facing page URL (e.g. an API endpoint returning the article
+            # as JSON — see the zoomin profile); default to the page URL.
+            htmls = await asyncio.gather(
+                *(_fetch(e.get("content_url") or u) for u, e in chunk)
+            )
             for (url, entry), raw in zip(chunk, htmls):
                 attempted += 1
                 if not raw:
@@ -1302,6 +1307,7 @@ class FirecrawlService:
                     "title": e.title, "url": e.url, "level": e.level,
                     "is_article": e.is_article, "parent_url": e.parent_url,
                     "content_selector": e.content_selector,
+                    "content_url": e.content_url,
                     "topic_key": derive_topic_key(e.url, source.url_template, product_version),
                 }
                 for e in toc_objs

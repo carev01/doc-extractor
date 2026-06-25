@@ -14,6 +14,10 @@ class TocEntry:
     # Optional CSS selector for this entry's content, overriding the profile's
     # run-wide selector — lets one page yield several section documents.
     content_selector: str | None = None
+    # Optional URL to fetch for this entry's body on the raw_http path, when it
+    # differs from the human-facing ``url`` (e.g. an API endpoint that returns
+    # the article HTML as JSON). Defaults to ``url`` when None.
+    content_url: str | None = None
 
 
 class ExtractionProfile(Protocol):
