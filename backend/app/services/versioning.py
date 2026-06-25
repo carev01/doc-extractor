@@ -15,13 +15,20 @@ def resolve_template(template: str, version: str) -> str:
     return template.replace(VERSION_PLACEHOLDER, version)
 
 
-def derive_topic_key(url: str, url_template: str | None, version: str | None) -> str:
+def derive_topic_key(url: str | None, url_template: str | None, version: str | None) -> str | None:
     """Return the version-independent key for *url*.
 
     For a templated source, replace the version token — anchored at the
     template's placeholder offset in the shared URL prefix — with ``{version}``.
     Non-templated sources (or a missing version) return *url* unchanged.
+
+    *url* may be ``None`` for a url-less structural TOC node (a Flare "book"/
+    section header that carries no page, common in HelpSystem.xml/Toc chunks);
+    such entries have no topic identity, so it is returned unchanged rather than
+    templated.
     """
+    if not url:
+        return url
     if not url_template or not version or VERSION_PLACEHOLDER not in url_template:
         return url
     prefix = url_template.split(VERSION_PLACEHOLDER, 1)[0]
