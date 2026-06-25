@@ -127,6 +127,7 @@ export interface ExtractionRun {
   articles_total: number;
   articles_updated?: number;
   articles_unchanged?: number;
+  articles_resumed?: number;
   attempts?: number;
   error_message: string | null;
   started_at: string | null;
