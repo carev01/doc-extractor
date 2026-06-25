@@ -67,7 +67,17 @@ _EDIT_LINK_RE = re.compile(
 # Copyright footer line (kept tail-anchored — see _strip_copyright_footer).
 # An optional leading "|" handles landing pages where Flare renders the footer
 # inside a markdown table cell ("| Copyright © … |") rather than as plain text.
-_COPYRIGHT_RE = re.compile(r"^\s*\|?\s*Copyright\s*(?:©|\(c\))", re.IGNORECASE)
+# Two footer shapes are matched: the word "Copyright" followed by a symbol
+# ("Copyright © …"), and a bare symbol followed by a year ("© 2025 NAKIVO, Inc.
+# All rights reserved." — Nakivo emits this on every page, and the year bumps
+# annually, so it must be stripped to avoid spurious content-hash churn).
+_COPYRIGHT_RE = re.compile(
+    r"^\s*\|?\s*(?:"
+    r"Copyright\s*(?:©|\(c\)|&copy;)"   # "Copyright © …"
+    r"|(?:©|\(c\)|&copy;)\s*\d{4}"      # "© 2025 …" / "(c) 2025 …"
+    r")",
+    re.IGNORECASE,
+)
 
 # Leading marketing banner signatures.
 _PROMO_RE = re.compile(r"product innovations are live|\[Explore now\]\(", re.IGNORECASE)

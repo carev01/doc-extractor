@@ -48,6 +48,43 @@ def test_removes_copyright_footer():
     assert "Cookies Settings" not in out
 
 
+def test_removes_symbol_prefixed_copyright_footer():
+    """Nakivo (and similar) end every page with a bare-symbol copyright line —
+    '© 2025 NAKIVO, Inc. ...' — that the word-anchored rule missed."""
+    md = (
+        "# Backup Copy\n\n"
+        "A backup copy job copies existing backups to another location.\n\n"
+        "© 2025 NAKIVO, Inc. All rights reserved. All trademarks are the property "
+        "of their respective owners.\n"
+    )
+    out = sanitize_markdown(md)
+    assert "A backup copy job copies" in out
+    assert "NAKIVO, Inc." not in out
+    assert "©" not in out
+
+
+def test_symbol_copyright_year_bump_does_not_change_content():
+    """The whole footer line is stripped, so a yearly © year bump can't churn the
+    content hash."""
+    body = "# Title\n\nReal documentation body.\n\n"
+    y2025 = sanitize_markdown(body + "© 2025 NAKIVO, Inc. All rights reserved.\n")
+    y2026 = sanitize_markdown(body + "© 2026 NAKIVO, Inc. All rights reserved.\n")
+    assert y2025 == y2026
+
+
+def test_mid_article_symbol_copyright_not_treated_as_footer():
+    """A '© <year>' mention far above the tail must not nuke trailing content."""
+    md = (
+        "Notices\n=======\n\n"
+        "© 2025 Acme governs use of this product.\n\n"
+        + "\n".join(f"Real paragraph {i} with substantive content." for i in range(20))
+        + "\n"
+    )
+    out = sanitize_markdown(md)
+    assert "Real paragraph 19" in out
+    assert "© 2025 Acme governs" in out
+
+
 def test_removes_back_to_top_anchors():
     out = sanitize_markdown(DATTO_TAIL)
     assert "#Top)" not in out
