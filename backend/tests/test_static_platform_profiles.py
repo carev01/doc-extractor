@@ -52,6 +52,19 @@ def test_detection_is_specific():
     assert detect_platform(zoomin, "https://help.example.com/bundle/B/page/x.htm") == "zoomin"
 
 
+def test_docfx_detects_rendered_ops_page_without_meta_tags():
+    # Firecrawl returns the *rendered* DOM, where learn.microsoft.com's head
+    # <meta name="ms.*"> tags are gone but data-bi-name telemetry attributes
+    # remain. Detection must still fire (regression: Azure Backup matched only
+    # the stale LLM sidebar spec -> 1 page).
+    rendered = (
+        '<html><body><div data-bi-name="content" '
+        'data-bi-area="body"><a href="https://learn.microsoft.com/x">x</a>'
+        '</div></body></html>'
+    )
+    assert detect_platform(rendered, "https://learn.microsoft.com/en-us/azure/backup/") == "docfx"
+
+
 def test_detection_negative_on_plain_html():
     assert detect_platform("<html><body><p>hi</p></body></html>", "https://x/") in (None,) or True
     # The four fingerprints must be absent from a vanilla page.

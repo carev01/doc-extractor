@@ -29,12 +29,18 @@ class DocFxProfile:
 
     def detect(self, root_html: str, root_url: str) -> bool:
         lower = root_html.lower()
-        # DocFX emits a generator meta tag; the Open-Publishing platform emits
-        # ms.* metadata + data-bi-name telemetry attributes. Either fingerprints
-        # the toc.json lineage this profile handles.
+        # DocFX emits a generator meta tag.
         if 'content="docfx' in lower:
             return True
-        return 'name="ms.topic"' in lower and "data-bi-name" in lower
+        # The Open-Publishing platform (learn.microsoft.com) emits ms.* <meta>
+        # tags AND data-bi-name telemetry attributes. The head <meta ms.*> tags
+        # don't survive a JS render (Firecrawl returns the rendered DOM, where
+        # they're dropped — which silently broke Azure Backup detection), but
+        # data-bi-name does. Key on data-bi-name, paired with an ms.* / learn
+        # marker so it can't false-positive on an unrelated site.
+        return "data-bi-name" in lower and (
+            'name="ms.' in lower or "learn.microsoft" in lower
+        )
 
     async def build_toc(self, root_url: str, scraper) -> list[TocEntry]:
         toc_url = urljoin(root_url, _TOC_FILENAME)
