@@ -138,12 +138,18 @@ class FlareWebHelpProfile:
         return urljoin(help_root, topic_path)
 
     def content_config(self) -> dict:
-        # WebHelp/TriPane topics scope their body in #mc-main-content; the HTML5
-        # skin uses [data-mc-content-body]. They don't co-occur on one topic, so
-        # listing both lets Firecrawl scope whichever exists. (A non-matching
-        # includeTags yields empty content, so a single selector drops pages.)
+        # MadCap's content body carries role="main" in both the WebHelp/TriPane
+        # (<div id="mc-main-content" role="main">) and HTML5 skins, so a single
+        # [role=main] selector scopes the topic body across skins.
+        #
+        # Why not the id / a multi-selector list: Firecrawl ignores id selectors
+        # (#mc-main-content never matches), and on table/iframe-wrapped MadCap
+        # pages (e.g. Acronis Cyber Protect) *any* second includeTags selector
+        # collapses the result to empty/fragments. A single attribute selector is
+        # the only reliable scope there, and is identical to the old config on
+        # well-behaved WebHelp pages (e.g. Arcserve).
         return {
-            "includeTags": ["[data-mc-content-body]", "#mc-main-content"],
+            "includeTags": ["[role=main]"],
             # Drop Flare skin chrome before markdown conversion (back-to-top,
             # feedback buttons, MadCap-marked non-content). Textual residue is
             # cleaned post-conversion in services/sanitize.py.

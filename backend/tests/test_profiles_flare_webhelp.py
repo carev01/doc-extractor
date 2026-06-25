@@ -95,10 +95,12 @@ def test_detect_rejects_gitbook():
 
 def test_content_config_include_tags():
     cfg = FlareWebHelpProfile().content_config()
-    # Both the HTML5 attribute and the WebHelp/TriPane #mc-main-content selector,
-    # so Firecrawl scopes whichever the topic actually uses (non-matching
-    # includeTags returns empty content, which would drop the page).
-    assert cfg["includeTags"] == ["[data-mc-content-body]", "#mc-main-content"]
+    # A single [role=main] selector — MadCap's content body carries role="main"
+    # in both the WebHelp/TriPane and HTML5 skins. Firecrawl ignores id selectors
+    # like #mc-main-content, and on some MadCap pages (table/iframe-wrapped, e.g.
+    # Acronis) any multi-selector includeTags list collapses to empty/fragments —
+    # so a single attribute selector is the reliable scope.
+    assert cfg["includeTags"] == ["[role=main]"]
 
 
 def test_content_config_excludes_skin_chrome():
