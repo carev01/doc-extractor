@@ -175,16 +175,20 @@ def test_extract_content_html_resolves_relative_images():
     assert "https://documentation.arcserve.com/shared/logo.png" in html
 
 
-def test_extract_content_html_prefers_html5_attr():
-    """When a topic carries the HTML5 [data-mc-content-body] attribute it is
-    preferred over #mc-main-content (first selector in includeTags)."""
+def test_extract_content_html_scopes_html5_attr_body():
+    """A topic that scopes its body with the HTML5 [data-mc-content-body]
+    attribute (rather than #mc-main-content) is extracted too. The two
+    selectors don't co-occur on a real topic (see content_config), so this
+    mirrors a genuine html5-skin topic carrying only the attribute."""
     html_doc = (
-        '<html><body><div data-mc-content-body="True"><p>html5 body</p></div>'
-        '<div id="mc-main-content"><p>webhelp body</p></div></body></html>'
+        '<html><body><header>Logout</header>'
+        '<div data-mc-content-body="True"><h1>Topic</h1><p>real body</p></div>'
+        '</body></html>'
     )
     out = FlareWebHelpProfile().extract_content_html(html_doc, TOPIC_URL)
-    assert "html5 body" in out
-    assert "webhelp body" not in out
+    assert out is not None
+    assert "real body" in out
+    assert "Logout" not in out
 
 
 def test_extract_content_html_returns_none_when_no_body():
