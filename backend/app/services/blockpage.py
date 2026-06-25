@@ -1,11 +1,11 @@
 """Bot-protection / interstitial page detection.
 
-Some vendor sites (Dell behind Akamai, others behind Cloudflare/Imperva) reject
+Some vendor sites (some behind Akamai, others behind Cloudflare/Imperva) reject
 our scraper egress with a short "Access Denied" / challenge page instead of the
 real content. That page is non-empty, so without this guard it sails past the
 empty-content check and gets stored as if it were a legitimate article — silently
 corrupting the source (observed: a 279-byte Akamai "Access Denied" page stored as
-the sole "article" of a Dell guide, run reported COMPLETED).
+the sole "article" of a support-manual guide, run reported COMPLETED).
 
 ``is_block_page`` recognises the common block/challenge fingerprints. It is
 deliberately conservative: long pages are only flagged by markers that

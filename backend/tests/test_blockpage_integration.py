@@ -48,7 +48,7 @@ async def factory():
 
 async def _source_and_run(f):
     async with f() as s:
-        v = Vendor(name="Dell"); s.add(v); await s.flush()
+        v = Vendor(name="Acme"); s.add(v); await s.flush()
         p = Product(vendor_id=v.id, name="PPDM"); s.add(p); await s.flush()
         src = DocumentationSource(product_id=p.id, name="Guide",
                                   base_url="https://www.dell.com/support/manuals/en-us/x/y")

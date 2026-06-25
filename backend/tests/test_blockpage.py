@@ -6,7 +6,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.services.blockpage import is_block_page
 
-# The exact Akamai page that was silently stored as a Dell "article".
+# The exact Akamai page that was silently stored as a support-manual "article".
 AKAMAI_DENIED = (
     "Access Denied\n=============\n\n"
     "You don't have permission to access "

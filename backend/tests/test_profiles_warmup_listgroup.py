@@ -1,4 +1,5 @@
-"""Tests for the Dell support-manuals profile (Akamai warm-up + collapsed TOC)."""
+"""Tests for the warm-up + list-group support-manuals profile (WAF warm-up +
+CSS-collapsed Bootstrap list-group TOC)."""
 
 import os
 import sys
@@ -6,13 +7,17 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from app.services.profiles.dell import DellProfile, _to_en_us, parse_dell_toc
+from app.services.profiles.warmup_listgroup import (
+    WarmupListGroupProfile,
+    _to_en_us,
+    parse_listgroup_toc,
+)
 from app.services.profiles.scraper import FakeScraper
 
 ROOT = ("https://www.dell.com/support/manuals/en-us/"
         "enterprise-copy-data-management/pp-dm_20.1_ag")
 
-# Mirrors the real Dell list-group: a leaf, then a parent section that is ALSO a
+# Mirrors the real list-group: a leaf, then a parent section that is ALSO a
 # page (its own <a>) wrapping a nested <ul class="collapse"> of children, one of
 # which is itself a parent with a grandchild.
 TOC_HTML = """
@@ -47,14 +52,14 @@ TOC_HTML = """
 """
 
 
-def test_detect_matches_dell_manuals_by_url():
-    # Root HTML is the Akamai block page in practice, so detection is URL-based.
-    assert DellProfile().detect("<html>Access Denied</html>", ROOT) is True
+def test_detect_matches_manuals_by_url():
+    # Root HTML is the WAF block page in practice, so detection is URL-based.
+    assert WarmupListGroupProfile().detect("<html>Access Denied</html>", ROOT) is True
 
 
-def test_detect_rejects_other_dell_paths_and_other_hosts():
-    assert DellProfile().detect("", "https://www.dell.com/support/home/en-us") is False
-    assert DellProfile().detect("", "https://docs.other.com/support/manuals/x") is False
+def test_detect_rejects_other_paths_and_other_hosts():
+    assert WarmupListGroupProfile().detect("", "https://www.dell.com/support/home/en-us") is False
+    assert WarmupListGroupProfile().detect("", "https://docs.other.com/support/manuals/x") is False
 
 
 def test_to_en_us_forces_path_and_lang_param():
@@ -73,7 +78,7 @@ def test_to_en_us_adds_lang_to_base_without_query():
 
 
 def test_parse_toc_hierarchy_and_normalization():
-    toc = parse_dell_toc(TOC_HTML, ROOT)
+    toc = parse_listgroup_toc(TOC_HTML, ROOT)
     by_title = {e.title: e for e in toc}
     assert set(by_title) == {"Preface", "Getting started", "Overview",
                              "Deployment", "Sizing"}
@@ -83,7 +88,7 @@ def test_parse_toc_hierarchy_and_normalization():
     assert by_title["Overview"].level == 1
     assert by_title["Deployment"].level == 1
     assert by_title["Sizing"].level == 2
-    # Parent links thread through (sections are also pages on Dell).
+    # Parent links thread through (sections are also pages).
     assert by_title["Overview"].parent_url == by_title["Getting started"].url
     assert by_title["Sizing"].parent_url == by_title["Deployment"].url
     # Every node is an article with an en-us, lang-forced URL.
@@ -95,23 +100,23 @@ def test_parse_toc_hierarchy_and_normalization():
 async def test_build_toc_uses_warmup_render():
     toc_url = _to_en_us(ROOT, ROOT)
     scraper = FakeScraper({}, warmup_render_by_url={toc_url: {"outerHtml": TOC_HTML}})
-    toc = await DellProfile().build_toc(ROOT, scraper)
+    toc = await WarmupListGroupProfile().build_toc(ROOT, scraper)
     assert [e.title for e in toc][:2] == ["Preface", "Getting started"]
     assert len(toc) == 5
 
 
 def test_browserless_content_spec():
-    spec = DellProfile().browserless_content_spec()
+    spec = WarmupListGroupProfile().browserless_content_spec()
     assert spec["selector"] == "#divTopicContent"
     assert spec["warmup_url"].startswith("https://www.dell.com")
 
 
 def test_parses_real_fixture():
-    path = os.path.join(os.path.dirname(__file__), "fixtures", "platforms", "dell_toc.html")
+    path = os.path.join(os.path.dirname(__file__), "fixtures", "platforms", "warmup_listgroup.html")
     if not os.path.exists(path):
-        pytest.skip("real Dell fixture not present")
+        pytest.skip("real list-group fixture not present")
     html = open(path, encoding="utf-8").read()
-    toc = parse_dell_toc(html, ROOT)
+    toc = parse_listgroup_toc(html, ROOT)
     # The captured guide has 363 anchor entries; every one normalised to en-us.
     assert len(toc) == 363
     assert all("/en-us/" in e.url and "lang=en-us" in e.url for e in toc)
