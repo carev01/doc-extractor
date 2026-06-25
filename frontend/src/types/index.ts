@@ -357,3 +357,12 @@ export interface ProfileOption {
   value: string;
   label: string;
 }
+
+export interface PickableSource {
+  id: string;
+  name: string;
+  vendor_name: string;
+  product_name: string;
+  job_id: string | null;
+  job_name: string | null;
+}

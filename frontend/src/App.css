@@ -1793,3 +1793,16 @@ a.btn-primary {
   font-style: italic;
   margin-top: 4px;
 }
+
+.picker-backdrop {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5);
+  display: flex; align-items: center; justify-content: center; z-index: 50;
+}
+.picker-panel {
+  background: var(--panel, #1d2630); padding: 1.2rem; border-radius: 8px;
+  width: min(560px, 92vw); max-height: 80vh; display: flex; flex-direction: column;
+}
+.picker-list { list-style: none; margin: 0.6rem 0; padding: 0; overflow-y: auto; }
+.picker-list li { padding: 0.2rem 0; }
+.picker-list label { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
+.picker-actions { display: flex; gap: 0.6rem; justify-content: flex-end; }

@@ -29,6 +29,7 @@ import type {
   ChangelogResponse,
   BrowseResponse,
   ProfileOption,
+  PickableSource,
 } from "../types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -419,5 +420,18 @@ export async function getVersionDiff(
 
 export async function browseSource(sourceId: string): Promise<BrowseResponse> {
   const res = await api.get(`/sources/${sourceId}/browse`);
+  return res.data;
+}
+
+export async function listPickableSources(): Promise<PickableSource[]> {
+  const res = await api.get<{ sources: PickableSource[] }>("/sources/pickable");
+  return res.data.sources;
+}
+
+export async function assignSourcesToJob(
+  jobId: string,
+  sourceIds: string[],
+): Promise<Job> {
+  const res = await api.put<Job>(`/jobs/${jobId}/sources`, { source_ids: sourceIds });
   return res.data;
 }
