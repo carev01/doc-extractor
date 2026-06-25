@@ -98,3 +98,64 @@ async def test_dashboard_summary_and_rows(client):
     assert rows["Fresh"]["last_run_status"] == "completed"
     assert rows["Fresh"]["last_run_new"] == 3
     assert rows["Fresh"]["vendor_name"] == "Acme"
+
+
+async def test_pending_run_does_not_shadow_completed(client):
+    """A PENDING run (started_at auto-set by DB) must not shadow a COMPLETED run.
+
+    ExtractionRun.started_at has server_default=now() so it is never NULL even
+    for PENDING rows. The dashboard must use status priority ordering so that a
+    newer PENDING run (started_at ≈ now) does not hide the meaningful stats of
+    an older COMPLETED run (articles_extracted > 0).
+    """
+    c, factory = client
+    now = datetime.now(timezone.utc)
+    async with factory() as s:
+        v = Vendor(name="VendorZ"); s.add(v); await s.flush()
+        p = Product(vendor_id=v.id, name="ProdZ"); s.add(p); await s.flush()
+        src = DocumentationSource(
+            product_id=p.id, name="SrcZ", base_url="https://z/1",
+            status=SourceStatus.COMPLETED,
+            last_extracted_at=now - timedelta(days=1),
+        )
+        s.add(src); await s.flush()
+        completed = ExtractionRun(
+            source_id=src.id, status=RunStatus.COMPLETED,
+            started_at=now - timedelta(days=1),
+            articles_extracted=4, articles_updated=0, articles_unchanged=0,
+        )
+        # PENDING has a more recent started_at (DB server_default=now()) which
+        # would incorrectly win under naive started_at DESC ordering.
+        pending = ExtractionRun(
+            source_id=src.id, status=RunStatus.PENDING,
+            started_at=now,           # explicitly set to now to simulate server default
+            articles_extracted=0, articles_updated=0, articles_unchanged=0,
+        )
+        s.add_all([completed, pending])
+        await s.commit()
+
+    body = (await c.get("/api/dashboard/sources?stale_days=30")).json()
+    rows = {r["name"]: r for r in body["sources"]}
+    assert rows["SrcZ"]["last_run_status"] == "completed"
+    assert rows["SrcZ"]["last_run_new"] == 4
+
+
+async def test_summary_running_counter(client):
+    """summary.running reflects EXTRACTING sources."""
+    c, factory = client
+    now = datetime.now(timezone.utc)
+    async with factory() as s:
+        v = Vendor(name="VendorR"); s.add(v); await s.flush()
+        p = Product(vendor_id=v.id, name="ProdR"); s.add(p); await s.flush()
+        extracting = DocumentationSource(
+            product_id=p.id, name="SrcR", base_url="https://r/1",
+            status=SourceStatus.EXTRACTING,
+            last_extracted_at=now - timedelta(hours=1),
+        )
+        s.add(extracting)
+        await s.commit()
+
+    body = (await c.get("/api/dashboard/sources?stale_days=30")).json()
+    summary = body["summary"]
+    assert summary["running"] == 1
+    assert summary["total"] == 1

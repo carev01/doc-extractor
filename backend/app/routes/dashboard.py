@@ -2,12 +2,12 @@
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.article import Article
-from app.models.extraction_run import ExtractionRun
+from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.job import Job
 from app.models.product import Product
 from app.models.source import DocumentationSource, SourceStatus
@@ -35,15 +35,28 @@ async def dashboard_sources(
     ):
         counts[sid] = n
 
-    # Latest run per source by started_at (small data set — fetch newest-first
-    # and keep the first seen per source).
+    # Latest run per source: DISTINCT ON keeps one row per source. Order by:
+    # 1. status priority (PENDING last — it has no meaningful stats yet; all other
+    #    statuses including RUNNING come first), 2. started_at DESC so the most
+    #    recent non-pending run wins. Bounded to one row per source.
+    # NOTE: started_at has server_default=now() so it is never NULL; NULLS LAST
+    # alone is not sufficient — we must explicitly de-prioritise PENDING by status.
+    _pending_last = case(
+        (ExtractionRun.status == RunStatus.PENDING, 1), else_=0
+    )
     latest_run: dict = {}
     for run in (
         await db.execute(
-            select(ExtractionRun).order_by(ExtractionRun.started_at.desc())
+            select(ExtractionRun)
+            .distinct(ExtractionRun.source_id)
+            .order_by(
+                ExtractionRun.source_id,
+                _pending_last,
+                ExtractionRun.started_at.desc(),
+            )
         )
     ).scalars():
-        latest_run.setdefault(run.source_id, run)
+        latest_run[run.source_id] = run
 
     rows_q = (
         select(

@@ -90,3 +90,15 @@ async def test_import_malformed_csv_is_422(client):
     c, _ = client
     res = await c.post("/api/sources/import", json={"csv": "not a real,csv\nonly one row"})
     assert res.status_code == 422
+
+
+async def test_import_intra_request_duplicate_skipped(client):
+    """A CSV with the same vendor+product+base_url on two rows yields created=1, skipped=1."""
+    c, _ = client
+    csv = (
+        "vendor,product,source_name,base_url,url_template\n"
+        "DupVendor,DupProd,GuideV1,https://dup/guide,\n"
+        "DupVendor,DupProd,GuideV1,https://dup/guide,\n"  # exact duplicate
+    )
+    res = (await c.post("/api/sources/import", json={"csv": csv})).json()
+    assert res["created"] == 1 and res["skipped"] == 1 and res["errors"] == 0
