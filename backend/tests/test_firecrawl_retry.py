@@ -28,7 +28,7 @@ class _SeqClient:
             raise item
         return item
 
-    async def get(self, url, headers=None):
+    async def get(self, url, headers=None, **kwargs):
         self.calls += 1
         item = self._seq.pop(0)
         if isinstance(item, Exception):
@@ -106,3 +106,30 @@ async def test_get_with_retry_exhausts_then_raises(svc):
     with pytest.raises(httpx.ConnectError):
         await svc._get_with_retry("http://fc/v2/batch/scrape/job-1", what="batch status")
     assert svc.client.calls == svc.TRANSIENT_RETRIES + 1
+
+
+# --- fetch_raw (raw_http content/TOC GETs) must retry transient failures ---
+
+
+def _text_resp(status: int, text: str = "<html>ok</html>"):
+    req = httpx.Request("GET", "http://site/page")
+    return httpx.Response(status, request=req, text=text)
+
+
+@pytest.mark.asyncio
+async def test_fetch_raw_retries_transient_then_succeeds(svc):
+    # A momentary 429/timeout on one page of a several-hundred-page raw_http run
+    # must recover, not permanently drop the page (and trip the failure guard).
+    err = httpx.ReadTimeout("timed out", request=httpx.Request("GET", "http://site/page"))
+    svc.client = _SeqClient([_text_resp(503), err, _text_resp(200, "<p>body</p>")])
+    out = await svc.fetch_raw("http://site/page")
+    assert out == "<p>body</p>"
+    assert svc.client.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_fetch_raw_404_raises_immediately(svc):
+    svc.client = _SeqClient([_text_resp(404)])
+    with pytest.raises(httpx.HTTPStatusError):
+        await svc.fetch_raw("http://site/missing")
+    assert svc.client.calls == 1  # 404 is not transient — no retry
