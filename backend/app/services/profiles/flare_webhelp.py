@@ -60,6 +60,15 @@ from app.services.profiles.strategies import flare_helpsystem_toc
 
 class FlareWebHelpProfile:
     name = "flare_webhelp"
+    # Topic pages are fully server-rendered static HTML; the body lives in
+    # #mc-main-content (or [data-mc-content-body]) in the raw response. The
+    # site's own scripts (MadCapAll.js, webhelp.js, locale selectors) rewrite
+    # the page into a dynamic frame/SPA shell on load, *replacing* that body
+    # with navigation chrome and a search placeholder. So a JS-rendering scrape
+    # (Firecrawl via Browserless) captures only the shell — the article text is
+    # gone. We therefore scrape content with a verbatim HTTP GET (no JS) and
+    # scope the body ourselves. See ``_scrape_via_raw_http`` in firecrawl.py.
+    content_engine = "raw_http"
 
     def detect(self, root_html: str, root_url: str) -> bool:
         """Return True for the frame-based MadCap Flare WebHelp / TriPane skin.
@@ -151,6 +160,44 @@ class FlareWebHelpProfile:
             "onlyMainContent": False,
             "waitFor": 1500,
         }
+
+    def extract_content_html(self, raw_html: str, url: str) -> str | None:
+        """Scope the topic body out of a statically-served Flare topic page.
+
+        Used by the raw-HTTP content path (``content_engine == "raw_http"``):
+        given the verbatim, *un-rendered* topic HTML, return the body container's
+        HTML ready for markdown conversion, or ``None`` when no body is present
+        (e.g. a redirect/placeholder page) so the caller skips it.
+
+        Selectors are taken from ``content_config`` so the include/exclude rules
+        stay defined in exactly one place. WebHelp/TriPane topics use
+        ``#mc-main-content``; the HTML5 attribute is tried first for the rare
+        topic that carries it. Skin chrome inside the body (back-to-top, feedback
+        buttons, ``.nocontent`` mini-TOC) is dropped, and relative image ``src``
+        values are resolved to absolute URLs so the downstream image
+        download/rewrite step can match them.
+        """
+        cfg = self.content_config()
+        soup = BeautifulSoup(raw_html, "html.parser")
+
+        body = None
+        for selector in cfg["includeTags"]:
+            body = soup.select_one(selector)
+            if body is not None:
+                break
+        if body is None:
+            return None
+
+        for selector in cfg["excludeTags"]:
+            for el in body.select(selector):
+                el.decompose()
+
+        for img in body.find_all("img"):
+            src = img.get("src")
+            if src:
+                img["src"] = urljoin(url, src)
+
+        return str(body)
 
 
 PROFILE = FlareWebHelpProfile()
