@@ -169,27 +169,31 @@ class FlareWebHelpProfile:
         HTML ready for markdown conversion, or ``None`` when no body is present
         (e.g. a redirect/placeholder page) so the caller skips it.
 
-        Selectors are taken from ``content_config`` so the include/exclude rules
-        stay defined in exactly one place. WebHelp/TriPane topics use
-        ``#mc-main-content``; the HTML5 attribute is tried first for the rare
-        topic that carries it. Skin chrome inside the body (back-to-top, feedback
-        buttons, ``.nocontent`` mini-TOC) is dropped, and relative image ``src``
-        values are resolved to absolute URLs so the downstream image
-        download/rewrite step can match them.
+        The body container mirrors ``content_config``'s includeTags: the HTML5
+        skin scopes its body with the ``data-mc-content-body`` attribute, while
+        WebHelp/TriPane topics use ``id="mc-main-content"`` (they don't co-occur
+        on a topic). Skin chrome inside the body (back-to-top, feedback buttons,
+        ``.nocontent`` mini-TOC — mirrors excludeTags) is dropped, and relative
+        image ``src`` values are resolved to absolute URLs so the downstream
+        image download/rewrite step can match them.
+
+        Lookups use bs4-native ``find``/``find_all`` rather than soupsieve CSS
+        ``select``: soupsieve's attribute-presence selector
+        (``[data-mc-content-body]``) is subject to its module-level compiled-
+        selector cache and proved unreliable under the full test suite, whereas
+        ``find(attrs=...)`` is deterministic.
         """
-        cfg = self.content_config()
         soup = BeautifulSoup(raw_html, "html.parser")
 
-        body = None
-        for selector in cfg["includeTags"]:
-            body = soup.select_one(selector)
-            if body is not None:
-                break
+        body = (
+            soup.find(attrs={"data-mc-content-body": True})
+            or soup.find(id="mc-main-content")
+        )
         if body is None:
             return None
 
-        for selector in cfg["excludeTags"]:
-            for el in body.select(selector):
+        for cls in ("GoToTop", "feedback-button", "nocontent"):
+            for el in body.find_all(class_=cls):
                 el.decompose()
 
         for img in body.find_all("img"):
