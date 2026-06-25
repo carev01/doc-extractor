@@ -89,7 +89,7 @@ export default function VersionOverlay({
                 if (showBoundary) {
                   items.push(
                     <li key={`boundary-${v.id}`} className="version-boundary">
-                      {prev!.version} → {v.version}
+                      {v.version} → {prev!.version}
                     </li>
                   );
                 }

@@ -119,7 +119,7 @@ export default function ChangelogPanel({ source }: Props) {
                   <Fragment key={`row-${flatIdx}`}>
                     {showBoundary && (
                       <li key={`vb-${flatIdx}`} className="version-boundary">
-                        {prevV} → {e.version}
+                        {e.version} → {prevV}
                       </li>
                     )}
                     <li
