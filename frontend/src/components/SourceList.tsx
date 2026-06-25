@@ -20,6 +20,7 @@ import {
   assignSourceToJob,
   unassignSourceFromJob,
 } from "../api/client";
+import ProductVersionBar from "./ProductVersionBar";
 
 // The platform options are fetched from the backend profile registry
 // (GET /api/profiles) so the dropdown can't drift. This is only the fallback
@@ -135,6 +136,7 @@ export default function SourceList({
 
   return (
     <div className="source-list">
+      <ProductVersionBar product={product} sources={sources} onChanged={fetchSources} />
       <h2>Documentation Sources — {product.name}</h2>
 
       {error && <div className="error">{error}</div>}
