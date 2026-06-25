@@ -25,6 +25,8 @@ class Product(Base):
         UUID(as_uuid=True), ForeignKey("vendors.id", ondelete="CASCADE"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(512), nullable=False)
+    version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    previous_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

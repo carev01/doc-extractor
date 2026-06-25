@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -12,6 +12,10 @@ from app.core.database import Base
 
 class Article(Base):
     __tablename__ = "articles"
+
+    __table_args__ = (
+        UniqueConstraint("source_id", "topic_key", name="uq_articles_source_topic"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -53,6 +57,9 @@ class Article(Base):
     # Content
     title: Mapped[str] = mapped_column(String(1024), nullable=False)
     source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    # Version-independent topic identity; unique per source. Equals source_url
+    # for non-versioned sources.
+    topic_key: Mapped[str] = mapped_column(String(2048), nullable=False)
     content_markdown: Mapped[str] = mapped_column(Text, nullable=False)
     content_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     # SHA-256 hex digest of content_markdown — used to detect changes
