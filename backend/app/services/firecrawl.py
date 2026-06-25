@@ -458,14 +458,14 @@ class FirecrawlService:
         source_id: uuid.UUID,
         run_id: uuid.UUID,
         url: str,
-        topic_key: str | None = None,
-        markdown_content: str = "",
-        doc_html: str = "",
-        toc_entry_id: uuid.UUID | None = None,
-        sort_order: int = 0,
-        title: str = "",
+        markdown_content: str,
+        doc_html: str,
+        toc_entry_id: uuid.UUID | None,
+        sort_order: int,
+        title: str,
         change_status: str | None = None,
         diff_text: str | None = None,
+        topic_key: str | None = None,
     ) -> str:
         """Store or skip a single article and atomically increment run counters.
 

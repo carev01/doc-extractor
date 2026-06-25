@@ -49,7 +49,7 @@ async def make_service_and_source(
 
 
 async def _make_run(db: AsyncSession, source: "DocumentationSource") -> "ExtractionRun":
-    """Insert a RUNNING ExtractionRun for *source* and return it.
+    """Insert a PENDING ExtractionRun for *source* and return it.
 
     Transitions any existing active (PENDING/RUNNING) run for this source to
     COMPLETED first, since the unique index ``uq_active_run_per_source`` allows
@@ -64,7 +64,7 @@ async def _make_run(db: AsyncSession, source: "DocumentationSource") -> "Extract
         .values(status=RunStatus.COMPLETED)
     )
     await db.flush()
-    run = ExtractionRun(source_id=source.id, status=RunStatus.RUNNING)
+    run = ExtractionRun(source_id=source.id, status=RunStatus.PENDING)
     db.add(run)
     await db.flush()
     return run
