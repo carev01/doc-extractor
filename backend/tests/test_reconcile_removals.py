@@ -72,7 +72,7 @@ def _toc(source_id, url, order):
 
 def _article(source_id, url, toc_entry_id=None):
     return Article(
-        source_id=source_id, title=url, source_url=url,
+        source_id=source_id, title=url, source_url=url, topic_key=url,
         content_markdown="x", content_hash="h", sort_order=0,
         estimated_tokens=1, content_size_bytes=1, toc_entry_id=toc_entry_id,
     )

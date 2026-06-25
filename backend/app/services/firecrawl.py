@@ -20,6 +20,7 @@ from app.models.article import Article
 from app.models.article_version import ArticleVersion
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.image import ArticleImage
+from app.models.product import Product
 from app.models.source import DocumentationSource, SourceStatus
 from app.models.toc import TOCEntry
 from app.services.blockpage import is_block_page
@@ -29,6 +30,7 @@ import app.services.profiles.llm as llm_mod
 from app.services.profiles.scraper import Scraper
 from app.services.sanitize import sanitize_markdown
 from app.services.toc_checkpoint import TocBuildCheckpoint
+from app.services.versioning import derive_topic_key
 from app.core.database import async_session
 
 # Default content scrape options when no profile config is supplied (legacy #doc).
@@ -463,6 +465,7 @@ class FirecrawlService:
         title: str,
         change_status: str | None = None,
         diff_text: str | None = None,
+        topic_key: str | None = None,
     ) -> str:
         """Store or skip a single article and atomically increment run counters.
 
@@ -476,6 +479,8 @@ class FirecrawlService:
         we fall back to hash comparison so we don't create spurious ArticleVersions
         for articles that haven't actually changed since the last extraction.
         """
+        match_key = topic_key or url
+
         if not markdown_content.strip():
             logger.warning("Empty content from %s — skipping", url)
             return "empty"
@@ -514,8 +519,10 @@ class FirecrawlService:
             # unchanged — otherwise the page orphans and the browser hides it.
             result = await db.execute(
                 update(Article)
-                .where(Article.source_id == source_id, Article.source_url == url)
+                .where(Article.source_id == source_id, Article.topic_key == match_key)
                 .values(
+                    source_url=url,
+                    topic_key=match_key,
                     extracted_at=datetime.now(timezone.utc),
                     toc_entry_id=toc_entry_id,
                     sort_order=sort_order,
@@ -545,7 +552,7 @@ class FirecrawlService:
         existing_result = await db.execute(
             select(Article).where(
                 Article.source_id == source_id,
-                Article.source_url == url,
+                Article.topic_key == match_key,
             )
         )
         existing_article = existing_result.scalar_one_or_none()
@@ -602,6 +609,7 @@ class FirecrawlService:
             article.toc_entry_id = toc_entry_id
             article.title = title
             article.source_url = url
+            article.topic_key = match_key
             article.content_markdown = markdown_content
             article.content_html = doc_html
             article.content_hash = content_hash
@@ -629,6 +637,7 @@ class FirecrawlService:
                 toc_entry_id=toc_entry_id,
                 title=title,
                 source_url=url,
+                topic_key=match_key,
                 content_markdown=markdown_content,
                 content_html=doc_html,
                 content_hash=content_hash,
@@ -827,6 +836,7 @@ class FirecrawlService:
                     try:
                         await self.process_article_result(
                             db=db, source_id=source_id, run_id=run_id, url=url,
+                            topic_key=entry.get("topic_key"),
                             markdown_content=md, doc_html=html,
                             toc_entry_id=entry.get("toc_entry_id"),
                             sort_order=entry.get("sort_order", 0),
@@ -922,6 +932,7 @@ class FirecrawlService:
                         source_id=source_id,
                         run_id=run_id,
                         url=url,
+                        topic_key=entry.get("topic_key"),
                         markdown_content=markdown,
                         doc_html=html,
                         toc_entry_id=entry.get("toc_entry_id"),
@@ -969,6 +980,7 @@ class FirecrawlService:
                         source_id=source_id,
                         run_id=run_id,
                         url=url,
+                        topic_key=entry.get("topic_key"),
                         markdown_content=markdown,
                         doc_html=html,
                         toc_entry_id=entry.get("toc_entry_id"),
@@ -995,6 +1007,15 @@ class FirecrawlService:
 
         removed_at is only set when currently NULL, so it stays pinned to first
         detection across runs.
+
+        Version-bump invariant: this matches on ``source_url`` (not the
+        version-independent ``topic_key``) on purpose. ``process_article_result``
+        runs first and advances a surviving article's ``source_url`` to the new
+        version's URL (on both the changed and ``change_status == "same"`` paths),
+        so by the time we get here every survivor's ``source_url`` again equals
+        its new TOC entry's URL. Only genuinely-dropped topics keep their old URL
+        and stay NULL. If a future change stops advancing ``source_url`` here,
+        switch this re-link to ``topic_key`` or bumps will mis-flag survivors.
         """
         # Re-link by URL: each article points at the current TOC entry sharing its
         # source_url, or stays NULL if its page is truly gone from the TOC.
@@ -1084,6 +1105,15 @@ class FirecrawlService:
             await db.commit()  # persist auto-detected platform name, if any
             content_cfg = profile.content_config()
             self._content_config_by_source[source_id] = content_cfg
+
+            # Load the product version so we can tag the run and derive topic_keys.
+            product_version = (
+                await db.execute(
+                    select(Product.version).where(Product.id == source.product_id)
+                )
+            ).scalar_one_or_none()
+            run.version = product_version
+
             logger.info(
                 "Discovering TOC for %s (profile=%s)", source.base_url, profile.name
             )
@@ -1101,6 +1131,7 @@ class FirecrawlService:
                     "title": e.title, "url": e.url, "level": e.level,
                     "is_article": e.is_article, "parent_url": e.parent_url,
                     "content_selector": e.content_selector,
+                    "topic_key": derive_topic_key(e.url, source.url_template, product_version),
                 }
                 for e in toc_objs
             ]

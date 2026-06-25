@@ -66,6 +66,9 @@ class ExtractionRun(Base):
     )
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
 
+    # Product version captured at run time (NULL for non-versioned products).
+    version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     articles_extracted: Mapped[int] = mapped_column(Integer, default=0)
     articles_total: Mapped[int] = mapped_column(Integer, default=0)
     articles_unchanged: Mapped[int] = mapped_column(

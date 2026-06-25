@@ -31,6 +31,7 @@ def test_run_export_job_completes(db):
     db.add(s); db.flush()
     for i in range(3):
         db.add(Article(source_id=s.id, title=f"A{i}", source_url=f"https://ej.com/{i}",
+                       topic_key=f"https://ej.com/{i}",
                        content_markdown=f"# A{i}\n\nx", sort_order=i,
                        estimated_tokens=10, content_size_bytes=50))
     job = ExportJob(source_id=s.id, request={"source_id": str(s.id), "format": "pdf"},

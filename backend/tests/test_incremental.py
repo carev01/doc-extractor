@@ -95,6 +95,7 @@ def _classify(db, source_id, url, markdown):
             source_id=source_id,
             title="T",
             source_url=url,
+            topic_key=url,
             content_markdown=markdown,
             content_hash=content_hash,
             sort_order=0,

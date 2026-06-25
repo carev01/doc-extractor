@@ -3,6 +3,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import select, func, literal, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -22,6 +23,7 @@ from app.schemas.source import (
     SourceListResponse,
 )
 from app.schemas.version import ChangelogEntry, ChangelogResponse
+from app.services.versioning import detect_version_token, resolve_template
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
@@ -35,10 +37,15 @@ async def create_source(body: SourceCreate, db: AsyncSession = Depends(get_db)):
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
+    base_url = body.base_url
+    if body.url_template and product.version:
+        base_url = resolve_template(body.url_template, product.version)
+
     source = DocumentationSource(
         product_id=body.product_id,
         name=body.name,
-        base_url=body.base_url,
+        base_url=base_url,
+        url_template=body.url_template,
     )
     db.add(source)
     await db.commit()
@@ -122,6 +129,15 @@ async def update_source(
         if not target:
             raise HTTPException(status_code=404, detail="Target product not found")
         source.product_id = body.product_id
+    if body.url_template is not None:
+        source.url_template = body.url_template
+        # Resolve base_url from the new template against the source's EFFECTIVE
+        # product (i.e. the new product if product_id was just reassigned above).
+        product = (
+            await db.execute(select(Product).where(Product.id == source.product_id))
+        ).scalar_one_or_none()
+        if product and product.version:
+            source.base_url = resolve_template(body.url_template, product.version)
     if body.platform is not None:
         # "" / "auto" clears the override so detection runs again next extraction.
         source.platform = None if body.platform in ("", "auto") else body.platform
@@ -135,6 +151,21 @@ async def update_source(
     await db.commit()
     await db.refresh(source)
     return source
+
+
+class _DetectTokenBody(BaseModel):
+    version: str
+
+
+@router.post("/{source_id}/detect-version-token")
+async def detect_version_token_route(
+    source_id: uuid.UUID, body: _DetectTokenBody, db: AsyncSession = Depends(get_db)
+):
+    """Return a url_template by detecting the version token in the source's base_url."""
+    source = await db.get(DocumentationSource, source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+    return {"url_template": detect_version_token(source.base_url, body.version)}
 
 
 @router.delete("/{source_id}", status_code=204)

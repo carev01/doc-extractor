@@ -12,11 +12,13 @@ class SourceCreate(BaseModel):
     product_id: uuid.UUID
     name: str
     base_url: str
+    url_template: str | None = None
 
 
 class SourceUpdate(BaseModel):
     name: str | None = None
     base_url: str | None = None
+    url_template: str | None = None
     platform: str | None = None
     refresh_profile: bool | None = None
     product_id: uuid.UUID | None = None  # move the source to another product
@@ -30,6 +32,7 @@ class SourceResponse(BaseModel):
     job_id: uuid.UUID | None
     name: str
     base_url: str
+    url_template: str | None
     status: SourceStatus
     platform: str | None
     last_extracted_at: datetime | None

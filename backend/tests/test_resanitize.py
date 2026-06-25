@@ -75,6 +75,7 @@ async def _article(factory, sid, md) -> uuid.UUID:
     async with factory() as s:
         a = Article(
             source_id=sid, title="t", source_url="https://d.acme.com/a",
+            topic_key="https://d.acme.com/a",
             content_markdown=md, content_hash=compute_content_hash(md),
             sort_order=0, estimated_tokens=len(md) // 4,
             content_size_bytes=len(md.encode("utf-8")),
