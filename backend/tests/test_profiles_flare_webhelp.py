@@ -119,6 +119,88 @@ def test_content_config_wait_for():
 
 
 # ---------------------------------------------------------------------------
+# Raw-HTTP content engine (static server-rendered topics)
+# ---------------------------------------------------------------------------
+
+# Minimal but representative static topic: the body in #mc-main-content, plus
+# the page chrome (header nav, mini-TOC) that the live JS would otherwise turn
+# into a dynamic shell. A raw (un-rendered) GET returns all of this.
+STATIC_TOPIC = """
+<html><body>
+  <header id="nav"><a href="#">Logout</a><span>Español</span></header>
+  <div role="main" id="mc-main-content">
+    <h1>Unattended installation in Windows</h1>
+    <p>Install via the <code>msiexec</code> program.</p>
+    <div class="MCMiniTocBox_0 miniToc nocontent">Mini TOC noise</div>
+    <a class="GoToTop" href="#top">Back to top</a>
+    <img src="Resources/Images/diagram.png" alt="diagram"/>
+    <img src="/shared/logo.png" alt="logo"/>
+  </div>
+  <footer>PreviousNext</footer>
+</body></html>
+"""
+
+TOPIC_URL = HELP_ROOT + "unattended-installation-in-windows.htm"
+
+
+def test_content_engine_is_raw_http():
+    # Topics are static; the site's own JS replaces the body with a dynamic
+    # shell, so content must be scraped without rendering.
+    assert FlareWebHelpProfile().content_engine == "raw_http"
+
+
+def test_extract_content_html_scopes_to_body():
+    html = FlareWebHelpProfile().extract_content_html(STATIC_TOPIC, TOPIC_URL)
+    assert html is not None
+    assert "Unattended installation in Windows" in html
+    assert "msiexec" in html
+    # Page chrome outside the body container is excluded.
+    assert "Logout" not in html
+    assert "Español" not in html
+    assert "PreviousNext" not in html
+
+
+def test_extract_content_html_drops_skin_chrome():
+    """Skin chrome inside the body container (mini-TOC, back-to-top) is removed
+    via the profile's excludeTags."""
+    html = FlareWebHelpProfile().extract_content_html(STATIC_TOPIC, TOPIC_URL)
+    assert "Mini TOC noise" not in html  # .nocontent
+    assert "Back to top" not in html     # .GoToTop
+
+
+def test_extract_content_html_resolves_relative_images():
+    """Relative image srcs are absolutised against the topic URL so the
+    downstream image download/rewrite step can match them."""
+    html = FlareWebHelpProfile().extract_content_html(STATIC_TOPIC, TOPIC_URL)
+    assert HELP_ROOT + "Resources/Images/diagram.png" in html
+    # Root-relative src resolves against the host, not the help root.
+    assert "https://documentation.arcserve.com/shared/logo.png" in html
+
+
+def test_extract_content_html_scopes_html5_attr_body():
+    """A topic that scopes its body with the HTML5 [data-mc-content-body]
+    attribute (rather than #mc-main-content) is extracted too. The two
+    selectors don't co-occur on a real topic (see content_config), so this
+    mirrors a genuine html5-skin topic carrying only the attribute."""
+    html_doc = (
+        '<html><body><header>Logout</header>'
+        '<div data-mc-content-body="True"><h1>Topic</h1><p>real body</p></div>'
+        '</body></html>'
+    )
+    out = FlareWebHelpProfile().extract_content_html(html_doc, TOPIC_URL)
+    assert out is not None
+    assert "real body" in out
+    assert "Logout" not in out
+
+
+def test_extract_content_html_returns_none_when_no_body():
+    """A page with no body container (e.g. a redirect/placeholder) yields None
+    so the caller skips it rather than storing chrome."""
+    html_doc = "<html><body><header>nav only</header></body></html>"
+    assert FlareWebHelpProfile().extract_content_html(html_doc, TOPIC_URL) is None
+
+
+# ---------------------------------------------------------------------------
 # TOC building (inline <ul class="tree"> parse)
 # ---------------------------------------------------------------------------
 

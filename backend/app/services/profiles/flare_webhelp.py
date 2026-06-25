@@ -60,6 +60,15 @@ from app.services.profiles.strategies import flare_helpsystem_toc
 
 class FlareWebHelpProfile:
     name = "flare_webhelp"
+    # Topic pages are fully server-rendered static HTML; the body lives in
+    # #mc-main-content (or [data-mc-content-body]) in the raw response. The
+    # site's own scripts (MadCapAll.js, webhelp.js, locale selectors) rewrite
+    # the page into a dynamic frame/SPA shell on load, *replacing* that body
+    # with navigation chrome and a search placeholder. So a JS-rendering scrape
+    # (Firecrawl via Browserless) captures only the shell — the article text is
+    # gone. We therefore scrape content with a verbatim HTTP GET (no JS) and
+    # scope the body ourselves. See ``_scrape_via_raw_http`` in firecrawl.py.
+    content_engine = "raw_http"
 
     def detect(self, root_html: str, root_url: str) -> bool:
         """Return True for the frame-based MadCap Flare WebHelp / TriPane skin.
@@ -157,6 +166,48 @@ class FlareWebHelpProfile:
             "onlyMainContent": False,
             "waitFor": 1500,
         }
+
+    def extract_content_html(self, raw_html: str, url: str) -> str | None:
+        """Scope the topic body out of a statically-served Flare topic page.
+
+        Used by the raw-HTTP content path (``content_engine == "raw_http"``):
+        given the verbatim, *un-rendered* topic HTML, return the body container's
+        HTML ready for markdown conversion, or ``None`` when no body is present
+        (e.g. a redirect/placeholder page) so the caller skips it.
+
+        The body container mirrors ``content_config``'s includeTags: the HTML5
+        skin scopes its body with the ``data-mc-content-body`` attribute, while
+        WebHelp/TriPane topics use ``id="mc-main-content"`` (they don't co-occur
+        on a topic). Skin chrome inside the body (back-to-top, feedback buttons,
+        ``.nocontent`` mini-TOC — mirrors excludeTags) is dropped, and relative
+        image ``src`` values are resolved to absolute URLs so the downstream
+        image download/rewrite step can match them.
+
+        Lookups use bs4-native ``find``/``find_all`` rather than soupsieve CSS
+        ``select``: soupsieve's attribute-presence selector
+        (``[data-mc-content-body]``) is subject to its module-level compiled-
+        selector cache and proved unreliable under the full test suite, whereas
+        ``find(attrs=...)`` is deterministic.
+        """
+        soup = BeautifulSoup(raw_html, "html.parser")
+
+        body = (
+            soup.find(attrs={"data-mc-content-body": True})
+            or soup.find(id="mc-main-content")
+        )
+        if body is None:
+            return None
+
+        for cls in ("GoToTop", "feedback-button", "nocontent"):
+            for el in body.find_all(class_=cls):
+                el.decompose()
+
+        for img in body.find_all("img"):
+            src = img.get("src")
+            if src:
+                img["src"] = urljoin(url, src)
+
+        return str(body)
 
 
 PROFILE = FlareWebHelpProfile()

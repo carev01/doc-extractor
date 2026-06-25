@@ -850,6 +850,97 @@ class FirecrawlService:
         finally:
             await client.aclose()
 
+    async def _scrape_via_raw_http(
+        self,
+        db: AsyncSession,
+        source_id: uuid.UUID,
+        run_id: uuid.UUID,
+        url_to_entry: dict[str, dict],
+        profile,
+        checkpoint,
+    ) -> None:
+        """Content scrape for statically-served platforms (``content_engine ==
+        "raw_http"``, e.g. frame-based Flare WebHelp).
+
+        Each topic page is fully server-rendered, so we fetch its HTML verbatim
+        with a plain GET (``fetch_raw`` — no JS, no Browserless) and let the
+        profile scope the body. JS rendering is deliberately skipped: the site's
+        own scripts rewrite the page into a dynamic shell that drops the article
+        body, so a rendered scrape captures only navigation chrome.
+
+        Pages are fetched in bounded-concurrency chunks but persisted
+        sequentially (the DB session isn't concurrency-safe). Resumable via the
+        content checkpoint and cooperatively cancellable, mirroring the batch
+        path. Change detection falls back to content hashing (change_status=None);
+        there is no Firecrawl changeTracking baseline on this path.
+        """
+        from markdownify import markdownify
+
+        items = list(url_to_entry.items())
+        total = len(items)
+        done = await checkpoint.load_content_done()
+        pending = [(u, e) for u, e in items if u not in done]
+        completed = total - len(pending)
+        if completed:
+            logger.info(
+                "Resuming raw-HTTP content scrape for source %s: %d done, %d pending",
+                source_id, completed, len(pending),
+            )
+            await db.execute(
+                update(ExtractionRun)
+                .where(ExtractionRun.id == run_id)
+                .values(articles_extracted=completed)
+            )
+            await db.commit()
+
+        chunk_size = max(1, settings.browserless_concurrency)
+
+        async def _fetch(url: str) -> str | None:
+            try:
+                return await self.fetch_raw(url)
+            except Exception as exc:  # network / HTTP error — skip this page
+                logger.warning("Raw fetch failed for %s: %s", url, exc)
+                return None
+
+        for i in range(0, len(pending), chunk_size):
+            # Cooperative cancel/pause at each chunk boundary (fresh read).
+            ctrl = (
+                await db.execute(
+                    select(ExtractionRun.control).where(ExtractionRun.id == run_id)
+                )
+            ).scalar_one_or_none()
+            if ctrl:
+                raise RunControlSignal(ctrl)
+
+            chunk = pending[i:i + chunk_size]
+            htmls = await asyncio.gather(*(_fetch(u) for u, _ in chunk))
+            for (url, entry), raw in zip(chunk, htmls):
+                if not raw:
+                    continue
+                body_html = profile.extract_content_html(raw, url)
+                if not body_html:
+                    logger.warning("No content body found at %s — skipping", url)
+                    continue
+                md = markdownify(body_html).strip()
+                if not md:
+                    logger.warning("Empty content from %s — skipping", url)
+                    continue
+                try:
+                    await self.process_article_result(
+                        db=db, source_id=source_id, run_id=run_id, url=url,
+                        markdown_content=md, doc_html=body_html,
+                        toc_entry_id=entry.get("toc_entry_id"),
+                        sort_order=entry.get("sort_order", 0),
+                        title=entry["title"], change_status=None,
+                    )
+                    completed += 1
+                except Exception as exc:
+                    logger.warning("Failed to process %s — skipping: %s", url, exc)
+                    await db.rollback()
+            # Checkpoint the chunk only after it's fully processed.
+            await checkpoint.add_content_done([u for u, _ in chunk])
+            logger.info("Raw-HTTP content: %d/%d processed", completed, total)
+
     async def _poll_batch_and_process(
         self,
         db: AsyncSession,
@@ -1208,6 +1299,13 @@ class FirecrawlService:
                 content_spec = spec_fn() if callable(spec_fn) else None
                 await self._scrape_via_browserless(
                     db, source_id, run.id, url_to_entry, content_spec=content_spec
+                )
+            elif getattr(profile, "content_engine", None) == "raw_http":
+                # Statically-served platforms (e.g. frame-based Flare WebHelp):
+                # fetch each topic verbatim (no JS) and scope the body ourselves.
+                # A JS-rendering scrape would capture only the dynamic shell.
+                await self._scrape_via_raw_http(
+                    db, source_id, run.id, url_to_entry, profile, checkpoint
                 )
             else:
                 # Submit in capped chunks (≤ MAX_BATCH_URLS) processed
