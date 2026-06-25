@@ -366,3 +366,34 @@ export interface PickableSource {
   job_id: string | null;
   job_name: string | null;
 }
+
+export interface DashboardSummary {
+  total: number;
+  never_extracted: number;
+  stale: number;
+  failing: number;
+  running: number;
+}
+
+export interface DashboardSourceRow {
+  id: string;
+  name: string;
+  vendor_name: string;
+  product_name: string;
+  status: string;
+  last_extracted_at: string | null;
+  age_seconds: number | null;
+  article_count: number;
+  last_run_status: string | null;
+  last_run_new: number | null;
+  last_run_updated: number | null;
+  last_run_unchanged: number | null;
+  job_id: string | null;
+  job_name: string | null;
+  next_run_at: string | null;
+}
+
+export interface DashboardResponse {
+  summary: DashboardSummary;
+  sources: DashboardSourceRow[];
+}

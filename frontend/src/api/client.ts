@@ -30,6 +30,7 @@ import type {
   BrowseResponse,
   ProfileOption,
   PickableSource,
+  DashboardResponse,
 } from "../types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -433,5 +434,14 @@ export async function assignSourcesToJob(
   sourceIds: string[],
 ): Promise<Job> {
   const res = await api.put<Job>(`/jobs/${jobId}/sources`, { source_ids: sourceIds });
+  return res.data;
+}
+
+// ── Dashboard ──
+
+export async function getDashboard(staleDays = 30): Promise<DashboardResponse> {
+  const res = await api.get<DashboardResponse>("/dashboard/sources", {
+    params: { stale_days: staleDays },
+  });
   return res.data;
 }
