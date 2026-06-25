@@ -397,3 +397,19 @@ export interface DashboardResponse {
   summary: DashboardSummary;
   sources: DashboardSourceRow[];
 }
+
+export interface SourceImportRow {
+  row: number;
+  result: string;
+  vendor: string | null;
+  product: string | null;
+  source_name: string | null;
+  message: string;
+}
+
+export interface SourceImportResult {
+  created: number;
+  skipped: number;
+  errors: number;
+  rows: SourceImportRow[];
+}

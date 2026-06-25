@@ -31,6 +31,7 @@ import type {
   ProfileOption,
   PickableSource,
   DashboardResponse,
+  SourceImportResult,
 } from "../types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -443,5 +444,12 @@ export async function getDashboard(staleDays = 30): Promise<DashboardResponse> {
   const res = await api.get<DashboardResponse>("/dashboard/sources", {
     params: { stale_days: staleDays },
   });
+  return res.data;
+}
+
+// ── Bulk import ──
+
+export async function importSources(csvText: string): Promise<SourceImportResult> {
+  const res = await api.post<SourceImportResult>("/sources/import", { csv: csvText });
   return res.data;
 }

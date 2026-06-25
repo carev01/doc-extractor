@@ -1821,3 +1821,8 @@ a.btn-primary {
 }
 .clickable-row { cursor: pointer; }
 .clickable-row:hover { background: rgba(255,255,255,0.04); }
+
+.dashboard-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+}
+.import-result { margin-top: 0.6rem; max-height: 30vh; overflow-y: auto; }
