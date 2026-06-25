@@ -106,12 +106,38 @@ export async function deleteProduct(id: string): Promise<void> {
   await api.delete(`/products/${id}`);
 }
 
+export async function bumpProductVersion(
+  productId: string,
+  version: string,
+): Promise<{ version: string; runs: string[] }> {
+  const res = await api.post(`/products/${productId}/versions/bump`, { version });
+  return res.data;
+}
+
+export async function enableProductVersioning(
+  productId: string,
+  version: string,
+): Promise<{ version: string; templatized_sources: number }> {
+  const res = await api.post(`/products/${productId}/versions/enable`, { version });
+  return res.data;
+}
+
+export async function detectVersionToken(
+  sourceId: string,
+  version: string,
+): Promise<{ url_template: string | null }> {
+  const res = await api.post(`/sources/${sourceId}/detect-version-token`, { version });
+  return res.data;
+}
+
 // ── Sources ──
 
 export async function createSource(data: {
   product_id: string;
   name: string;
   base_url: string;
+  url_template?: string;
+  platform?: string;
 }): Promise<DocumentationSource> {
   const res = await api.post("/sources", data);
   return res.data;
@@ -135,7 +161,7 @@ export async function getSource(id: string): Promise<DocumentationSource> {
 
 export async function updateSource(
   id: string,
-  data: { name?: string; base_url?: string; platform?: string | null; refresh_profile?: boolean }
+  data: { name?: string; base_url?: string; platform?: string | null; refresh_profile?: boolean; url_template?: string | null }
 ): Promise<DocumentationSource> {
   const res = await api.patch(`/sources/${id}`, data);
   return res.data;
