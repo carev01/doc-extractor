@@ -16,6 +16,7 @@ class ArticleVersionResponse(BaseModel):
     has_diff: bool  # whether a stored diff_text accompanies this version
     content_size_bytes: int
     extracted_at: datetime  # when this content was superseded
+    version: str | None = None  # product version of the run that superseded this snapshot
 
 
 class ArticleVersionDetailResponse(ArticleVersionResponse):
@@ -46,6 +47,7 @@ class ChangelogEntry(BaseModel):
     timestamp: datetime
     version_id: uuid.UUID | None
     extraction_run_id: uuid.UUID | None
+    version: str | None = None  # product version of the entry's extraction run
     has_diff: bool
 
 

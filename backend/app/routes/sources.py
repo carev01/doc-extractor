@@ -293,12 +293,15 @@ async def get_source_changelog(
     events = union_all(*parts).subquery()
     total = (await db.execute(select(func.count()).select_from(events))).scalar()
 
-    rows = await db.execute(
-        select(events)
+    rows_q = (
+        select(events, ExtractionRun.version.label("run_version"))
+        .select_from(events)
+        .outerjoin(ExtractionRun, ExtractionRun.id == events.c.extraction_run_id)
         .order_by(events.c.timestamp.desc())
         .offset(skip)
         .limit(limit)
     )
+    rows = (await db.execute(rows_q)).all()
 
     entries = [
         ChangelogEntry(
@@ -308,6 +311,7 @@ async def get_source_changelog(
             timestamp=r.timestamp,
             version_id=r.version_id,
             extraction_run_id=r.extraction_run_id,
+            version=r.run_version,
             has_diff=r.has_diff,
         )
         for r in rows

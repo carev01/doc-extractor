@@ -1685,3 +1685,111 @@ a.btn-primary {
   align-items: center;
   gap: 0.5em;
 }
+
+/* ============================================================
+   Versioned-URL feature — shared chrome
+   ============================================================ */
+
+/* Small inline pill used in version lists and changelog rows. */
+.version-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--amber);
+  background: var(--amber-ghost);
+  border: 1px solid rgba(234, 165, 61, 0.3);
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+/* Labeled divider between consecutive entries from different versions. */
+.version-boundary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+  padding: 4px 0 2px;
+}
+
+.version-boundary::before,
+.version-boundary::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+/* Sticky top bar used by the VersionURL feature panels. */
+.version-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  margin-bottom: 12px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+
+/* Bold version chip used inside version-bar or headings. */
+.version-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--amber-hi);
+  background: var(--amber-ghost);
+  border: 1px solid rgba(234, 165, 61, 0.4);
+}
+
+/* Inline form that enables versioned-URL tracking on a source. */
+.version-enable-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--ink-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.version-enable-form input[type="text"] {
+  flex: 1;
+  min-width: 180px;
+}
+
+/* Preview row showing the next computed bump value. */
+.bump-preview {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-faint);
+  padding: 4px 0;
+}
+
+.bump-preview strong {
+  color: var(--amber);
+}
+
+/* Contextual hint nudging the user toward a URL template. */
+.templatize-hint {
+  font-size: 0.78rem;
+  color: var(--text-faint);
+  font-style: italic;
+  margin-top: 4px;
+}

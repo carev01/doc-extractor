@@ -17,6 +17,8 @@ export interface Product {
   id: string;
   vendor_id: string;
   name: string;
+  version: string | null;
+  previous_version: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -36,6 +38,7 @@ export interface DocumentationSource {
   base_url: string;
   status: SourceStatus;
   platform?: string | null;
+  url_template: string | null;
   last_extracted_at: string | null;
   error_message: string | null;
   created_at: string;
@@ -271,6 +274,7 @@ export interface ArticleVersion {
   extraction_run_id: string | null;
   content_hash: string | null;
   has_diff: boolean;
+  version: string | null;
   content_size_bytes: number;
   extracted_at: string;
 }
@@ -298,6 +302,7 @@ export interface ChangelogEntry {
   title: string;
   change_type: ChangeType;
   timestamp: string;
+  version: string | null;
   version_id: string | null;
   extraction_run_id: string | null;
   has_diff: boolean;

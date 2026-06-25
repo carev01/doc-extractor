@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 from app.core.database import get_db
 from app.models.article import Article
 from app.models.article_version import ArticleVersion
+from app.models.extraction_run import ExtractionRun
 from app.models.product import Product
 from app.models.source import DocumentationSource
 from app.models.toc import TOCEntry
@@ -238,7 +239,9 @@ async def list_article_versions(
                 func.octet_length(ArticleVersion.content_markdown), 0
             ).label("content_size_bytes"),
             ArticleVersion.extracted_at,
+            ExtractionRun.version.label("run_version"),
         )
+        .outerjoin(ExtractionRun, ExtractionRun.id == ArticleVersion.extraction_run_id)
         .where(ArticleVersion.article_id == article_id)
         .order_by(ArticleVersion.extracted_at.desc())
         .offset(skip)
@@ -254,6 +257,7 @@ async def list_article_versions(
             has_diff=r.has_diff,
             content_size_bytes=r.content_size_bytes,
             extracted_at=r.extracted_at,
+            version=r.run_version,
         )
         for r in rows
     ]

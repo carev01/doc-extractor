@@ -78,16 +78,36 @@ export default function VersionOverlay({
               <p className="hint">No prior versions recorded.</p>
             )}
             <ul>
-              {versions.map((v) => (
-                <li key={v.id}>
-                  <button
-                    className={selectedId === v.id ? "active" : ""}
-                    onClick={() => selectVersion(v.id)}
-                  >
-                    {new Date(v.extracted_at).toLocaleString()}
-                  </button>
-                </li>
-              ))}
+              {versions.flatMap((v, i) => {
+                const prev = i > 0 ? versions[i - 1] : null;
+                const showBoundary =
+                  prev !== null &&
+                  v.version !== null &&
+                  prev.version !== null &&
+                  v.version !== prev.version;
+                const items = [];
+                if (showBoundary) {
+                  items.push(
+                    <li key={`boundary-${v.id}`} className="version-boundary">
+                      {v.version} → {prev!.version}
+                    </li>
+                  );
+                }
+                items.push(
+                  <li key={v.id}>
+                    <button
+                      className={selectedId === v.id ? "active" : ""}
+                      onClick={() => selectVersion(v.id)}
+                    >
+                      {new Date(v.extracted_at).toLocaleString()}
+                      {v.version !== null && (
+                        <span className="version-tag">v{v.version}</span>
+                      )}
+                    </button>
+                  </li>
+                );
+                return items;
+              })}
             </ul>
           </aside>
 
