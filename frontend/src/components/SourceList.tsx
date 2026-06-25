@@ -19,6 +19,7 @@ import {
   getProfiles,
   assignSourceToJob,
   unassignSourceFromJob,
+  detectVersionToken,
 } from "../api/client";
 import ProductVersionBar from "./ProductVersionBar";
 
@@ -67,6 +68,7 @@ export default function SourceList({
   const [baseUrl, setBaseUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [templatize, setTemplatize] = useState(true);
   const [platformOptions, setPlatformOptions] = useState<ProfileOption[]>(
     FALLBACK_PLATFORM_OPTIONS,
   );
@@ -109,13 +111,19 @@ export default function SourceList({
     setLoading(true);
     setError("");
     try {
+      const tmpl =
+        product.version && templatize && baseUrl.includes(product.version)
+          ? baseUrl.replaceAll(product.version, "{version}")
+          : undefined;
       await createSource({
         product_id: product.id,
         name: name.trim(),
         base_url: baseUrl.trim(),
+        ...(tmpl ? { url_template: tmpl } : {}),
       });
       setName("");
       setBaseUrl("");
+      setTemplatize(true);
       await fetchSources();
     } catch (e: any) {
       setError(e.response?.data?.detail || "Failed to create source");
@@ -156,6 +164,17 @@ export default function SourceList({
           onChange={(e) => setBaseUrl(e.target.value)}
           required
         />
+        {product.version && baseUrl.includes(product.version) && (
+          <label className="templatize-hint">
+            <input
+              type="checkbox"
+              checked={templatize}
+              onChange={(e) => setTemplatize(e.target.checked)}
+            />
+            Detected version {product.version} — store as{" "}
+            <code>{baseUrl.replaceAll(product.version, "{version}")}</code>
+          </label>
+        )}
         <button type="submit" disabled={loading}>
           {loading ? "Adding..." : "Add Source"}
         </button>
@@ -172,6 +191,7 @@ export default function SourceList({
             onDelete={handleDelete}
             onSourceChanged={fetchSources}
             platformOptions={platformOptions}
+            productVersion={product.version}
           />
         ))}
         {sources.length === 0 && (
@@ -192,6 +212,7 @@ interface SourceItemProps {
   onDelete: (id: string) => void;
   onSourceChanged: () => void;
   platformOptions: ProfileOption[];
+  productVersion: string | null;
 }
 
 function SourceItem({
@@ -202,6 +223,7 @@ function SourceItem({
   onDelete,
   onSourceChanged,
   platformOptions,
+  productVersion,
 }: SourceItemProps) {
   const [activeRun, setActiveRun] = useState<ExtractionRun | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
@@ -210,6 +232,7 @@ function SourceItem({
   const [itemError, setItemError] = useState("");
   const [resanitizing, setResanitizing] = useState(false);
   const [resanitizeMsg, setResanitizeMsg] = useState("");
+  const [versionMsg, setVersionMsg] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const isExtracting =
@@ -457,6 +480,62 @@ function SourceItem({
             </select>
           </label>
         </div>
+
+        {productVersion && (
+          <div className="item-meta">
+            <span className="sub" style={{ display: "flex", alignItems: "center", gap: "0.4em" }}>
+              Template:
+              {source.url_template ? (
+                <>
+                  <code>{source.url_template}</code>
+                  <button
+                    type="button"
+                    className="btn-secondary-sm"
+                    title="Clear the URL template"
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      setVersionMsg("");
+                      try {
+                        await updateSource(source.id, { url_template: null });
+                        onSourceChanged();
+                      } catch {
+                        setVersionMsg("Failed to clear template");
+                      }
+                    }}
+                  >
+                    Clear template
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="btn-secondary-sm"
+                    title="Auto-detect version token in the source URL"
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      setVersionMsg("");
+                      try {
+                        const result = await detectVersionToken(source.id, productVersion);
+                        if (result.url_template) {
+                          await updateSource(source.id, { url_template: result.url_template });
+                          onSourceChanged();
+                        } else {
+                          setVersionMsg("version not found in URL");
+                        }
+                      } catch {
+                        setVersionMsg("Failed to detect version token");
+                      }
+                    }}
+                  >
+                    Templatize
+                  </button>
+                  {versionMsg && <span className="sub">{versionMsg}</span>}
+                </>
+              )}
+            </span>
+          </div>
+        )}
 
         {itemError && <div className="error">{itemError}</div>}
         {resanitizeMsg && <span className="sub run-done">{resanitizeMsg}</span>}
