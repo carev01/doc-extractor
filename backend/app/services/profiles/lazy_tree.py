@@ -22,6 +22,10 @@ from app.services.profiles.base import TocEntry
 
 class LazyTreeProfile:
     name = "lazy_tree"
+    # Hybrid: TOC discovery still renders the lazy sidebar via Browserless
+    # (build_toc), but article bodies are static HTML under #doc (see
+    # content_config), so the content phase fetches directly — no render.
+    content_engine = "raw_http"
 
     def detect(self, root_html: str, root_url: str) -> bool:
         # Newer platform: nav is "Loading…" client-side, so key off the host /

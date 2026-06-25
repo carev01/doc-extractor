@@ -66,6 +66,10 @@ def _page_id_from_url(url: str) -> str | None:
 
 class ConfluenceProfile:
     name = "confluence"
+    # Confluence serves page bodies as static HTML under .wiki-content (see
+    # content_config). fetch_raw sends a browser UA, which is what lets these
+    # bot-gated pages return real content on a direct GET — so fetch directly.
+    content_engine = "raw_http"
 
     # REST pagination: page size per request, and a hard cap on total pages
     # collected (safety bound for very large spaces).
