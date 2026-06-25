@@ -179,3 +179,53 @@ async def test_help_tree_build_toc_renders_with_long_wait():
     toc = await HelpTreeProfile().build_toc(PROD_ROOT, _RecordingScraper({}))
     assert waits and waits[0] >= 6000  # SPA needs a long wait to build the nav
     assert len(toc) == 3
+
+
+# A help-page shell like Synology's: the whole #js-sidebar nav and the subheader
+# precede the article, and the article body (#kb_help_body) carries an in-body
+# .feedBackForm widget as a sibling of the prose.
+_HELP_PAGE_HTML = """
+<div class="help-page">
+  <div class="subheader"><a href="/x">Tab One</a><a href="/y">Tab Two</a></div>
+  <aside><div id="js-sidebar">
+    <a href="/en-global/DSM/help/Prod/a">Nav Link A</a>
+    <a href="/en-global/DSM/help/Prod/b">Nav Link B</a>
+  </div></aside>
+  <main id="main">
+    <div class="content container"><div><div id="kb_help_body" class="kb_accordion_container">
+      <div class="kb_accordion">
+        <h1>Real Title</h1>
+        <p>Real documentation prose about the feature.</p>
+        <div class="section"><a href="/en-global/DSM/help/Prod/sub">In-body content link</a></div>
+        <div class="feedBackForm feedBackForm--noiframe clearfix en-global">
+          <form id="feedback_form"><div id="form_yes_no">Was this article helpful?
+            <a href="javascript:void(0)">Yes</a> / <a href="javascript:void(0)">No</a>
+            Thank you for the feedback!</div></form>
+        </div>
+      </div>
+    </div></div>
+    <div class="section-selector-container"><div class="section-selector"></div></div>
+  </main>
+</div>
+"""
+
+
+def test_help_tree_content_config_targets_article_body_not_nav():
+    cfg = HelpTreeProfile().content_config()
+    assert cfg["includeTags"] == ["#kb_help_body"]      # not div.help-page (wraps the nav)
+    assert ".feedBackForm" in cfg["excludeTags"]        # in-body feedback widget
+
+
+def test_help_tree_content_scopes_out_nav_and_feedback():
+    from app.services.profiles.content_scope import scope_content_html
+    cfg = HelpTreeProfile().content_config()
+    out = scope_content_html(
+        _HELP_PAGE_HTML, "https://kb.example.com/en-global/DSM/help/Prod/page",
+        cfg["includeTags"], cfg["excludeTags"],
+    )
+    assert "Real documentation prose" in out
+    assert "In-body content link" in out          # genuine in-article links kept
+    assert "Nav Link A" not in out                # sidebar dropped
+    assert "Tab One" not in out                   # subheader dropped
+    assert "Was this article helpful" not in out  # feedback widget dropped
+    assert "Thank you for the feedback" not in out
