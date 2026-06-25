@@ -27,6 +27,12 @@ def upgrade() -> None:
     # Backfill existing rows so the matching key is unchanged for non-versioned sources.
     op.execute("UPDATE articles SET topic_key = source_url WHERE topic_key IS NULL")
     op.alter_column("articles", "topic_key", nullable=False)
+    # After backfill topic_key == source_url, so this unique constraint assumes no
+    # pre-existing duplicate (source_id, source_url) rows. There has never been a
+    # DB-level constraint on that pair, but the article upsert dedupes by it, so
+    # production has none (verified: 0 duplicate groups across ~51.8k rows). If a
+    # future dataset has dups, this create_unique_constraint fails loudly — dedupe
+    # before upgrading.
     op.create_unique_constraint(
         "uq_articles_source_topic", "articles", ["source_id", "topic_key"]
     )

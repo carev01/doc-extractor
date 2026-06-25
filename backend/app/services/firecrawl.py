@@ -1007,6 +1007,15 @@ class FirecrawlService:
 
         removed_at is only set when currently NULL, so it stays pinned to first
         detection across runs.
+
+        Version-bump invariant: this matches on ``source_url`` (not the
+        version-independent ``topic_key``) on purpose. ``process_article_result``
+        runs first and advances a surviving article's ``source_url`` to the new
+        version's URL (on both the changed and ``change_status == "same"`` paths),
+        so by the time we get here every survivor's ``source_url`` again equals
+        its new TOC entry's URL. Only genuinely-dropped topics keep their old URL
+        and stay NULL. If a future change stops advancing ``source_url`` here,
+        switch this re-link to ``topic_key`` or bumps will mis-flag survivors.
         """
         # Re-link by URL: each article points at the current TOC entry sharing its
         # source_url, or stays NULL if its page is truly gone from the TOC.
