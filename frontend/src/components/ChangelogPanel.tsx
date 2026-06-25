@@ -55,6 +55,21 @@ export default function ChangelogPanel({ source }: Props) {
     return Array.from(m.entries()); // insertion order = newest-first from API
   }, [entries]);
 
+  // Flat newest-first index: maps each entry (by its position in the flat
+  // sequence) to the version of the immediately-preceding rendered entry.
+  // Used to detect cross-group version boundaries without mutable iteration
+  // inside JSX.
+  const prevVersionByFlatIdx = useMemo(() => {
+    const flat = groups.flatMap(([, evs]) => evs);
+    const result: (string | null)[] = [];
+    let lastVersion: string | null = null;
+    for (const e of flat) {
+      result.push(lastVersion);
+      if (e.version !== null) lastVersion = e.version;
+    }
+    return result;
+  }, [groups]);
+
   const openEntry = async (e: ChangelogEntry) => {
     if (!e.article_id) return; // 'initial' summary has no article to open
     setError("");
@@ -89,31 +104,49 @@ export default function ChangelogPanel({ source }: Props) {
       {loading && <p>Loading changelog…</p>}
       {!loading && entries.length === 0 && <p className="hint">No events yet.</p>}
 
-      {groups.map(([day, evs]) => (
-        <div key={day} className="timeline-group">
-          <div className="timeline-date">{day}</div>
-          <ul className="timeline-list">
-            {evs.map((e, i) => (
-              <li
-                key={`${e.change_type}-${e.version_id ?? e.article_id ?? "x"}-${i}`}
-                className="timeline-row"
-              >
-                {e.change_type === "initial" ? (
-                  <div className="timeline-event timeline-initial">
-                    <span className="badge-initial">{BADGE.initial}</span>
-                    <span className="timeline-title">{e.title}</span>
-                  </div>
-                ) : (
-                  <button className="timeline-event" onClick={() => openEntry(e)}>
-                    <span className={`badge-${e.change_type}`}>{BADGE[e.change_type]}</span>
-                    <span className="timeline-title">{e.title}</span>
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ))}
+      {groups.map(([day, evs], gi) => {
+        const flatOffset = groups.slice(0, gi).reduce((n, [, ev]) => n + ev.length, 0);
+        return (
+          <div key={day} className="timeline-group">
+            <div className="timeline-date">{day}</div>
+            <ul className="timeline-list">
+              {evs.map((e, i) => {
+                const flatIdx = flatOffset + i;
+                const prevV = prevVersionByFlatIdx[flatIdx];
+                const showBoundary =
+                  e.version !== null && prevV !== null && e.version !== prevV;
+                return (
+                  <>
+                    {showBoundary && (
+                      <li key={`vb-${flatIdx}`} className="version-boundary">
+                        {prevV} → {e.version}
+                      </li>
+                    )}
+                    <li
+                      key={`${e.change_type}-${e.version_id ?? e.article_id ?? "x"}-${i}`}
+                      className="timeline-row"
+                    >
+                      {e.change_type === "initial" ? (
+                        <div className="timeline-event timeline-initial">
+                          <span className="badge-initial">{BADGE.initial}</span>
+                          <span className="timeline-title">{e.title}</span>
+                          {e.version && <span className="version-tag">v{e.version}</span>}
+                        </div>
+                      ) : (
+                        <button className="timeline-event" onClick={() => openEntry(e)}>
+                          <span className={`badge-${e.change_type}`}>{BADGE[e.change_type]}</span>
+                          <span className="timeline-title">{e.title}</span>
+                          {e.version && <span className="version-tag">v{e.version}</span>}
+                        </button>
+                      )}
+                    </li>
+                  </>
+                );
+              })}
+            </ul>
+          </div>
+        );
+      })}
 
       {overlay && (
         <VersionOverlay
