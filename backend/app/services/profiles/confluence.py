@@ -73,16 +73,19 @@ class ConfluenceProfile:
     REST_MAX_PAGES = 5000
 
     def detect(self, root_html: str, root_url: str) -> bool:
-        """Return True when the page contains Confluence/Atlassian markers.
+        """Return True only when the page is structurally Confluence.
 
-        Both ``"confluence"`` (e.g. ``id="com-atlassian-confluence"``) and
-        ``"atlassian"`` (e.g. Atlaskit portal class, performance span) must
-        be present.  Either alone could appear on third-party pages that embed
-        Atlassian widgets, but their co-presence is a reliable Confluence
-        fingerprint.
+        Earlier this keyed on the words ``"confluence"`` and ``"atlassian"``
+        appearing together, but that false-positives on any page that merely
+        *talks about* Atlassian Confluence — e.g. a vendor changelog for a
+        Confluence backup connector. Match a structural fingerprint instead:
+        ``com-atlassian-confluence`` (the Confluence page-wrapper element id) or
+        ``/wiki/spaces/`` (Confluence's space/page URL scheme). Both are present
+        on real Confluence instances and absent from pages that only reference
+        the product.
         """
         lower = root_html.lower()
-        return "confluence" in lower and "atlassian" in lower
+        return "com-atlassian-confluence" in lower or "/wiki/spaces/" in lower
 
     async def build_toc(self, root_url: str, scraper) -> list[TocEntry]:
         """Build the full, ordered page-tree from the REST API.

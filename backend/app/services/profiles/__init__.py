@@ -22,6 +22,7 @@ from app.services.profiles import confluence  # noqa: F401,E402
 from app.services.profiles import salesforce  # noqa: F401,E402
 from app.services.profiles import warmup_listgroup  # noqa: F401,E402
 from app.services.profiles import category_accordion  # noqa: F401,E402
+from app.services.profiles import release_notes  # noqa: F401,E402
 from app.services.profiles import generic  # noqa: F401,E402
 from app.services.profiles import llm  # noqa: F401,E402
 
