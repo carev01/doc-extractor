@@ -147,3 +147,23 @@ async def test_bump_rejects_when_no_templated_sources(client, seeded_product_pla
         json={"version": "2.0"},
     )
     assert r.status_code == 400
+
+
+async def test_bump_rejects_same_version(client, seeded_templated_product):
+    """Bumping to the version the product is already on → 400."""
+    c, _ = client
+    r = await c.post(
+        f"/api/products/{seeded_templated_product.id}/versions/bump",
+        json={"version": "10.0"},
+    )
+    assert r.status_code == 400
+
+
+async def test_bump_rejects_empty_version(client, seeded_templated_product):
+    """An empty version string → 400."""
+    c, _ = client
+    r = await c.post(
+        f"/api/products/{seeded_templated_product.id}/versions/bump",
+        json={"version": ""},
+    )
+    assert r.status_code == 400
