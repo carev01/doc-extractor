@@ -114,6 +114,19 @@ async def test_dom_order_preserved():
 # content_config()
 # ---------------------------------------------------------------------------
 
-def test_content_config_targets_article_body():
+def test_content_config_captures_article_body_and_embeds():
+    # Prose lives in <article class="m article">; tables/other embedded blocks
+    # render in sibling <div class="m embed"> *outside* the article, so both must
+    # be included or tables get dropped.
     cfg = CategoryAccordionProfile().content_config()
-    assert cfg["includeTags"] == ["article.article"]
+    assert "article.article" in cfg["includeTags"]
+    assert ".m.embed" in cfg["includeTags"]
+
+
+def test_content_config_excludes_page_chrome():
+    # Breadcrumb, the under-title byline, the bottom category chips, the author
+    # box, the nav sidebar and the related-articles block are all noise.
+    cfg = CategoryAccordionProfile().content_config()
+    for sel in (".m.breadcrumb", ".sub", ".tags", ".author",
+                ".category-sidebar", ".m.related"):
+        assert sel in cfg["excludeTags"], f"{sel} should be excluded"
