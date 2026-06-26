@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { DashboardResponse, DashboardSourceRow, DocumentationSource } from "../types";
 import { getDashboard, getSource } from "../api/client";
-import BulkImport from "./BulkImport";
 
 function fmtAge(seconds: number | null): string {
   if (seconds === null) return "never";
@@ -28,7 +27,6 @@ export default function Dashboard({
 }) {
   const [data, setData] = useState<DashboardResponse | null>(null);
   const [error, setError] = useState("");
-  const [showImport, setShowImport] = useState(false);
   const staleSeconds = 30 * 86400;
 
   useEffect(() => {
@@ -63,12 +61,7 @@ export default function Dashboard({
   const s = data.summary;
   return (
     <div className="dashboard">
-      <div className="dashboard-header">
-        <h2>Dashboard</h2>
-        <button className="btn-primary-sm" onClick={() => setShowImport(true)}>
-          Import CSV
-        </button>
-      </div>
+      <h2>Dashboard</h2>
       <div className="tile-row">
         <div className="tile"><span className="tile-n">{s.total}</span>Sources</div>
         <div className="tile warn"><span className="tile-n">{s.never_extracted}</span>Never extracted</div>
@@ -103,12 +96,6 @@ export default function Dashboard({
           )}
         </tbody>
       </table>
-      {showImport && (
-        <BulkImport
-          onClose={() => setShowImport(false)}
-          onImported={() => getDashboard(30).then(setData).catch(() => setError("Failed to load dashboard"))}
-        />
-      )}
     </div>
   );
 }
