@@ -116,9 +116,18 @@ def test_confluence_selector_scopes_body():
 
 
 def test_flare_html5_attribute_selector_scopes_body():
-    html = '<body><header>nav</header><div data-mc-content-body="True"><p>h5 body</p></div></body>'
+    # Real Flare nests the topic body in <div role="main" id="mc-main-content">
+    # inside the broader [data-mc-content-body] wrapper. We scope role=main so
+    # the wrapper's nav/search chrome (present on skins like N-able Cove) is
+    # left out — only the topic body survives.
+    html = (
+        '<body><header>nav</header>'
+        '<div data-mc-content-body="True"><div class="search-bar">search</div>'
+        '<div role="main" id="mc-main-content"><p>h5 body</p></div></div></body>'
+    )
     out = _scope_with(FlareHtml5Profile(), html)
-    assert "h5 body" in out and "nav" not in out
+    assert "h5 body" in out
+    assert "nav" not in out and "search" not in out
 
 
 def test_category_accordion_keeps_article_and_embed_drops_sidebar():

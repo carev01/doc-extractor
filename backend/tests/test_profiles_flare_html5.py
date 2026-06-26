@@ -10,7 +10,9 @@ Key invariants verified:
     critical same-vendor collision guard) and for all other platform fixtures.
   - build_toc() returns a non-empty ordered list with clean, non-duplicated
     titles extracted from the static page.
-  - content_config() targets [data-mc-content-body].
+  - content_config() targets the chrome-free topic body [role=main]
+    (not the broader [data-mc-content-body] wrapper, which leaks nav on some
+    custom skins — see the profile docstring).
 """
 
 import os
@@ -85,7 +87,7 @@ def test_detect_rejects_gitbook():
 
 def test_content_config_include_tags():
     cfg = FlareHtml5Profile().content_config()
-    assert cfg["includeTags"] == ["[data-mc-content-body]"]
+    assert cfg["includeTags"] == ["[role=main]"]
 
 
 def test_content_config_excludes_skin_chrome():
