@@ -136,6 +136,13 @@ class ZoominProfile:
                 img["src"] = urljoin(url, src)
         return str(soup)
 
+    def content_config(self) -> dict:
+        # Bodies are unwrapped from the page API JSON by extract_content_html, so
+        # these selectors are unused on the raw_http path — but extract_source
+        # always calls content_config(), so it must exist (part of the profile
+        # interface).
+        return {"onlyMainContent": True, "waitFor": 1500}
+
 
 PROFILE = ZoominProfile()
 registry.register(PROFILE)
