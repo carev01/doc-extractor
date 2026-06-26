@@ -256,6 +256,7 @@ def _render_segment(doc: "fitz.Document", segment: Segment) -> tuple[str, list[R
     pages = list(range(segment.page_start, segment.page_end + 1))
     images: list[RenderedImage] = []
     seen: dict[str, str] = {}  # original target -> canonical filename
+    seen_shas: set[str] = set()  # canonical filenames already collected
     with tempfile.TemporaryDirectory() as image_dir:
         md = pymupdf4llm.to_markdown(
             doc, pages=pages, write_images=True,
@@ -270,10 +271,12 @@ def _render_segment(doc: "fitz.Document", segment: Segment) -> tuple[str, list[R
                 return m.group(0)  # not a written image — leave untouched
             if target in seen:
                 return f"![{alt}]({seen[target]})"
-            data = open(path, "rb").read()
+            with open(path, "rb") as fh:
+                data = fh.read()
             filename = hashlib.sha256(data).hexdigest()[:16] + ".png"
             seen[target] = filename
-            if all(img.filename != filename for img in images):
+            if filename not in seen_shas:
+                seen_shas.add(filename)
                 images.append(RenderedImage(filename=filename, data=data, alt=alt))
             return f"![{alt}]({filename})"
 
