@@ -76,6 +76,15 @@ async def test_upload_pdf_stores_file_and_sets_marker(client, tmp_path):
     assert os.path.exists(os.path.join(str(tmp_path), f"{sid}.pdf"))
 
 
+async def test_blank_name_is_422(client):
+    c, factory = client
+    pid = await _product(factory)
+    resp = await c.post("/api/sources/pdf", data={
+        "product_id": str(pid), "name": "   ", "pdf_url": "https://x/doc.pdf",
+    })
+    assert resp.status_code == 422
+
+
 async def test_non_pdf_upload_is_415(client):
     c, factory = client
     pid = await _product(factory)

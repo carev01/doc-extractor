@@ -148,3 +148,59 @@ async def test_page_shift_unchanged_section_not_removed(factory, tmp_path):
         # new page-anchored URL.
         assert all(a.removed_at is None for a in arts)
         assert all(a.source_url.endswith(("#page=2", "#page=3")) for a in arts)
+
+
+def _pdf_duplicate_titles() -> bytes:
+    """Two top-level sections with the SAME title — their outline-path slugs
+    collide unless disambiguated."""
+    doc = fitz.open()
+    doc.new_page().insert_text((72, 72), "First notes body.")
+    doc.new_page().insert_text((72, 72), "Second notes body.")
+    doc.set_toc([[1, "Notes", 1], [1, "Notes", 2]])
+    return doc.tobytes()
+
+
+async def test_duplicate_sibling_titles_do_not_collide(factory, tmp_path):
+    """Two sibling sections sharing a title must each get their own article — the
+    second must not overwrite the first via a colliding topic_key."""
+    settings.pdf_dir = str(tmp_path)
+    async with factory() as s:
+        v = Vendor(name="V"); s.add(v); await s.flush()
+        p = Product(vendor_id=v.id, name="P"); s.add(p); await s.flush()
+        src = DocumentationSource(product_id=p.id, name="Manual",
+                                  base_url="file://x.pdf", source_type="pdf")
+        s.add(src); await s.commit()
+        sid = src.id
+    with open(pdf_path_for(sid, str(tmp_path)), "wb") as fh:
+        fh.write(_pdf_duplicate_titles())
+    await _run(factory, sid)
+
+    async with factory() as s:
+        arts = (await s.execute(
+            select(Article).where(Article.source_id == sid).order_by(Article.sort_order)
+        )).scalars().all()
+        assert len(arts) == 2                                  # neither clobbered
+        keys = sorted(a.topic_key for a in arts)
+        assert keys == ["notes", "notes-2"]                    # disambiguated
+        bodies = " ".join(a.content_markdown for a in arts)
+        assert "First notes body." in bodies and "Second notes body." in bodies
+
+
+async def test_articles_total_excludes_empty_segments(factory, tmp_path, monkeypatch):
+    """A segment that renders to empty markdown is not persisted, so it must not
+    count toward articles_total — otherwise progress can never reach 100%."""
+    import app.services.pdf_import as pdf_import
+    sid = await _make_pdf_source(factory, tmp_path)  # _pdf() → 2 sections
+
+    # Force the second section to render empty (e.g. an image-only page).
+    monkeypatch.setattr(pdf_import, "render_segments",
+                        lambda pdf_bytes, segments: ["Real content.", ""])
+
+    run_pk = await _run(factory, sid)
+    async with factory() as s:
+        r = await s.get(ExtractionRun, run_pk)
+        arts = (await s.execute(
+            select(Article).where(Article.source_id == sid))).scalars().all()
+        assert len(arts) == 1                       # empty segment not persisted
+        processed = r.articles_extracted + r.articles_updated + r.articles_unchanged
+        assert r.articles_total == processed == 1   # denominator matches reality

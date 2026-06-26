@@ -265,6 +265,9 @@ async def create_pdf_source(
     ).scalar_one_or_none()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
+    name = name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="name must not be blank")
     if bool(pdf_url) == bool(file):
         raise HTTPException(status_code=422, detail="Provide exactly one of pdf_url or file")
 
