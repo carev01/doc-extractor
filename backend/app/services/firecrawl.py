@@ -5,6 +5,7 @@ import hashlib
 import logging
 import os
 import re
+import shutil
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
@@ -515,6 +516,7 @@ class FirecrawlService:
         change_status: str | None = None,
         diff_text: str | None = None,
         topic_key: str | None = None,
+        pdf_images: list | None = None,
     ) -> str:
         """Store or skip a single article and atomically increment run counters.
 
@@ -758,6 +760,32 @@ class FirecrawlService:
                     markdown_content = markdown_content.replace(full_src, served_url)
                     if src != full_src and src.startswith(("/", "./", "../")):
                         markdown_content = markdown_content.replace(src, served_url)
+
+        elif pdf_images:
+            # PDF source images: written by render_segments as content-addressed
+            # bytes. Clear the article's media dir so only current figures remain,
+            # write each image, record an ArticleImage row, and rewrite the bare
+            # canonical "<sha>.png" reference to the served /media URL. The hash was
+            # already taken on the canonical markdown, so served paths don't diff.
+            article_img_dir = os.path.join(media_root, str(article.id))
+            shutil.rmtree(article_img_dir, ignore_errors=True)
+            os.makedirs(article_img_dir, exist_ok=True)
+            for i, img in enumerate(pdf_images):
+                with open(os.path.join(article_img_dir, img.filename), "wb") as fh:
+                    fh.write(img.data)
+                served_url = f"{settings.media_url_prefix}/{article.id}/{img.filename}"
+                db.add(ArticleImage(
+                    article_id=article.id,
+                    original_url=f"pdf:{img.filename}",
+                    local_filename=img.filename,
+                    local_path=served_url,
+                    alt_text=img.alt or None,
+                    file_size_bytes=len(img.data),
+                    sort_order=i,
+                ))
+                markdown_content = markdown_content.replace(
+                    f"]({img.filename})", f"]({served_url})"
+                )
 
         article.content_markdown = markdown_content
 

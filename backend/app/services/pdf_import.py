@@ -400,7 +400,7 @@ async def run_pdf_extraction(service, db, source, run, run_pk) -> ExtractionRun:
         await db.flush()
         entry_ids.append(toc.id)
         levels.append(seg.level)
-        article_inputs.append((toc.id, i, seg.title, topic_key, url, rendered[i][0]))
+        article_inputs.append((toc.id, i, seg.title, topic_key, url, rendered[i][0], rendered[i][1]))
 
     run.current_phase = "content_scraping"
     # A segment that renders to empty markdown (e.g. an image-only page) is not
@@ -409,11 +409,11 @@ async def run_pdf_extraction(service, db, source, run, run_pk) -> ExtractionRun:
     run.articles_total = sum(1 for inp in article_inputs if inp[5].strip())
     await db.commit()
 
-    for toc_id, sort_order, title, topic_key, url, md in article_inputs:
+    for toc_id, sort_order, title, topic_key, url, md, images in article_inputs:
         await service.process_article_result(
             db, source.id, run_pk, url=url, markdown_content=md, doc_html="",
             toc_entry_id=toc_id, sort_order=sort_order, title=title,
-            change_status=None, topic_key=topic_key,
+            change_status=None, topic_key=topic_key, pdf_images=images,
         )
 
     run = (await db.execute(
