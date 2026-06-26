@@ -4,15 +4,21 @@ Zendesk Help Center themes render the article tree client-side and gate the
 public HTML behind bot protection (a plain GET of an ``/hc/…`` page returns 403),
 but every Help Center exposes an open, paginated REST API that needs no auth:
 
+    GET /api/v2/help_center/<locale>/categories.json
     GET /api/v2/help_center/<locale>/categories/<id>/sections.json
     GET /api/v2/help_center/<locale>/categories/<id>/articles.json
     GET /api/v2/help_center/<locale>/articles/<id>.json   → {"article": {"body": …}}
 
-A source points at one category (``/hc/<locale>/categories/<id>``). We build the
+A source may point at one category (``/hc/<locale>/categories/<id>``) or at the
+Help Center root (``/hc/<locale>``, e.g. DropSuite). For a category we build the
 ordered tree from its sections (curated by ``position``, nested via
 ``parent_section_id``) and articles (grouped by ``section_id``, ordered by
-``position``); section nodes are url-less structural headers (their landing
-pages aren't articles), articles carry the public ``html_url`` for display while
+``position``). For the root we list every category and nest each one's tree
+beneath a top-level url-less category header, so the whole Help Center extracts
+as a single source.
+
+Section and category nodes are url-less structural headers (their landing pages
+aren't articles); articles carry the public ``html_url`` for display while
 ``content_url`` points at the article API so the raw_http path can fetch the
 body as JSON — unwrapped by :meth:`extract_content_html`.
 """
@@ -26,6 +32,10 @@ from app.services.profiles.base import TocEntry
 
 # /hc/<locale>/categories/<id> — the canonical Help Center category URL.
 _CATEGORY_RE = re.compile(r"/hc/([^/]+)/categories/(\d+)")
+# Any Help Center URL, capturing the locale: the root (/hc/en-us) or a deeper
+# categories/sections/articles page. The locale shape avoids matching unrelated
+# /hc/ paths.
+_HC_URL_RE = re.compile(r"/hc/([a-z]{2}(?:-[a-z]{2,4})?)(?:/|$)", re.I)
 
 
 class ZendeskProfile:
@@ -38,22 +48,47 @@ class ZendeskProfile:
     MAX_PAGES = 200  # safety bound (× PER_PAGE = 20k items)
 
     def detect(self, root_html: str, root_url: str) -> bool:
-        # The /hc/<locale>/categories|sections|articles/ path scheme is unique to
-        # Zendesk Help Center and is reliable even when the page itself is
-        # bot-gated (so root_html may be a 403 shell). Also accept clear in-page
-        # markers for the rare non-category landing.
-        if re.search(r"/hc/[^/]+/(categories|sections|articles)/\d+", root_url):
+        # The /hc/<locale>[/…] path scheme is unique to Zendesk Help Center and is
+        # reliable even when the page itself is bot-gated (so root_html may be a
+        # 403 shell — DropSuite's root 403s with no usable markers). Also accept
+        # clear in-page markers as a fallback.
+        if _HC_URL_RE.search(root_url):
             return True
         lower = root_html.lower()
         return "/api/v2/help_center/" in lower or "zendesk" in lower
 
     async def build_toc(self, root_url: str, scraper) -> list[TocEntry]:
-        m = _CATEGORY_RE.search(root_url)
-        if not m:
+        lm = _HC_URL_RE.search(root_url)
+        if not lm:
             return []
-        locale, cat_id = m.group(1), m.group(2)
-        api = f"{urlparse(root_url).scheme}://{urlparse(root_url).netloc}/api/v2/help_center/{locale}"
+        locale = lm.group(1)
+        p = urlparse(root_url)
+        api = f"{p.scheme}://{p.netloc}/api/v2/help_center/{locale}"
 
+        cm = _CATEGORY_RE.search(root_url)
+        if cm:
+            # A single category: its sections/articles at the top level.
+            return await self._build_category(scraper, api, cm.group(2), base_level=0)
+
+        # Help Center root (/hc/<locale>): every category becomes a top-level
+        # url-less header, with its sections/articles nested beneath it.
+        categories = await self._fetch_all(scraper, f"{api}/categories.json", "categories")
+        categories.sort(key=lambda c: (c.get("position", 0), c.get("name", "")))
+        out: list[TocEntry] = []
+        for c in categories:
+            cid = c.get("id")
+            if cid is None:
+                continue
+            out.append(TocEntry(
+                title=(c.get("name") or "").strip(), url=None,
+                level=0, is_article=False, parent_url=None,
+            ))
+            out.extend(await self._build_category(scraper, api, cid, base_level=1))
+        return out
+
+    async def _build_category(self, scraper, api: str, cat_id, base_level: int) -> list[TocEntry]:
+        """Ordered sections + articles of one category, starting at ``base_level``
+        (sections at base_level, their articles one level deeper)."""
         sections = await self._fetch_all(
             scraper, f"{api}/categories/{cat_id}/sections.json", "sections"
         )
@@ -103,10 +138,10 @@ class ZendeskProfile:
                     emit_article(a, level + 1, None)
                 walk_sections(sid, level + 1)
 
-        walk_sections(None, 0)
-        # Articles with no section (rare) land at the end, top level.
+        walk_sections(None, base_level)
+        # Articles with no section (rare) land at the end, at base level.
         for a in arts_by_section.get(None, []):
-            emit_article(a, 0, None)
+            emit_article(a, base_level, None)
         return out
 
     async def _fetch_all(self, scraper, url: str, key: str) -> list:

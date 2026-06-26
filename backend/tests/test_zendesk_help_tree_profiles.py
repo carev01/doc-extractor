@@ -114,6 +114,58 @@ def test_zendesk_extract_content_none_without_body():
     assert ZendeskProfile().extract_content_html("not json", "https://x/") is None
 
 
+# --- Help Center root (/hc/<locale>) — all categories in one source (DropSuite) ---
+
+ZD_HC_ROOT = "https://support.example.com/hc/en-us"
+
+
+def test_zendesk_detects_help_center_root_even_when_html_is_403_shell():
+    # DropSuite's root 403s with no usable markers; detection must key on the URL.
+    assert detect_platform("<html><body>403</body></html>", ZD_HC_ROOT) == "zendesk"
+
+
+def _zendesk_root_scraper():
+    cats = {"categories": [
+        {"id": 2, "name": "Beta", "position": 1},
+        {"id": 1, "name": "Alpha", "position": 0},   # out of order -> sorted by position
+    ], "next_page": None}
+
+    def cat(cat_id, section, article):
+        return {
+            f"{ZD_API}/categories/{cat_id}/sections.json?per_page=100&page=1":
+                json.dumps({"sections": [section], "next_page": None}),
+            f"{ZD_API}/categories/{cat_id}/articles.json?per_page=100&page=1":
+                json.dumps({"articles": [article], "next_page": None}),
+        }
+
+    raw = {f"{ZD_API}/categories.json?per_page=100&page=1": json.dumps(cats)}
+    raw.update(cat(1,
+        {"id": 11, "name": "Alpha Sec", "position": 0, "parent_section_id": None},
+        {"id": 101, "title": "Alpha Art", "section_id": 11, "position": 0,
+         "html_url": "https://support.example.com/hc/en-us/articles/101-a"}))
+    raw.update(cat(2,
+        {"id": 22, "name": "Beta Sec", "position": 0, "parent_section_id": None},
+        {"id": 202, "title": "Beta Art", "section_id": 22, "position": 0,
+         "html_url": "https://support.example.com/hc/en-us/articles/202-b"}))
+    return FakeScraper({}, raw_by_url=raw)
+
+
+@pytest.mark.asyncio
+async def test_zendesk_root_nests_every_category_in_position_order():
+    toc = await ZendeskProfile().build_toc(ZD_HC_ROOT, _zendesk_root_scraper())
+    shape = [(e.level, e.title, e.is_article) for e in toc]
+    assert shape == [
+        (0, "Alpha", False),       # category header (position 0 first)
+        (1, "Alpha Sec", False),   # its section, nested one level
+        (2, "Alpha Art", True),    # its article, two levels deep
+        (0, "Beta", False),
+        (1, "Beta Sec", False),
+        (2, "Beta Art", True),
+    ]
+    art = next(e for e in toc if e.title == "Alpha Art")
+    assert art.content_url == f"{ZD_API}/articles/101.json"
+
+
 # ===========================================================================
 # help_tree
 # ===========================================================================
