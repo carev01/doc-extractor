@@ -15,6 +15,7 @@ stringData:
   DOCEXTRACTOR_DATABASE_URL_SYNC: "postgresql+psycopg2://docextractor:CHANGE_ME@docextractor-postgres:5432/docextractor"
   DOCEXTRACTOR_FIRECRAWL_API_KEY: "CHANGE_ME"
   DOCEXTRACTOR_LLM_API_KEY: ""
+  DOCEXTRACTOR_BROWSERLESS_TOKEN: ""
   POSTGRES_PASSWORD: "CHANGE_ME"
 
 ---
@@ -40,6 +41,9 @@ data:
   DOCEXTRACTOR_LLM_MAX_TOKENS: "2048"
   DOCEXTRACTOR_EXPORT_RETENTION_DAYS: "7"
   DOCEXTRACTOR_EXPORT_MAX_TOTAL_BYTES: "3221225472"
+  DOCEXTRACTOR_BROWSERLESS_URL: "http://browserless.browserless.svc.cluster.local:3000"
+  DOCEXTRACTOR_BROWSERLESS_WAIT_MS: "9000"
+  DOCEXTRACTOR_BROWSERLESS_CONCURRENCY: "4"
 
 ---
 # Source: docextractor/templates/frontend-nginx-configmap.yaml
@@ -103,6 +107,23 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: docextractor-media
+  labels:
+    app.kubernetes.io/name: docextractor
+    app.kubernetes.io/instance: docextractor
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: docextractor-0.1.0
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# Source: docextractor/templates/pvc-pdf.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: docextractor-pdf
   labels:
     app.kubernetes.io/name: docextractor
     app.kubernetes.io/instance: docextractor
@@ -255,11 +276,14 @@ spec:
           volumeMounts:
             - { name: exports, mountPath: /app/exports }
             - { name: media, mountPath: /app/media }
+            - { name: pdf, mountPath: /app/pdf_uploads }
       volumes:
         - name: exports
           persistentVolumeClaim: { claimName: docextractor-exports }
         - name: media
           persistentVolumeClaim: { claimName: docextractor-media }
+        - name: pdf
+          persistentVolumeClaim: { claimName: docextractor-pdf }
 
 ---
 # Source: docextractor/templates/frontend-deployment.yaml
@@ -485,11 +509,14 @@ spec:
           volumeMounts:
             - { name: exports, mountPath: /app/exports }
             - { name: media, mountPath: /app/media }
+            - { name: pdf, mountPath: /app/pdf_uploads }
       volumes:
         - name: exports
           persistentVolumeClaim: { claimName: docextractor-exports }
         - name: media
           persistentVolumeClaim: { claimName: docextractor-media }
+        - name: pdf
+          persistentVolumeClaim: { claimName: docextractor-pdf }
 
 ---
 # Source: docextractor/templates/postgres-statefulset.yaml

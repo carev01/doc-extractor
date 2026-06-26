@@ -57,8 +57,11 @@ spec:
           volumeMounts:
             - { name: exports, mountPath: /app/exports }
             - { name: media, mountPath: /app/media }
+            - { name: pdf, mountPath: /app/pdf_uploads }
       volumes:
         - name: exports
           persistentVolumeClaim: { claimName: {{ .Release.Name }}-exports }
         - name: media
           persistentVolumeClaim: { claimName: {{ .Release.Name }}-media }
+        - name: pdf
+          persistentVolumeClaim: { claimName: {{ .Release.Name }}-pdf }

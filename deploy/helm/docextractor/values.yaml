@@ -21,12 +21,14 @@ postgres:
 externalDatabaseUrl: ""           # used only when postgres.enabled=false
 externalDatabaseUrlSync: ""
 
-# -- Shared RWO storage for exports + media (written by worker, served by backend)
+# -- Shared RWO storage for exports + media + uploaded PDFs
+#    (written by backend/worker, served by backend)
 storage:
   storageClassName: ""            # your VMware CSI (RWO) class; "" = default
   accessMode: ReadWriteOnce       # RWX later -> ReadWriteMany (then drop worker podAffinity)
   exportsSize: 5Gi
   mediaSize: 5Gi
+  pdfSize: 5Gi                    # uploaded source PDFs (re-converted on each run)
 
 # -- Export retention (scheduler purges old exports so the exports PVC can't fill)
 export:
