@@ -31,6 +31,7 @@ from app.services.profiles import zendesk  # noqa: F401,E402
 from app.services.profiles import help_tree  # noqa: F401,E402
 from app.services.profiles import helpjuice  # noqa: F401,E402
 from app.services.profiles import ibm_docs  # noqa: F401,E402
+from app.services.profiles import sphinx  # noqa: F401,E402
 from app.services.profiles import generic  # noqa: F401,E402
 from app.services.profiles import llm  # noqa: F401,E402
 
