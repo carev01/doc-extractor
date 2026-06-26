@@ -148,3 +148,39 @@ async def test_page_shift_unchanged_section_not_removed(factory, tmp_path):
         # new page-anchored URL.
         assert all(a.removed_at is None for a in arts)
         assert all(a.source_url.endswith(("#page=2", "#page=3")) for a in arts)
+
+
+def _pdf_duplicate_titles() -> bytes:
+    """Two top-level sections with the SAME title — their outline-path slugs
+    collide unless disambiguated."""
+    doc = fitz.open()
+    doc.new_page().insert_text((72, 72), "First notes body.")
+    doc.new_page().insert_text((72, 72), "Second notes body.")
+    doc.set_toc([[1, "Notes", 1], [1, "Notes", 2]])
+    return doc.tobytes()
+
+
+async def test_duplicate_sibling_titles_do_not_collide(factory, tmp_path):
+    """Two sibling sections sharing a title must each get their own article — the
+    second must not overwrite the first via a colliding topic_key."""
+    settings.pdf_dir = str(tmp_path)
+    async with factory() as s:
+        v = Vendor(name="V"); s.add(v); await s.flush()
+        p = Product(vendor_id=v.id, name="P"); s.add(p); await s.flush()
+        src = DocumentationSource(product_id=p.id, name="Manual",
+                                  base_url="file://x.pdf", source_type="pdf")
+        s.add(src); await s.commit()
+        sid = src.id
+    with open(pdf_path_for(sid, str(tmp_path)), "wb") as fh:
+        fh.write(_pdf_duplicate_titles())
+    await _run(factory, sid)
+
+    async with factory() as s:
+        arts = (await s.execute(
+            select(Article).where(Article.source_id == sid).order_by(Article.sort_order)
+        )).scalars().all()
+        assert len(arts) == 2                                  # neither clobbered
+        keys = sorted(a.topic_key for a in arts)
+        assert keys == ["notes", "notes-2"]                    # disambiguated
+        bodies = " ".join(a.content_markdown for a in arts)
+        assert "First notes body." in bodies and "Second notes body." in bodies

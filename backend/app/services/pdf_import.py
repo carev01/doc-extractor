@@ -314,13 +314,22 @@ async def run_pdf_extraction(service, db, source, run, run_pk) -> ExtractionRun:
     entry_ids: list[uuid.UUID] = []
     levels: list[int] = []
     article_inputs: list[tuple] = []  # (toc_id, sort_order, title, topic_key, url, md)
+    # Disambiguate colliding topic keys within this run: two sibling sections
+    # sharing a title slug to the same key, which process_article_result matches
+    # on — without this the later one overwrites the earlier (silent data loss).
+    # First occurrence keeps the clean slug; duplicates get -2, -3, … Stable as
+    # long as section order is stable, so incremental diffs stay stable.
+    key_counts: dict[str, int] = {}
     for i, seg in enumerate(segments):
         parent_id = None
         for j in range(i - 1, -1, -1):
             if levels[j] < seg.level:
                 parent_id = entry_ids[j]
                 break
-        topic_key = derive_pdf_topic_key(seg.path or [seg.title])
+        base_key = derive_pdf_topic_key(seg.path or [seg.title])
+        n = key_counts.get(base_key, 0) + 1
+        key_counts[base_key] = n
+        topic_key = base_key if n == 1 else f"{base_key}-{n}"
         page_anchor = f"#page={seg.page_start + 1}"
         url = f"{source.base_url}{page_anchor}"
         toc = TOCEntry(
