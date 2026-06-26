@@ -44,3 +44,41 @@ async def test_outline_still_wins_without_calling_llm(monkeypatch):
     doc.set_toc([[1, "A", 1], [1, "B", 2]])
     segs = await segment_pdf_async(doc.tobytes())
     assert [s.title for s in segs] == ["A", "B"]
+
+
+def _pdf_with_headings() -> bytes:
+    """PDF with no outline but a large-font heading (24pt) followed by body (11pt)."""
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Introduction", fontsize=24)
+    page.insert_text((72, 120), "This is body text for the introduction section.", fontsize=11)
+    page2 = doc.new_page()
+    page2.insert_text((72, 72), "Configuration", fontsize=24)
+    page2.insert_text((72, 120), "Body text for the configuration section.", fontsize=11)
+    return doc.tobytes()
+
+
+async def test_heuristic_used_when_llm_returns_empty(monkeypatch):
+    """When LLM is enabled but returns [], heuristic segments are used instead."""
+    monkeypatch.setattr(pdf_import.settings, "llm_fallback_enabled", True)
+
+    async def fake_llm_empty(text):
+        return []
+
+    monkeypatch.setattr(pdf_import, "_llm_segment_titles", fake_llm_empty)
+    segs = await segment_pdf_async(_pdf_with_headings())
+    assert len(segs) > 1
+    titles = [s.title for s in segs]
+    assert any("Introduction" in t or "Configuration" in t for t in titles)
+
+
+async def test_llm_skipped_when_disabled(monkeypatch):
+    """When llm_fallback_enabled is False, _llm_segment_titles is never called."""
+    monkeypatch.setattr(pdf_import.settings, "llm_fallback_enabled", False)
+
+    async def must_not_be_called(text):
+        raise AssertionError("_llm_segment_titles must not be called when LLM is disabled")
+
+    monkeypatch.setattr(pdf_import, "_llm_segment_titles", must_not_be_called)
+    segs = await segment_pdf_async(_pdf_plain_text())
+    assert len(segs) >= 1

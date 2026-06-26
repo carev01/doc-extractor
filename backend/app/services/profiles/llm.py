@@ -90,7 +90,7 @@ def _strip_fences(text: str) -> str:
     return m.group(1) if m else text.strip()
 
 
-async def call_llm(prompt: str) -> str:
+async def call_llm(prompt: str, *, system: str | None = None) -> str:
     """Send a single-turn prompt to the configured LLM provider and return the text.
 
     Raises ``ValueError`` when ``llm_api_key`` is not set.
@@ -101,7 +101,13 @@ async def call_llm(prompt: str) -> str:
     Parameters
     ----------
     prompt:
-        The full prompt to send as the user turn.
+        The user-turn content to send.
+    system:
+        Optional system prompt.  For Anthropic this becomes the top-level
+        ``"system"`` field; for OpenAI it is prepended as a
+        ``{"role": "system", ...}`` message.  When ``None`` (the default) no
+        system field or role is added — matching the behaviour of callers that
+        embed instructions directly in the user turn (e.g. PDF segmentation).
 
     Returns
     -------
@@ -129,6 +135,8 @@ async def call_llm(prompt: str) -> str:
                 "max_tokens": settings.llm_max_tokens,
                 "messages": [{"role": "user", "content": prompt}],
             }
+            if system is not None:
+                body["system"] = system
             resp = await client.post(base_url, headers=headers, json=body)
             resp.raise_for_status()
             return resp.json()["content"][0]["text"]
@@ -140,10 +148,14 @@ async def call_llm(prompt: str) -> str:
                 "Authorization": f"Bearer {api_key}",
                 "content-type": "application/json",
             }
+            messages = []
+            if system is not None:
+                messages.append({"role": "system", "content": system})
+            messages.append({"role": "user", "content": prompt})
             body = {
                 "model": model,
                 "max_tokens": settings.llm_max_tokens,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": messages,
                 "response_format": {"type": "json_object"},
             }
             resp = await client.post(base_url, headers=headers, json=body)
@@ -177,14 +189,10 @@ async def derive_spec(html: str, root_url: str) -> "dict | None":
         return None
 
     snippet = html[:20_000]
-    prompt = (
-        f"{_SYSTEM_PROMPT}\n\n"
-        f"URL: {root_url}\n\n"
-        f"HTML (truncated):\n{snippet}"
-    )
+    user_content = f"URL: {root_url}\n\nHTML (truncated):\n{snippet}"
 
     try:
-        text = await call_llm(prompt)
+        text = await call_llm(user_content, system=_SYSTEM_PROMPT)
         return json.loads(_strip_fences(text))
     except Exception as exc:  # noqa: BLE001
         logger.warning("LLM derive_spec failed for %s: %s", root_url, exc)
