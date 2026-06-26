@@ -29,6 +29,9 @@ import type {
   ChangelogResponse,
   BrowseResponse,
   ProfileOption,
+  PickableSource,
+  DashboardResponse,
+  SourceImportResult,
 } from "../types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -419,5 +422,34 @@ export async function getVersionDiff(
 
 export async function browseSource(sourceId: string): Promise<BrowseResponse> {
   const res = await api.get(`/sources/${sourceId}/browse`);
+  return res.data;
+}
+
+export async function listPickableSources(): Promise<PickableSource[]> {
+  const res = await api.get<{ sources: PickableSource[] }>("/sources/pickable");
+  return res.data.sources;
+}
+
+export async function assignSourcesToJob(
+  jobId: string,
+  sourceIds: string[],
+): Promise<Job> {
+  const res = await api.put<Job>(`/jobs/${jobId}/sources`, { source_ids: sourceIds });
+  return res.data;
+}
+
+// ── Dashboard ──
+
+export async function getDashboard(staleDays = 30): Promise<DashboardResponse> {
+  const res = await api.get<DashboardResponse>("/dashboard/sources", {
+    params: { stale_days: staleDays },
+  });
+  return res.data;
+}
+
+// ── Bulk import ──
+
+export async function importSources(csvText: string): Promise<SourceImportResult> {
+  const res = await api.post<SourceImportResult>("/sources/import", { csv: csvText });
   return res.data;
 }

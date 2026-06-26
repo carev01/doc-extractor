@@ -56,6 +56,10 @@ class JobUpdate(BaseModel):
     timezone: str | None = None
 
 
+class JobSourcesAssign(BaseModel):
+    source_ids: list[uuid.UUID]
+
+
 class JobSourceRef(BaseModel):
     id: uuid.UUID
     name: str

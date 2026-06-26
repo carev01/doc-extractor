@@ -173,6 +173,12 @@ def _raw_failure_exceeded(attempted: int, failed: int) -> bool:
     )
 
 
+def persisted_count(extracted: int, updated: int, unchanged: int, resumed: int) -> int:
+    """Total pages accounted for in a run: freshly processed this attempt plus
+    pages carried over from a resumed checkpoint."""
+    return (extracted or 0) + (updated or 0) + (unchanged or 0) + (resumed or 0)
+
+
 class FirecrawlService:
     """Handles documentation extraction via local Firecrawl instance."""
 
@@ -955,7 +961,7 @@ class FirecrawlService:
             await db.execute(
                 update(ExtractionRun)
                 .where(ExtractionRun.id == run_id)
-                .values(articles_extracted=completed)
+                .values(articles_resumed=completed)
             )
             await db.commit()
 
@@ -1422,7 +1428,7 @@ class FirecrawlService:
                         source.base_url, resumed, len(pending),
                     )
                     # Reflect prior progress in the run's counter for an accurate bar.
-                    run.articles_extracted = resumed
+                    run.articles_resumed = resumed
                     await db.commit()
                 for i in range(0, len(pending), self.MAX_BATCH_URLS):
                     # Cooperative cancel/pause: the API sets run.control; we
@@ -1461,17 +1467,18 @@ class FirecrawlService:
             # loudly instead of reporting a misleading COMPLETED/0. Counters are
             # bumped via SQL UPDATE in process_article_result, so re-read them
             # rather than trusting the stale in-memory run.
-            extracted, updated, unchanged, err = (
+            extracted, updated, unchanged, resumed, err = (
                 await db.execute(
                     select(
                         ExtractionRun.articles_extracted,
                         ExtractionRun.articles_updated,
                         ExtractionRun.articles_unchanged,
+                        ExtractionRun.articles_resumed,
                         ExtractionRun.error_message,
                     ).where(ExtractionRun.id == run.id)
                 )
             ).one()
-            persisted = (extracted or 0) + (updated or 0) + (unchanged or 0)
+            persisted = persisted_count(extracted, updated, unchanged, resumed)
             if persisted == 0 and err == _BLOCKED_MSG:
                 run.status = RunStatus.FAILED
                 run.error_message = err

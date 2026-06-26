@@ -1,5 +1,7 @@
 """DocumentationSource CRUD routes."""
 
+import csv as csvlib
+import io
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -12,15 +14,22 @@ from app.core.database import get_db
 from app.models.article import Article
 from app.models.article_version import ArticleVersion
 from app.models.extraction_run import ExtractionRun, RunStatus
+from app.models.job import Job
 from app.models.product import Product
 from app.models.source import DocumentationSource
 from app.models.toc import TOCEntry
+from app.models.vendor import Vendor
 from app.schemas.browse import BrowseTOCEntry, RemovedArticle, BrowseResponse
 from app.schemas.source import (
     SourceCreate,
     SourceUpdate,
     SourceResponse,
     SourceListResponse,
+    PickableSource,
+    PickableSourceList,
+    SourceImportRequest,
+    SourceImportRow,
+    SourceImportResult,
 )
 from app.schemas.version import ChangelogEntry, ChangelogResponse
 from app.services.versioning import detect_version_token, resolve_template
@@ -91,6 +100,152 @@ async def list_sources(
     sources = result.scalars().all()
 
     return SourceListResponse(sources=sources, total=total)
+
+
+@router.get("/pickable", response_model=PickableSourceList)
+async def list_pickable_sources(db: AsyncSession = Depends(get_db)):
+    """All sources with vendor/product labels and their current job (if any),
+    for the job view's source picker."""
+    rows = (
+        await db.execute(
+            select(
+                DocumentationSource.id,
+                DocumentationSource.name,
+                Vendor.name.label("vendor_name"),
+                Product.name.label("product_name"),
+                DocumentationSource.job_id,
+                Job.name.label("job_name"),
+            )
+            .join(Product, DocumentationSource.product_id == Product.id)
+            .join(Vendor, Product.vendor_id == Vendor.id)
+            .outerjoin(Job, DocumentationSource.job_id == Job.id)
+            .order_by(Vendor.name, Product.name, DocumentationSource.name)
+        )
+    ).all()
+    return PickableSourceList(sources=[
+        PickableSource(
+            id=r.id, name=r.name, vendor_name=r.vendor_name,
+            product_name=r.product_name, job_id=r.job_id, job_name=r.job_name,
+        )
+        for r in rows
+    ])
+
+
+REQUIRED_COLUMNS = {"vendor", "product", "source_name", "base_url"}
+
+
+@router.post("/import", response_model=SourceImportResult)
+async def import_sources(body: SourceImportRequest, db: AsyncSession = Depends(get_db)):
+    """Bulk-import sources from CSV. Auto-creates vendors/products by name;
+    skips a source when (product, base_url) already exists."""
+    reader = csvlib.DictReader(io.StringIO(body.csv))
+    if reader.fieldnames is None or not REQUIRED_COLUMNS.issubset(
+        {(f or "").strip().lower() for f in reader.fieldnames}
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=f"CSV must have columns: {', '.join(sorted(REQUIRED_COLUMNS))}",
+        )
+
+    # In-request caches keyed by lowercased trimmed names.
+    vendor_cache: dict[str, Vendor] = {}
+    product_cache: dict[tuple[str, str], Product] = {}
+    rows: list[SourceImportRow] = []
+    created = skipped = errors = 0
+
+    async def _vendor(name: str) -> Vendor:
+        key = name.lower()
+        if key in vendor_cache:
+            return vendor_cache[key]
+        existing = (
+            await db.execute(
+                select(Vendor).where(func.lower(Vendor.name) == key)
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            existing = Vendor(name=name)
+            db.add(existing)
+            await db.flush()
+        vendor_cache[key] = existing
+        return existing
+
+    async def _product(vendor: Vendor, name: str) -> Product:
+        key = (str(vendor.id), name.lower())
+        if key in product_cache:
+            return product_cache[key]
+        existing = (
+            await db.execute(
+                select(Product).where(
+                    Product.vendor_id == vendor.id,
+                    func.lower(Product.name) == name.lower(),
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            existing = Product(vendor_id=vendor.id, name=name)
+            db.add(existing)
+            await db.flush()
+        product_cache[key] = existing
+        return existing
+
+    # Row numbers start at 2 (row 1 is the header).
+    for i, raw in enumerate(reader, start=2):
+        row = {(k or "").strip().lower(): (v or "").strip() for k, v in raw.items()}
+        vendor_name = row.get("vendor", "")
+        product_name = row.get("product", "")
+        source_name = row.get("source_name", "")
+        base_url = row.get("base_url", "")
+        url_template = row.get("url_template", "") or None
+
+        missing = [
+            c for c, val in (
+                ("vendor", vendor_name), ("product", product_name),
+                ("source_name", source_name), ("base_url", base_url),
+            ) if not val
+        ]
+        if missing:
+            errors += 1
+            rows.append(SourceImportRow(
+                row=i, result="error", vendor=vendor_name or None,
+                product=product_name or None, source_name=source_name or None,
+                message=f"missing required value(s): {', '.join(missing)}",
+            ))
+            continue
+
+        vendor = await _vendor(vendor_name)
+        product = await _product(vendor, product_name)
+
+        dup = (
+            await db.execute(
+                select(DocumentationSource.id).where(
+                    DocumentationSource.product_id == product.id,
+                    DocumentationSource.base_url == base_url,
+                )
+            )
+        ).scalar_one_or_none()
+        if dup is not None:
+            skipped += 1
+            rows.append(SourceImportRow(
+                row=i, result="skipped", vendor=vendor_name,
+                product=product_name, source_name=source_name,
+                message="source with this base_url already exists",
+            ))
+            continue
+
+        db.add(DocumentationSource(
+            product_id=product.id, name=source_name,
+            base_url=base_url, url_template=url_template,
+        ))
+        created += 1
+        rows.append(SourceImportRow(
+            row=i, result="created", vendor=vendor_name,
+            product=product_name, source_name=source_name,
+        ))
+
+    await db.commit()
+    return SourceImportResult(
+        created=created, skipped=skipped, errors=errors, rows=rows,
+    )
 
 
 @router.get("/{source_id}", response_model=SourceResponse)

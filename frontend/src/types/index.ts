@@ -127,6 +127,7 @@ export interface ExtractionRun {
   articles_total: number;
   articles_updated?: number;
   articles_unchanged?: number;
+  articles_resumed?: number;
   attempts?: number;
   error_message: string | null;
   started_at: string | null;
@@ -355,4 +356,60 @@ export interface BrowseResponse {
 export interface ProfileOption {
   value: string;
   label: string;
+}
+
+export interface PickableSource {
+  id: string;
+  name: string;
+  vendor_name: string;
+  product_name: string;
+  job_id: string | null;
+  job_name: string | null;
+}
+
+export interface DashboardSummary {
+  total: number;
+  never_extracted: number;
+  stale: number;
+  failing: number;
+  running: number;
+}
+
+export interface DashboardSourceRow {
+  id: string;
+  name: string;
+  vendor_name: string;
+  product_name: string;
+  status: string;
+  last_extracted_at: string | null;
+  age_seconds: number | null;
+  article_count: number;
+  last_run_status: string | null;
+  last_run_new: number | null;
+  last_run_updated: number | null;
+  last_run_unchanged: number | null;
+  job_id: string | null;
+  job_name: string | null;
+  next_run_at: string | null;
+}
+
+export interface DashboardResponse {
+  summary: DashboardSummary;
+  sources: DashboardSourceRow[];
+}
+
+export interface SourceImportRow {
+  row: number;
+  result: string;
+  vendor: string | null;
+  product: string | null;
+  source_name: string | null;
+  message: string;
+}
+
+export interface SourceImportResult {
+  created: number;
+  skipped: number;
+  errors: number;
+  rows: SourceImportRow[];
 }

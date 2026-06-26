@@ -77,6 +77,9 @@ class ExtractionRun(Base):
     articles_updated: Mapped[int] = mapped_column(
         Integer, default=0, nullable=False
     )
+    articles_resumed: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
     error_message: Mapped[str | None] = mapped_column(String(4096), nullable=True)
     firecrawl_job_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     current_phase: Mapped[str | None] = mapped_column(String(64), nullable=True)

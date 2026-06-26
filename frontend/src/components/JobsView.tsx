@@ -45,9 +45,18 @@ function fmtDuration(fromIso: string | null, toIso: string | null): string {
   return h > 0 ? `${h}h ${m}m ${s}s` : m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
+function processed(run: ExtractionRun): number {
+  return (
+    (run.articles_extracted ?? 0) +
+    (run.articles_updated ?? 0) +
+    (run.articles_unchanged ?? 0) +
+    (run.articles_resumed ?? 0)
+  );
+}
+
 function pctOf(run: ExtractionRun): number | null {
   if (!run.articles_total || run.articles_total <= 0) return null;
-  return Math.min(100, Math.round((run.articles_extracted / run.articles_total) * 100));
+  return Math.min(100, Math.round((processed(run) / run.articles_total) * 100));
 }
 
 function path(run: ExtractionRun): string {
@@ -152,7 +161,7 @@ export default function JobsView() {
                     <span className="sub">elapsed {fmtDuration(run.started_at, null)}</span>
                   </div>
                   <span className="sub">
-                    {run.articles_extracted} / {run.articles_total || "?"} articles
+                    {processed(run)} / {run.articles_total || "?"} articles
                     {pct !== null ? ` (${pct}%)` : ""}
                   </span>
                   {pct !== null && (
@@ -341,10 +350,13 @@ function RunDetail({ run, onBack }: { run: ExtractionRun; onBack: () => void }) 
           )}
           <dl className="stat-grid">
             <div><dt>Progress</dt><dd>{pct !== null ? `${pct}%` : "—"}</dd></div>
-            <div><dt>Processed / total</dt><dd>{run.articles_extracted} / {run.articles_total || "?"}</dd></div>
+            <div><dt>Processed / total</dt><dd>{processed(run)} / {run.articles_total || "?"}</dd></div>
             <div><dt>New</dt><dd>{run.articles_extracted}</dd></div>
             <div><dt>Updated</dt><dd>{run.articles_updated ?? 0}</dd></div>
             <div><dt>Unchanged</dt><dd>{run.articles_unchanged ?? 0}</dd></div>
+            {(run.articles_resumed ?? 0) > 0 && (
+              <div><dt>Carried over</dt><dd>{run.articles_resumed}</dd></div>
+            )}
             <div><dt>Phase</dt><dd>{run.current_phase || "—"}</dd></div>
             <div><dt>Elapsed</dt><dd>{fmtDuration(run.started_at, run.completed_at)}</dd></div>
             <div><dt>Started</dt><dd>{run.started_at ? new Date(run.started_at).toLocaleString() : "—"}</dd></div>

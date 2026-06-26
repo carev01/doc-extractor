@@ -9,6 +9,7 @@ import {
   listJobRuns,
   unassignSourceFromJob,
 } from "../api/client";
+import SourcePicker from "./SourcePicker";
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -116,6 +117,7 @@ function JobCard({
   const [showRuns, setShowRuns] = useState(false);
   const [runs, setRuns] = useState<JobRunItem[]>([]);
   const [msg, setMsg] = useState("");
+  const [showPicker, setShowPicker] = useState(false);
 
   const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
@@ -310,9 +312,19 @@ function JobCard({
         <button className="btn-primary-sm" disabled={busy || job.source_count === 0} onClick={run}>
           {busy ? "Running…" : "Run now"}
         </button>
+        <button className="btn-secondary-sm" onClick={() => setShowPicker(true)}>
+          Add sources
+        </button>
         <button className="btn-secondary-sm" title="Rename" onClick={rename}>✎</button>
         <button className="btn-danger-sm" title="Delete" onClick={remove}>×</button>
       </div>
+      {showPicker && (
+        <SourcePicker
+          jobId={job.id}
+          onClose={() => setShowPicker(false)}
+          onAssigned={onChanged}
+        />
+      )}
     </li>
   );
 }

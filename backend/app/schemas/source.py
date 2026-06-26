@@ -44,3 +44,36 @@ class SourceResponse(BaseModel):
 class SourceListResponse(BaseModel):
     sources: list[SourceResponse]
     total: int
+
+
+class PickableSource(BaseModel):
+    id: uuid.UUID
+    name: str
+    vendor_name: str
+    product_name: str
+    job_id: uuid.UUID | None
+    job_name: str | None
+
+
+class PickableSourceList(BaseModel):
+    sources: list[PickableSource]
+
+
+class SourceImportRequest(BaseModel):
+    csv: str
+
+
+class SourceImportRow(BaseModel):
+    row: int
+    result: str  # "created" | "skipped" | "error"
+    vendor: str | None = None
+    product: str | None = None
+    source_name: str | None = None
+    message: str = ""
+
+
+class SourceImportResult(BaseModel):
+    created: int
+    skipped: int
+    errors: int
+    rows: list[SourceImportRow]
