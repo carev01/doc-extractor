@@ -194,7 +194,7 @@ async def test_articles_total_excludes_empty_segments(factory, tmp_path, monkeyp
 
     # Force the second section to render empty (e.g. an image-only page).
     monkeypatch.setattr(pdf_import, "render_segments",
-                        lambda pdf_bytes, segments: ["Real content.", ""])
+                        lambda pdf_bytes, segments: [("Real content.", []), ("", [])])
 
     run_pk = await _run(factory, sid)
     async with factory() as s:

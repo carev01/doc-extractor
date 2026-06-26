@@ -14,6 +14,7 @@ from app.models.job_run import JobRun, JobRunStatus
 from app.models.source import DocumentationSource
 from app.services.cron import compute_next_run
 from app.services.export_retention import purge_expired_exports
+from app.services.media_gc import gc_orphaned_media
 from app.services.queue import reap_stale_runs, reap_stale_exports
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,10 @@ logger = logging.getLogger(__name__)
 # triggers one sweep after restart — harmless).
 _EXPORT_PURGE_INTERVAL = timedelta(hours=1)
 _last_export_purge: datetime | None = None
+
+# The media GC also walks the media volume, so run it at most hourly.
+_MEDIA_GC_INTERVAL = timedelta(hours=1)
+_last_media_gc: datetime | None = None
 
 
 async def fan_out_job(
@@ -144,6 +149,11 @@ async def tick(db: AsyncSession, now: datetime | None = None) -> dict:
             now=now,
         )
         _last_export_purge = now
+
+    global _last_media_gc
+    if _last_media_gc is None or (now - _last_media_gc) >= _MEDIA_GC_INTERVAL:
+        await gc_orphaned_media(db, settings.media_dir)
+        _last_media_gc = now
 
     reconciled = await reconcile_job_runs(db, now)
 

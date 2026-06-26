@@ -7,6 +7,8 @@ import hashlib
 import json
 import logging
 import os
+import re
+import tempfile
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -71,6 +73,13 @@ class Segment:
     page_start: int          # 0-based, inclusive
     page_end: int            # 0-based, inclusive
     path: list[str] = field(default_factory=list)
+
+
+@dataclass
+class RenderedImage:
+    filename: str   # content-addressed: "<sha16>.png"
+    data: bytes
+    alt: str
 
 
 def _outline_segments(doc: "fitz.Document") -> list[Segment]:
@@ -235,25 +244,58 @@ async def segment_pdf_async(pdf_bytes: bytes) -> list[Segment]:
         doc.close()
 
 
-def _render_segment(doc: "fitz.Document", segment: Segment) -> str:
-    """Render one segment's page range from an already-open document."""
+_IMG_MARKER = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<target>[^)]+)\)")
+
+
+def _render_segment(doc: "fitz.Document", segment: Segment) -> tuple[str, list[RenderedImage]]:
+    """Render a segment to clean markdown, content-addressing any images.
+
+    Images are written to a temp dir by pymupdf4llm, then each marker is rewritten
+    to a bare ``<sha>.png`` canonical reference and the bytes collected — so the
+    markdown is stable across runs/page-shifts and identical figures dedupe."""
     pages = list(range(segment.page_start, segment.page_end + 1))
-    md = pymupdf4llm.to_markdown(doc, pages=pages)
-    return sanitize_markdown(md or "")
+    images: list[RenderedImage] = []
+    seen: dict[str, str] = {}  # original target -> canonical filename
+    with tempfile.TemporaryDirectory() as image_dir:
+        md = pymupdf4llm.to_markdown(
+            doc, pages=pages, write_images=True,
+            image_path=image_dir, image_format="png",
+        ) or ""
+
+        def _replace(m: "re.Match") -> str:
+            target = m.group("target")
+            alt = m.group("alt")
+            path = os.path.join(image_dir, os.path.basename(target))
+            if not os.path.isfile(path):
+                return m.group(0)  # not a written image — leave untouched
+            if target in seen:
+                return f"![{alt}]({seen[target]})"
+            data = open(path, "rb").read()
+            filename = hashlib.sha256(data).hexdigest()[:16] + ".png"
+            seen[target] = filename
+            if all(img.filename != filename for img in images):
+                images.append(RenderedImage(filename=filename, data=data, alt=alt))
+            return f"![{alt}]({filename})"
+
+        md = _IMG_MARKER.sub(_replace, md)
+    return sanitize_markdown(md), images
 
 
 def segment_to_markdown(pdf_bytes: bytes, segment: Segment) -> str:
-    """Render a segment's page range to clean markdown."""
+    """Render a segment's page range to clean markdown (without images)."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
-        return _render_segment(doc, segment)
+        md, _images = _render_segment(doc, segment)
+        return md
     finally:
         doc.close()
 
 
-def render_segments(pdf_bytes: bytes, segments: list[Segment]) -> list[str]:
-    """Render every segment to markdown, opening the PDF once (rather than once
-    per segment). Returns markdown aligned with ``segments``."""
+def render_segments(
+    pdf_bytes: bytes, segments: list[Segment]
+) -> list[tuple[str, list[RenderedImage]]]:
+    """Render every segment, opening the PDF once. Returns (markdown, images)
+    per segment, aligned with ``segments``."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
         return [_render_segment(doc, seg) for seg in segments]
@@ -358,7 +400,7 @@ async def run_pdf_extraction(service, db, source, run, run_pk) -> ExtractionRun:
         await db.flush()
         entry_ids.append(toc.id)
         levels.append(seg.level)
-        article_inputs.append((toc.id, i, seg.title, topic_key, url, rendered[i]))
+        article_inputs.append((toc.id, i, seg.title, topic_key, url, rendered[i][0], rendered[i][1]))
 
     run.current_phase = "content_scraping"
     # A segment that renders to empty markdown (e.g. an image-only page) is not
@@ -367,11 +409,11 @@ async def run_pdf_extraction(service, db, source, run, run_pk) -> ExtractionRun:
     run.articles_total = sum(1 for inp in article_inputs if inp[5].strip())
     await db.commit()
 
-    for toc_id, sort_order, title, topic_key, url, md in article_inputs:
+    for toc_id, sort_order, title, topic_key, url, md, images in article_inputs:
         await service.process_article_result(
             db, source.id, run_pk, url=url, markdown_content=md, doc_html="",
             toc_entry_id=toc_id, sort_order=sort_order, title=title,
-            change_status=None, topic_key=topic_key,
+            change_status=None, topic_key=topic_key, pdf_images=images,
         )
 
     run = (await db.execute(
