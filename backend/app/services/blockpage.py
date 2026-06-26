@@ -62,3 +62,35 @@ def is_block_page(text: str) -> bool:
             return True
 
     return False
+
+
+# Login-host fragments: if the *final* URL lands on one of these, the scrape was
+# bounced to an identity provider / login page rather than the docs content.
+_LOGIN_HOST_MARKERS = (
+    "login", "signin", "sign-in", "oauth2", "/authorize", "b2clogin.com",
+    "onepassport", "auth0.com", "okta.com", "/saml", "accounts.google.com",
+)
+
+# Auth-wall phrases. Short-page-gated like _SHORT_MARKERS so a real article that
+# documents authentication isn't misflagged.
+_AUTH_WALL_MARKERS = (
+    "requires authentication",
+    "please sign in to continue",
+    "you must be logged in to view",
+    "session has expired",
+)
+
+
+def is_auth_wall(text: str, final_url: str | None = None,
+                 login_domain: str | None = None) -> bool:
+    """Return True if a scrape was bounced to a login wall / IdP rather than
+    returning documentation content."""
+    if final_url:
+        low_url = final_url.lower()
+        if any(m in low_url for m in _LOGIN_HOST_MARKERS):
+            return True
+    if text:
+        low = text.lower()
+        if len(text.strip()) <= _SHORT_PAGE_LIMIT and any(m in low for m in _AUTH_WALL_MARKERS):
+            return True
+    return False
