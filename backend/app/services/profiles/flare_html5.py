@@ -15,7 +15,13 @@ STATIC-FIXTURE LIMITATION — lazy TOC nesting:
     Firecrawl-scraped) page returns only the top-level entries.  Deeper
     nesting is a known runtime limitation and is not attempted here.
 
-Content lives in ``[data-mc-content-body]``.
+Content is scoped to the topic body ``[role=main]`` (``<div role="main"
+id="mc-main-content">``), which MadCap emits on every Flare HTML5 topic — the
+same selector ``flare_webhelp`` uses. We deliberately do NOT scope the broader
+``[data-mc-content-body]`` wrapper: some custom skins (e.g. N-able's Cove Data
+Protection) nest the mobile nav + search bar *inside* that wrapper, so scoping it
+leaks site chrome into the article. ``[role=main]`` is the tight, chrome-free
+container across all observed Flare HTML5 skins.
 
 Detection guard:
     ``'ul class="... sidenav"`` is unique to the HTML5 Side Navigation skin.
@@ -89,7 +95,12 @@ class FlareHtml5Profile:
 
     def content_config(self) -> dict:
         return {
-            "includeTags": ["[data-mc-content-body]"],
+            # Topic body, chrome-free. NOT [data-mc-content-body]: that wrapper
+            # holds the mobile nav + search on some skins (N-able Cove), which
+            # would leak into the article. scope_content_html keeps the OUTERMOST
+            # of the union, so listing both would let the broader wrapper win —
+            # hence role=main alone. Matches flare_webhelp's content scope.
+            "includeTags": ["[role=main]"],
             # Drop Flare skin chrome before markdown conversion: the back-to-top
             # button, the "Was this article helpful?" feedback buttons, and any
             # element MadCap explicitly marks non-content. Post-processing
