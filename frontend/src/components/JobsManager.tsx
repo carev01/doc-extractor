@@ -10,6 +10,7 @@ import {
   unassignSourceFromJob,
 } from "../api/client";
 import SourcePicker from "./SourcePicker";
+import { apiError } from "../api/errors";
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -54,8 +55,10 @@ export default function JobsManager() {
   }, []);
 
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    listJobs()
+      .then((data) => setJobs(data.jobs))
+      .catch(() => setError("Failed to load jobs"));
+  }, []);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -65,8 +68,8 @@ export default function JobsManager() {
       await createJob({ name: newName.trim() });
       setNewName("");
       await refresh();
-    } catch (e: any) {
-      setError(e.response?.data?.detail || "Failed to create job");
+    } catch (e) {
+      setError(apiError(e, "Failed to create job"));
     }
   };
 
@@ -141,8 +144,8 @@ function JobCard({
         timezone: browserTz,
       });
       onChanged();
-    } catch (e: any) {
-      onError(e.response?.data?.detail || "Failed to save schedule");
+    } catch (e) {
+      onError(apiError(e, "Failed to save schedule"));
     } finally {
       setSaving(false);
     }
@@ -181,8 +184,8 @@ function JobCard({
           : "Nothing to run (all sources already active)."
       );
       onChanged();
-    } catch (e: any) {
-      onError(e.response?.data?.detail || "Failed to run job");
+    } catch (e) {
+      onError(apiError(e, "Failed to run job"));
     } finally {
       setBusy(false);
     }

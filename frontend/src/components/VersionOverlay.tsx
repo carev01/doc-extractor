@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import type { ArticleVersion, ArticleVersionDetail, VersionDiff } from "../types";
 import {
   listArticleVersions,
@@ -31,19 +31,7 @@ export default function VersionOverlay({
   const [mode, setMode] = useState<Mode>("side-by-side");
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    listArticleVersions(articleId)
-      .then((data) => {
-        setVersions(data.versions);
-        if (data.versions.length > 0) {
-          selectVersion(data.versions[0].id);
-        }
-      })
-      .catch(() => setError("Failed to load version history"));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [articleId]);
-
-  const selectVersion = async (versionId: string) => {
+  const selectVersion = useCallback(async (versionId: string) => {
     setSelectedId(versionId);
     setVersionDetail(null);
     setDiff(null);
@@ -57,7 +45,18 @@ export default function VersionOverlay({
     } catch {
       setError("Failed to load version");
     }
-  };
+  }, [articleId]);
+
+  useEffect(() => {
+    listArticleVersions(articleId)
+      .then((data) => {
+        setVersions(data.versions);
+        if (data.versions.length > 0) {
+          selectVersion(data.versions[0].id);
+        }
+      })
+      .catch(() => setError("Failed to load version history"));
+  }, [articleId, selectVersion]);
 
   return (
     <div className="overlay-backdrop" onClick={onClose}>

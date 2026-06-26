@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import type { Vendor } from "../types";
 import { listVendors, createVendor, updateVendor, deleteVendor } from "../api/client";
+import { apiError } from "../api/errors";
 
 interface Props {
   onSelect: (vendor: Vendor) => void;
@@ -18,13 +19,15 @@ export default function VendorList({ onSelect, selectedId }: Props) {
     try {
       const data = await listVendors();
       setVendors(data.vendors);
-    } catch (e) {
+    } catch {
       setError("Failed to load vendors");
     }
   };
 
   useEffect(() => {
-    fetchVendors();
+    listVendors()
+      .then((data) => setVendors(data.vendors))
+      .catch(() => setError("Failed to load vendors"));
   }, []);
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -37,8 +40,8 @@ export default function VendorList({ onSelect, selectedId }: Props) {
       setName("");
       setWebsite("");
       await fetchVendors();
-    } catch (e: any) {
-      setError(e.response?.data?.detail || "Failed to create vendor");
+    } catch (e) {
+      setError(apiError(e, "Failed to create vendor"));
     } finally {
       setLoading(false);
     }
@@ -50,8 +53,8 @@ export default function VendorList({ onSelect, selectedId }: Props) {
     try {
       await updateVendor(id, { name: next.trim() });
       await fetchVendors();
-    } catch (e: any) {
-      setError(e.response?.data?.detail || "Failed to rename vendor");
+    } catch (e) {
+      setError(apiError(e, "Failed to rename vendor"));
     }
   };
 
@@ -60,8 +63,8 @@ export default function VendorList({ onSelect, selectedId }: Props) {
     try {
       await deleteVendor(id);
       await fetchVendors();
-    } catch (e: any) {
-      setError(e.response?.data?.detail || "Failed to delete vendor");
+    } catch (e) {
+      setError(apiError(e, "Failed to delete vendor"));
     }
   };
 

@@ -11,6 +11,7 @@ import {
   listAllJobRuns,
 } from "../api/client";
 import JobsManager from "./JobsManager";
+import { apiError } from "../api/errors";
 
 const STATUS_COLORS: Record<string, string> = {
   pending: "#6f8087",
@@ -103,12 +104,16 @@ export default function JobsView() {
     try {
       await fn(id);
       await refresh();
-    } catch (e: any) {
-      setError(e.response?.data?.detail || `Failed to ${label} run`);
+    } catch (e) {
+      setError(apiError(e, `Failed to ${label} run`));
     }
   };
 
   useEffect(() => {
+    // Intentional data-load + poll: refresh() sets state only after its awaited
+    // fetches resolve. Inlining the 3-call Promise.all here just to satisfy the
+    // rule would duplicate the memoized refresh used by the interval below.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     refresh();
     const id = setInterval(refresh, 4000);
     return () => clearInterval(id);
@@ -309,6 +314,9 @@ function RunDetail({ run, onBack }: { run: ExtractionRun; onBack: () => void }) 
   // Load logs when the Logs tab opens; poll while the run is active.
   useEffect(() => {
     if (tab !== "logs") return;
+    // fetchLogs sets state only after its awaited request; it is the memoized
+    // poller reused by the interval below, so inlining would duplicate it.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchLogs();
     if (!isActive) return;
     const id = setInterval(fetchLogs, 4000);

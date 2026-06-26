@@ -118,6 +118,9 @@ export default function DocsBrowser({ source }: Props) {
       : flattenVisible(data.entries, collapsed);
   }, [data, collapsed, query]);
 
+  // @tanstack/react-virtual's useVirtualizer is not yet React-Compiler-compatible;
+  // it opts this component out of compilation but is otherwise correct.
+  // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
@@ -141,7 +144,8 @@ export default function DocsBrowser({ source }: Props) {
 
   const toggle = (id: string) => {
     const next = new Set(collapsed);
-    next.has(id) ? next.delete(id) : next.add(id);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
     setCollapsed(next);
   };
 
