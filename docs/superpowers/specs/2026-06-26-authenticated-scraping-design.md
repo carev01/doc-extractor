@@ -223,3 +223,18 @@ Following the repo's sync-DB + `httpx.AsyncClient` conventions:
 8. Frontend Logins view + source realm selector.
 9. Validate end-to-end against one real portal (likely AvePoint B2C first — most
    likely to lack blocking MFA) once credentials are provided.
+
+---
+
+## DESIGN REVISION (2026-06-26): Browserless OSS — self-managed state injection
+
+**Discovery:** the homelab Browserless is `ghcr.io/browserless/chromium` v2.54.1 (OSS). Verified against the live instance: `/function` works, but `Browserless.saveProfile` returns "wasn't found" and BrowserQL (`/chromium/bql`) returns 404 — **Authenticated Profiles and liveURL are enterprise-only**. The original mechanism (saveProfile + `?profile=` + liveURL assisted login) cannot run here.
+
+**Pivot (approved):** DocExtractor manages the auth state itself.
+- **State** = `{cookies: [...], origins: [{origin, localStorage: [[k,v], ...]}]}`, captured via `page.cookies()` / `localStorage`, stored encrypted in `AuthRealm.state_snapshot` (already the case).
+- **Replay** = inject that state into each `/function` call before navigating: `page.setCookie(...cookies)`, and for each origin `goto(origin) → localStorage.setItem(...)`, then `goto(target)`. Standard puppeteer, OSS-supported.
+- **Scripted login** = unchanged except the login ESM no longer calls `saveProfile`; it captures and returns the state.
+- **Assisted login** = no liveURL. The user logs in in their own browser and uploads an exported session (Playwright `storageState` JSON or cookie export); the backend normalizes and stores it as the realm's state. No Browserless needed for capture.
+- `AuthRealm.browserless_profile_name` becomes a vestigial internal id (kept to avoid a migration; not used as a Browserless profile).
+
+The realm/domain model, encryption, `realm_manager` lifecycle, auth-wall detection, and "authenticated sources extract via the `/function` path, not Firecrawl `/scrape`" all stand. Only the carrier of the session changes: our encrypted DB + per-call injection instead of a Browserless-held profile.

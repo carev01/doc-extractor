@@ -1805,3 +1805,89 @@ This task is gated on real credentials. Do it once the credentials are supplied.
 - **Spec coverage:** data model (T2), crypto (T1), auth service `realm_manager`+`login_scripts` (T4), browserless profile/liveURL helpers (T3), blockpage auth-wall detector (T5), extraction integration (T6), routes/schemas + startup key check + source field (T7), frontend (T8), validation incl. AvePoint-first (T9). All spec sections mapped.
 - **Type consistency:** `ensure_profile`, `run_scripted_login`, `invalidate`, `NeedsLoginError` names are consistent across T4/T6/T7; `render_html(..., profile=)` / `render(..., profile=)` / `run_login` / `create_live_session` / `complete_live_session` / `seed_and_save_profile` consistent across T3/T6/T7; `is_auth_wall(text, final_url, login_domain)` consistent across T5/T6/T7; `AuthRealmResponse` fields match the route `_response` builder.
 - **Known verification point:** the BrowserQL `liveURL`/`reconnect` response shape (T3 Step 0) must be confirmed against the homelab Browserless before relying on `create_live_session`/`complete_live_session`; the task includes that spike and a documented fallback.
+
+---
+
+# PLAN REVISION (Browserless OSS): self-managed state injection
+
+Supersedes the Browserless-Authenticated-Profiles parts of Tasks 3, 4 (login ESM only), 6, 7, 8. Tasks 1, 2, 5 are unaffected. Rationale in the spec's "DESIGN REVISION" section. State shape everywhere:
+
+```
+{ "cookies": [ <puppeteer cookie objs> ],
+  "origins": [ { "origin": "https://docs.x.com", "localStorage": [ ["k","v"], ... ] } ] }
+```
+
+## Task 3R: Browserless state injection (reworks Task 3 + Task 4's login ESM)
+
+**Files:** Modify `app/services/browserless.py`, `app/services/auth/login_scripts.py`, `app/services/auth/realm_manager.py`; update `tests/test_browserless_auth.py`, `tests/test_realm_manager.py`.
+
+**Changes:**
+1. `app/services/browserless.py`:
+   - Remove the `profile` param from `_post` and revert the endpoint to the original timeout-only form (`?timeout=` when set, else plain `/function`). Remove `create_live_session`, `complete_live_session`, `seed_and_save_profile`, and `_SEED_PROFILE_CODE`.
+   - Add an injection prelude to `_FUNCTION_CODE` and `_HTML_FUNCTION_CODE`: at the top of the function, before the existing `page.goto(url...)`, insert:
+     ```js
+     const authState = context.authState;
+     if (authState) {
+       if (authState.cookies && authState.cookies.length) await page.setCookie(...authState.cookies);
+       if (authState.origins) {
+         for (const o of authState.origins) {
+           await page.goto(o.origin, { waitUntil: 'domcontentloaded', timeout: 30000 });
+           await page.evaluate((items) => { for (const [k, v] of items) localStorage.setItem(k, v); }, o.localStorage || []);
+         }
+       }
+     }
+     ```
+   - `render(target_url, client=None, auth_state: dict | None = None)` and `render_html(target_url, wait_selector=None, client=None, auth_state: dict | None = None)`: add `"authState": auth_state` to the context dict passed to `_post`.
+   - Keep `run_login(login_code, context)` as is.
+2. `login_scripts.py` `_LOGIN_CODE`: remove the `Browserless.saveProfile` CDP call. After the login/OTP steps and the final wait, capture state and set `ok` by a cookie heuristic:
+   ```js
+   const cookies = await page.cookies();
+   const origin = new URL(page.url()).origin;
+   const localStorage = await page.evaluate(() => Object.entries(window.localStorage));
+   return { data: { ok: cookies.length > 0, cookieCount: cookies.length, finalUrl: page.url(),
+                    state: { cookies, origins: [{ origin, localStorage }] } } };
+   ```
+   `build_login` is otherwise unchanged.
+3. `realm_manager.py`: rename `ensure_profile` → `ensure_session(db, realm) -> dict` returning the realm's auth state:
+   ```python
+   async def ensure_session(db, realm) -> dict:
+       if realm.status == RealmStatus.ACTIVE and realm.state_snapshot:
+           return realm.state_snapshot
+       if realm.username and realm.password:
+           await run_scripted_login(db, realm)
+           return realm.state_snapshot
+       await invalidate(db, realm, RealmStatus.NEEDS_LOGIN, "No stored session; assisted login required")
+       raise NeedsLoginError(f"Realm {realm.id} needs an assisted login")
+   ```
+   `run_scripted_login`, `invalidate`, `NeedsLoginError` unchanged.
+
+**Tests:**
+- `tests/test_browserless_auth.py`: replace the profile-threading test with one asserting `render_html` puts `authState` into the `_post` context (fake `_post` captures `context["authState"]`). Keep the `run_login` test.
+- `tests/test_realm_manager.py`: rename calls `ensure_profile` → `ensure_session`; the active-realm test must set `state_snapshot={"cookies":[...]}` and assert the returned dict; the no-creds test still expects `NeedsLoginError`; the with-creds test asserts `ensure_session` returns the state set by the faked `run_scripted_login`. Keep `test_run_scripted_login_stores_snapshot`.
+- `tests/test_login_scripts.py`: assert `_LOGIN_CODE` does NOT contain `saveProfile` and DOES contain `page.cookies()`.
+
+Run all four affected test files green; commit `refactor(auth): self-managed cookie/localStorage state injection (Browserless OSS)`.
+
+## Task 6 (revised): extraction integration
+
+Same as original Task 6 but: resolve `state = await realm_manager.ensure_session(db, realm)` (not `ensure_profile`); thread `auth_state=state` (not `profile=`) into the `_scrape_via_browserless` browserless `render`/`render_html` calls; everything else (NeedsLoginError → fail run; auth-wall mid-run → invalidate EXPIRED + fail run) is unchanged.
+
+## Task 7 (revised): routes — assisted login becomes session upload
+
+Same CRUD + `POST /{id}/login` (scripted) + `POST /{id}/test` + startup key check + source `auth_realm_id` as the original Task 7. REPLACE the liveURL endpoints with one upload endpoint:
+
+`POST /api/auth-realms/{id}/session` with body `SessionUpload`:
+```python
+class SessionUpload(BaseModel):
+    cookies: list[dict] = []
+    origins: list[dict] = []   # [{origin, localStorage: [[k,v],...] OR [{name,value},...]}]
+```
+Handler normalizes Playwright storageState localStorage (`[{name,value}]`) to `[[k,v]]`, stores `{cookies, origins}` in `realm.state_snapshot`, sets `status=ACTIVE`, clears `error_message`. Reject if both `cookies` and `origins` are empty (400). `_LIVE_SESSIONS`, `create_live_session`, `complete_live_session` references are removed. `test_realm` uses `ensure_session` + `render_html(..., auth_state=state)`.
+
+## Task 8 (revised): frontend — upload session instead of liveURL
+
+Same Logins view + source realm selector, but the "Assisted login" action becomes "Upload session": a textarea (paste) / file input accepting a Playwright `storageState` JSON (`{cookies, origins}`), POSTed to `/api/auth-realms/{id}/session`. Helper text: "Log in in your own browser, export storage state (Playwright `storageState`, or a cookie/localStorage export), and paste it here." `authRealmApi`: replace `assistedLogin`/`assistedLoginComplete` with `uploadSession(id, data)`.
+
+## Task 9 (revised): validation
+
+Browserless reachable at `http://browserless.k3s.home.lan` (token in k8s `docextractor-secret` / `browserless` ns `browserless-token`). Validate scripted login + state injection against AvePoint first; for Cohesity/Rubrik use the session-upload path.
