@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import type { Vendor, Product } from "../types";
 import { listProducts, createProduct, updateProduct, deleteProduct } from "../api/client";
+import { apiError } from "../api/errors";
 
 interface Props {
   vendor: Vendor;
@@ -24,8 +25,10 @@ export default function ProductList({ vendor, onSelect, selectedId }: Props) {
   }, [vendor.id]);
 
   useEffect(() => {
-    fetchProducts();
-  }, [fetchProducts]);
+    listProducts(vendor.id)
+      .then((data) => setProducts(data.products))
+      .catch(() => setError("Failed to load products"));
+  }, [vendor.id]);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -36,8 +39,8 @@ export default function ProductList({ vendor, onSelect, selectedId }: Props) {
       await createProduct({ vendor_id: vendor.id, name: name.trim() });
       setName("");
       await fetchProducts();
-    } catch (e: any) {
-      setError(e.response?.data?.detail || "Failed to create product");
+    } catch (e) {
+      setError(apiError(e, "Failed to create product"));
     } finally {
       setLoading(false);
     }
@@ -49,8 +52,8 @@ export default function ProductList({ vendor, onSelect, selectedId }: Props) {
     try {
       await updateProduct(id, { name: next.trim() });
       await fetchProducts();
-    } catch (e: any) {
-      setError(e.response?.data?.detail || "Failed to rename product");
+    } catch (e) {
+      setError(apiError(e, "Failed to rename product"));
     }
   };
 
@@ -59,8 +62,8 @@ export default function ProductList({ vendor, onSelect, selectedId }: Props) {
     try {
       await deleteProduct(id);
       await fetchProducts();
-    } catch (e: any) {
-      setError(e.response?.data?.detail || "Failed to delete product");
+    } catch (e) {
+      setError(apiError(e, "Failed to delete product"));
     }
   };
 

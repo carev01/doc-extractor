@@ -34,10 +34,15 @@ export default function ChangelogPanel({ source }: Props) {
   const [article, setArticle] = useState<{ detail: ArticleDetail; removed: boolean } | null>(null);
 
   useEffect(() => {
+    // Reset the open viewer + loading/error state when the source changes, then
+    // load that source's changelog. These resets are intentionally synchronous
+    // (they must clear before the new fetch resolves), which the rule flags.
+    /* eslint-disable react-hooks/set-state-in-effect */
     setOverlay(null);
     setArticle(null);
     setLoading(true);
     setError("");
+    /* eslint-enable react-hooks/set-state-in-effect */
     getSourceChangelog(source.id)
       .then((d) => setEntries(d.entries))
       .catch(() => setError("Failed to load changelog"))

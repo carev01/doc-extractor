@@ -14,6 +14,7 @@ import {
   listExports,
   deleteExport,
 } from "../api/client";
+import { apiError } from "../api/errors";
 
 interface Props {
   source: DocumentationSource;
@@ -37,7 +38,9 @@ export default function ExportPanel({ source }: Props) {
 
   useEffect(() => {
     if (source.status === "completed") {
-      loadTOC();
+      getTOC(source.id)
+        .then((data) => setToc(data.entries))
+        .catch(() => setError("Failed to load table of contents"));
     }
   }, [source.id, source.status]);
 
@@ -73,15 +76,6 @@ export default function ExportPanel({ source }: Props) {
       }
     };
   }, []);
-
-  const loadTOC = async () => {
-    try {
-      const data = await getTOC(source.id);
-      setToc(data.entries);
-    } catch (e) {
-      setError("Failed to load table of contents");
-    }
-  };
 
   const toggleTocEntry = (id: string) => {
     const next = new Set(selectedTocIds);
@@ -127,8 +121,8 @@ export default function ExportPanel({ source }: Props) {
         format,
       });
       jobId = created.export_job_id;
-    } catch (e: any) {
-      setError(e.response?.data?.detail || "Export failed");
+    } catch (e) {
+      setError(apiError(e, "Export failed"));
       setExporting(false);
       setJobStatusMsg(null);
       return;

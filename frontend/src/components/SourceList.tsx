@@ -22,6 +22,7 @@ import {
   detectVersionToken,
 } from "../api/client";
 import ProductVersionBar from "./ProductVersionBar";
+import { apiError } from "../api/errors";
 
 // The platform options are fetched from the backend profile registry
 // (GET /api/profiles) so the dropdown can't drift. This is only the fallback
@@ -92,18 +93,16 @@ export default function SourceList({
     }
   }, [product.id]);
 
-  const fetchJobs = useCallback(async () => {
-    try {
-      setJobs((await listJobs()).jobs);
-    } catch {
-      /* non-fatal: job dropdown just stays empty */
-    }
-  }, []);
-
   useEffect(() => {
-    fetchSources();
-    fetchJobs();
-  }, [fetchSources, fetchJobs]);
+    listSources(product.id)
+      .then((data) => setSources(data.sources))
+      .catch(() => setError("Failed to load sources"));
+    listJobs()
+      .then((data) => setJobs(data.jobs))
+      .catch(() => {
+        /* non-fatal: job dropdown just stays empty */
+      });
+  }, [product.id]);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -125,8 +124,8 @@ export default function SourceList({
       setBaseUrl("");
       setTemplatize(true);
       await fetchSources();
-    } catch (e: any) {
-      setError(e.response?.data?.detail || "Failed to create source");
+    } catch (e) {
+      setError(apiError(e, "Failed to create source"));
     } finally {
       setLoading(false);
     }
@@ -137,8 +136,8 @@ export default function SourceList({
     try {
       await deleteSource(id);
       await fetchSources();
-    } catch (e: any) {
-      setError(e.response?.data?.detail || "Failed to delete source");
+    } catch (e) {
+      setError(apiError(e, "Failed to delete source"));
     }
   };
 
@@ -251,8 +250,12 @@ function SourceItem({
 
   // Load run history once on mount / when source changes.
   useEffect(() => {
-    loadHistory();
-  }, [loadHistory]);
+    listRuns(source.id)
+      .then((data) => setHistory(data.runs.slice(0, 5)))
+      .catch(() => {
+        /* non-fatal */
+      });
+  }, [source.id]);
 
   const stopPolling = useCallback(() => {
     if (pollRef.current !== null) {
@@ -296,8 +299,8 @@ function SourceItem({
       setActiveRun(null);
       setRunId(res.run_id);
       onSourceChanged();
-    } catch (e: any) {
-      setItemError(e.response?.data?.detail || "Failed to trigger extraction");
+    } catch (e) {
+      setItemError(apiError(e, "Failed to trigger extraction"));
     }
   };
 
@@ -327,8 +330,8 @@ function SourceItem({
           : `All ${res.total} articles already clean.`
       );
       onSourceChanged();
-    } catch (e: any) {
-      setItemError(e.response?.data?.detail || "Failed to re-sanitize");
+    } catch (e) {
+      setItemError(apiError(e, "Failed to re-sanitize"));
     } finally {
       setResanitizing(false);
     }
