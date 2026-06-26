@@ -9,6 +9,7 @@ from app.routes.export import router as export_router
 from app.routes.jobs import router as jobs_router
 from app.routes.profiles import router as profiles_router
 from app.routes.dashboard import router as dashboard_router
+from app.routes.auth_realms import router as auth_realms_router
 
 __all__ = [
     "vendors_router",
@@ -20,4 +21,5 @@ __all__ = [
     "jobs_router",
     "profiles_router",
     "dashboard_router",
+    "auth_realms_router",
 ]

@@ -57,6 +57,7 @@ def test_defect1_all_tables_in_metadata():
         "article_images",
         "article_versions",
         "articles",
+        "auth_realms",
         "documentation_sources",
         "export_jobs",
         "extraction_runs",
@@ -66,7 +67,7 @@ def test_defect1_all_tables_in_metadata():
         "toc_checkpoints",
         "toc_entries",
         "vendors",
-    ], f"Expected 12 tables, got {len(table_names)}: {table_names}"
+    ], f"Expected 13 tables, got {len(table_names)}: {table_names}"
 
 
 def test_defect1_tables_created_on_startup(db_session):

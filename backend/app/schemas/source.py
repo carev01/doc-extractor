@@ -13,6 +13,7 @@ class SourceCreate(BaseModel):
     name: str
     base_url: str
     url_template: str | None = None
+    auth_realm_id: uuid.UUID | None = None
 
 
 class SourceUpdate(BaseModel):
@@ -22,6 +23,7 @@ class SourceUpdate(BaseModel):
     platform: str | None = None
     refresh_profile: bool | None = None
     product_id: uuid.UUID | None = None  # move the source to another product
+    auth_realm_id: uuid.UUID | None = None
 
 
 class SourceResponse(BaseModel):
@@ -30,6 +32,7 @@ class SourceResponse(BaseModel):
     id: uuid.UUID
     product_id: uuid.UUID
     job_id: uuid.UUID | None
+    auth_realm_id: uuid.UUID | None
     source_type: str
     name: str
     base_url: str

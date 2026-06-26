@@ -30,6 +30,7 @@ from app.routes import (
     jobs_router,
     profiles_router,
     dashboard_router,
+    auth_realms_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,17 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables ready.")
+
+    # Fail fast if encrypted realms exist but no key is configured.
+    from sqlalchemy import select as _select
+    from app.models.auth_realm import AuthRealm as _AuthRealm
+    async with engine.begin() as conn:
+        has_realm = (await conn.execute(_select(_AuthRealm.id).limit(1))).first()
+    if has_realm and not settings.secret_key:
+        raise RuntimeError(
+            "auth_realm rows exist but DOCEXTRACTOR_SECRET_KEY is not set"
+        )
+
     yield
     await engine.dispose()
 
@@ -74,6 +86,7 @@ app.include_router(export_router)
 app.include_router(jobs_router)
 app.include_router(profiles_router)
 app.include_router(dashboard_router)
+app.include_router(auth_realms_router)
 
 # Serve canonical article images. The directory must exist before StaticFiles
 # is mounted, so create it here at import time.
