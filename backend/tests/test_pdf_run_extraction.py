@@ -184,3 +184,23 @@ async def test_duplicate_sibling_titles_do_not_collide(factory, tmp_path):
         assert keys == ["notes", "notes-2"]                    # disambiguated
         bodies = " ".join(a.content_markdown for a in arts)
         assert "First notes body." in bodies and "Second notes body." in bodies
+
+
+async def test_articles_total_excludes_empty_segments(factory, tmp_path, monkeypatch):
+    """A segment that renders to empty markdown is not persisted, so it must not
+    count toward articles_total — otherwise progress can never reach 100%."""
+    import app.services.pdf_import as pdf_import
+    sid = await _make_pdf_source(factory, tmp_path)  # _pdf() → 2 sections
+
+    # Force the second section to render empty (e.g. an image-only page).
+    monkeypatch.setattr(pdf_import, "render_segments",
+                        lambda pdf_bytes, segments: ["Real content.", ""])
+
+    run_pk = await _run(factory, sid)
+    async with factory() as s:
+        r = await s.get(ExtractionRun, run_pk)
+        arts = (await s.execute(
+            select(Article).where(Article.source_id == sid))).scalars().all()
+        assert len(arts) == 1                       # empty segment not persisted
+        processed = r.articles_extracted + r.articles_updated + r.articles_unchanged
+        assert r.articles_total == processed == 1   # denominator matches reality

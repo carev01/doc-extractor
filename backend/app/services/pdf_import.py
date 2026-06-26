@@ -235,15 +235,30 @@ async def segment_pdf_async(pdf_bytes: bytes) -> list[Segment]:
         doc.close()
 
 
+def _render_segment(doc: "fitz.Document", segment: Segment) -> str:
+    """Render one segment's page range from an already-open document."""
+    pages = list(range(segment.page_start, segment.page_end + 1))
+    md = pymupdf4llm.to_markdown(doc, pages=pages)
+    return sanitize_markdown(md or "")
+
+
 def segment_to_markdown(pdf_bytes: bytes, segment: Segment) -> str:
     """Render a segment's page range to clean markdown."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
-        pages = list(range(segment.page_start, segment.page_end + 1))
-        md = pymupdf4llm.to_markdown(doc, pages=pages)
+        return _render_segment(doc, segment)
     finally:
         doc.close()
-    return sanitize_markdown(md or "")
+
+
+def render_segments(pdf_bytes: bytes, segments: list[Segment]) -> list[str]:
+    """Render every segment to markdown, opening the PDF once (rather than once
+    per segment). Returns markdown aligned with ``segments``."""
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        return [_render_segment(doc, seg) for seg in segments]
+    finally:
+        doc.close()
 
 
 async def _latest_completed_hash(db, source_id) -> str | None:
@@ -320,6 +335,9 @@ async def run_pdf_extraction(service, db, source, run, run_pk) -> ExtractionRun:
     # First occurrence keeps the clean slug; duplicates get -2, -3, … Stable as
     # long as section order is stable, so incremental diffs stay stable.
     key_counts: dict[str, int] = {}
+    # Render every segment up front, opening the PDF once rather than once per
+    # segment.
+    rendered = render_segments(pdf_bytes, segments)
     for i, seg in enumerate(segments):
         parent_id = None
         for j in range(i - 1, -1, -1):
@@ -340,10 +358,13 @@ async def run_pdf_extraction(service, db, source, run, run_pk) -> ExtractionRun:
         await db.flush()
         entry_ids.append(toc.id)
         levels.append(seg.level)
-        md = segment_to_markdown(pdf_bytes, seg)
-        article_inputs.append((toc.id, i, seg.title, topic_key, url, md))
+        article_inputs.append((toc.id, i, seg.title, topic_key, url, rendered[i]))
 
     run.current_phase = "content_scraping"
+    # A segment that renders to empty markdown (e.g. an image-only page) is not
+    # persisted by process_article_result, so it must not count toward the total —
+    # otherwise progress can never reach 100%.
+    run.articles_total = sum(1 for inp in article_inputs if inp[5].strip())
     await db.commit()
 
     for toc_id, sort_order, title, topic_key, url, md in article_inputs:
