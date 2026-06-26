@@ -45,10 +45,12 @@ def _outline_segments(doc: "fitz.Document") -> list[Segment]:
 def segment_pdf(pdf_bytes: bytes) -> list[Segment]:
     """Split a PDF into ordered article segments on natural content boundaries.
 
-    Outline-first: when the PDF carries a bookmark outline, each entry is a
-    segment spanning to the page before the next same-or-higher-level entry.
-    When there is no usable outline this returns a single whole-document segment
-    (Tasks 4/5 layer LLM/heuristic fallbacks in front of that)."""
+    Outline-first: when the PDF carries a bookmark outline, each entry becomes a
+    segment spanning from its page to the page before the very next outline entry
+    (regardless of level) — so a parent entry covers only its own pages before its
+    first child, producing a non-overlapping page partition. When there is no usable
+    outline this returns a single whole-document segment (Tasks 4/5 layer
+    LLM/heuristic fallbacks in front of that)."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
         segs = _outline_segments(doc)
