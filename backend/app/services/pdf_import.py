@@ -3,16 +3,55 @@ each segment to markdown, and persist articles through the existing diff path.""
 from __future__ import annotations
 
 import collections
+import hashlib
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 
 import fitz  # PyMuPDF
+import httpx
 
 from app.core.config import settings
 from app.services.profiles import llm as llm_mod
 
 logger = logging.getLogger(__name__)
+
+
+class PdfAcquireError(Exception):
+    """Raised when a PDF source's bytes cannot be obtained."""
+
+
+def pdf_is_upload(source) -> bool:
+    return str(source.base_url).startswith("file://")
+
+
+def pdf_path_for(source_id, pdf_dir: str) -> str:
+    return os.path.join(pdf_dir, f"{source_id}.pdf")
+
+
+async def _fetch_url_bytes(url: str) -> bytes:
+    timeout = httpx.Timeout(300.0, connect=30.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return resp.content
+
+
+async def acquire_pdf(source) -> tuple[bytes, str]:
+    """Return (pdf_bytes, sha256_hex) for a pdf source (upload or URL origin)."""
+    try:
+        if pdf_is_upload(source):
+            path = pdf_path_for(source.id, settings.pdf_dir)
+            with open(path, "rb") as fh:
+                data = fh.read()
+        else:
+            data = await _fetch_url_bytes(source.base_url)
+    except (OSError, httpx.HTTPError) as exc:
+        raise PdfAcquireError(f"Could not acquire PDF: {exc}") from exc
+    if not data:
+        raise PdfAcquireError("PDF is empty")
+    return data, hashlib.sha256(data).hexdigest()
 
 
 @dataclass
