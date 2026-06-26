@@ -89,6 +89,11 @@ class Settings(BaseSettings):
     pdf_dir: str = "pdf_uploads"
     pdf_max_upload_bytes: int = 100 * 1024 * 1024  # 100 MiB
 
+    # Master key for encrypting credentials/sessions at rest (Fernet, urlsafe
+    # base64, 32 bytes). Required only when auth_realm rows exist. Generate with:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    secret_key: str = ""
+
     model_config = {
         "env_prefix": "DOCEXTRACTOR_",
         "case_sensitive": False,
