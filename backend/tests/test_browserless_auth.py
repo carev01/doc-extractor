@@ -11,23 +11,24 @@ from app.services.browserless import BrowserlessClient
 pytestmark = pytest.mark.asyncio
 
 
-async def test_render_html_threads_profile(monkeypatch):
+async def test_render_html_threads_auth_state(monkeypatch):
     client = BrowserlessClient(url="http://bl", token="t")
     captured = {}
 
-    async def fake_post(code, context, target_url, client=None, profile=None, **kw):
-        captured["profile"] = profile
+    async def fake_post(code, context, target_url, client=None, **kw):
+        captured["authState"] = context.get("authState")
         return {"html": "<html></html>"}
 
     monkeypatch.setattr(client, "_post", fake_post)
-    await client.render_html("https://docs.x.com/a", profile="realm-1")
-    assert captured["profile"] == "realm-1"
+    auth = {"cookies": [{"name": "sid", "value": "x"}], "origins": []}
+    await client.render_html("https://docs.x.com/a", auth_state=auth)
+    assert captured["authState"] == auth
 
 
 async def test_run_login_returns_result(monkeypatch):
     client = BrowserlessClient(url="http://bl", token="t")
 
-    async def fake_post(code, context, target_url, client=None, profile=None, **kw):
+    async def fake_post(code, context, target_url, client=None, **kw):
         return {"ok": True, "cookieCount": 12, "finalUrl": "https://docs.x.com/home"}
 
     monkeypatch.setattr(client, "_post", fake_post)

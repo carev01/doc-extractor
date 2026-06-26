@@ -24,6 +24,16 @@ logger = logging.getLogger(__name__)
 _FUNCTION_CODE = r"""
 export default async function ({ page, context }) {
   const { url, waitMs } = context;
+  const authState = context.authState;
+  if (authState) {
+    if (authState.cookies && authState.cookies.length) await page.setCookie(...authState.cookies);
+    if (authState.origins) {
+      for (const o of authState.origins) {
+        await page.goto(o.origin, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.evaluate((items) => { for (const [k, v] of items) localStorage.setItem(k, v); }, o.localStorage || []);
+      }
+    }
+  }
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
   await new Promise(r => setTimeout(r, waitMs || 9000));
   const data = await page.evaluate(() => {
@@ -73,6 +83,16 @@ export default async function ({ page, context }) {
 _HTML_FUNCTION_CODE = r"""
 export default async function ({ page, context }) {
   const { url, waitMs, waitSelector } = context;
+  const authState = context.authState;
+  if (authState) {
+    if (authState.cookies && authState.cookies.length) await page.setCookie(...authState.cookies);
+    if (authState.origins) {
+      for (const o of authState.origins) {
+        await page.goto(o.origin, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.evaluate((items) => { for (const [k, v] of items) localStorage.setItem(k, v); }, o.localStorage || []);
+      }
+    }
+  }
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
   if (waitSelector) {
     // Generous timeout: client-rendered navs can be heavy (some build the tree
@@ -326,30 +346,6 @@ export default async function ({ page, context }) {
 """
 
 
-# Browserless /function that injects a captured cookie/localStorage snapshot
-# into a fresh session and re-saves it as a named Authenticated Profile. Used
-# when Browserless has lost (evicted) a profile and the caller has a state dict
-# (from a prior complete_live_session call) to re-seed from.
-_SEED_PROFILE_CODE = r"""
-export default async function ({ page, context }) {
-  const { name, state } = context;
-  const cdp = await page.target().createCDPSession();
-  if (state.cookies && state.cookies.length) {
-    await page.setCookie(...state.cookies);
-  }
-  if (state.origins) {
-    for (const o of state.origins) {
-      await page.goto(o.origin, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.evaluate((items) => {
-        for (const [k, v] of items) localStorage.setItem(k, v);
-      }, o.localStorage || []);
-    }
-  }
-  const res = await cdp.send('Browserless.saveProfile', { name });
-  return { data: { ok: !!res.ok, cookieCount: res.cookieCount || 0 } };
-}
-"""
-
 
 class BrowserlessError(Exception):
     """Raised when Browserless is unreachable or returns an unusable response."""
@@ -375,26 +371,16 @@ class BrowserlessClient:
     async def _post(self, code: str, context: dict, target_url: str,
                     client: httpx.AsyncClient | None = None,
                     session_timeout_ms: int | None = None,
-                    http_timeout_s: float = 120.0,
-                    profile: str | None = None) -> dict:
+                    http_timeout_s: float = 120.0) -> dict:
         """POST a /function call and return its unwrapped data dict.
 
         ``session_timeout_ms`` caps the Browserless session (``?timeout=``) — raise
         it for long jobs like full TOC expansion (lots of clicks). ``http_timeout_s``
         must exceed it so the HTTP read doesn't give up first.
-        ``profile`` appends ``?profile=`` so Browserless replays an Authenticated
-        Profile for the session (combined with ``?timeout=`` via ``&`` when both
-        are set).
         """
-        params = {}
-        if session_timeout_ms:
-            params["timeout"] = str(session_timeout_ms)
-        if profile:
-            params["profile"] = profile
         endpoint = f"{self.url}/function"
-        if params:
-            from urllib.parse import urlencode
-            endpoint += "?" + urlencode(params)
+        if session_timeout_ms:
+            endpoint += f"?timeout={session_timeout_ms}"
         # Token as a Bearer header, not ?token=, so it doesn't leak into logs.
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else None
         payload = {"code": code, "context": context}
@@ -444,26 +430,27 @@ class BrowserlessClient:
         return data
 
     async def render(self, target_url: str, client: httpx.AsyncClient | None = None,
-                     profile: str | None = None) -> dict:
+                     auth_state: dict | None = None) -> dict:
         """Render ``target_url`` and return {toc, contentHtml, contentText, title}
         via shadow-DOM extraction (Salesforce Help). Raises BrowserlessError.
-        ``profile`` replays a saved Browserless Authenticated Profile."""
+        ``auth_state`` injects cookies/localStorage into the session before navigation."""
         return await self._post(
-            _FUNCTION_CODE, {"url": target_url, "waitMs": self.wait_ms},
-            target_url, client, profile=profile,
+            _FUNCTION_CODE, {"url": target_url, "waitMs": self.wait_ms, "authState": auth_state},
+            target_url, client,
         )
 
     async def render_html(self, target_url: str, wait_selector: str | None = None,
                           client: httpx.AsyncClient | None = None,
-                          profile: str | None = None) -> str:
+                          auth_state: dict | None = None) -> str:
         """Return the fully-rendered light-DOM HTML after a JS-rendered element
         (``wait_selector``) appears — for navs/content built client-side into the
         light DOM (e.g. a client-built #nav). Raises BrowserlessError.
-        ``profile`` replays a saved Browserless Authenticated Profile."""
+        ``auth_state`` injects cookies/localStorage into the session before navigation."""
         data = await self._post(
             _HTML_FUNCTION_CODE,
-            {"url": target_url, "waitMs": self.wait_ms, "waitSelector": wait_selector},
-            target_url, client, profile=profile,
+            {"url": target_url, "waitMs": self.wait_ms, "waitSelector": wait_selector,
+             "authState": auth_state},
+            target_url, client,
         )
         return data.get("html", "")
 
@@ -568,68 +555,6 @@ class BrowserlessClient:
             login_code, context, context.get("url", "login"),
             session_timeout_ms=timeout_ms, http_timeout_s=timeout_ms / 1000 + 30,
         )
-
-    async def seed_and_save_profile(self, name: str, state: dict) -> dict:
-        """Inject a captured cookie/localStorage snapshot into a fresh session
-        and re-save it under ``name`` (re-seed after Browserless lost the profile)."""
-        return await self._post(
-            _SEED_PROFILE_CODE, {"name": name, "state": state}, f"profile:{name}",
-            session_timeout_ms=60_000, http_timeout_s=90,
-        )
-
-    async def create_live_session(self, login_url: str, timeout_ms: int = 600_000) -> dict:
-        """Open an interactive Browserless session at login_url and return
-        {live_url, reconnect_endpoint}. The human completes login (incl. MFA)
-        in live_url; reconnect_endpoint keeps the session alive for timeout_ms.
-
-        NOTE: response-shape (data["liveURL"]["liveURL"],
-        data["reconnect"]["browserWSEndpoint"]) is per Browserless docs and must
-        be confirmed against the live instance during end-to-end validation (Task 9).
-        """
-        bql = (
-            "mutation Live($url: String!) {"
-            "  goto(url: $url, waitUntil: load) { status }"
-            "  liveURL { liveURL }"
-            "  reconnect(timeout: %d) { browserWSEndpoint }"
-            "}" % timeout_ms
-        )
-        url = f"{self.url}/chromium/bql"
-        headers = {"Authorization": f"Bearer {self.token}"} if self.token else None
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as c:
-            resp = await c.post(url, headers=headers,
-                                json={"query": bql, "variables": {"url": login_url}})
-            resp.raise_for_status()
-            data = resp.json()["data"]
-        return {
-            "live_url": data["liveURL"]["liveURL"],
-            "reconnect_endpoint": data["reconnect"]["browserWSEndpoint"],
-        }
-
-    async def complete_live_session(self, reconnect_endpoint: str, profile_name: str) -> dict:
-        """Reconnect to a live session after the human finished logging in,
-        save the auth state under profile_name, and return the state snapshot.
-
-        NOTE: response-shape (data["liveURL"]["liveURL"],
-        data["reconnect"]["browserWSEndpoint"]) is per Browserless docs and must
-        be confirmed against the live instance during end-to-end validation (Task 9).
-        """
-        code = (
-            r"export default async function ({ page }) {"
-            r"  const cdp = await page.target().createCDPSession();"
-            r"  const res = await cdp.send('Browserless.saveProfile', { name: '%s' });"
-            r"  const cookies = await page.cookies();"
-            r"  return { data: { ok: !!res.ok, cookieCount: res.cookieCount || 0, "
-            r"           state: { cookies } } };"
-            r"}" % profile_name
-        )
-        endpoint = f"{reconnect_endpoint}/function"
-        headers = {"Authorization": f"Bearer {self.token}"} if self.token else None
-        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=10.0)) as c:
-            resp = await c.post(endpoint, headers=headers,
-                                json={"code": code, "context": {}})
-            resp.raise_for_status()
-            body = resp.json()
-        return body.get("data", body)
 
 
 browserless_client = BrowserlessClient()

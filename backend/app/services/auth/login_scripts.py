@@ -53,11 +53,11 @@ export default async function ({ page, context }) {
     ]);
   }
   await new Promise(r => setTimeout(r, waitMs || 3000));
-  const cdp = await page.target().createCDPSession();
-  const res = await cdp.send('Browserless.saveProfile', { name: profileName });
   const cookies = await page.cookies();
-  return { data: { ok: !!res.ok, cookieCount: res.cookieCount || 0,
-                   finalUrl: page.url(), state: { cookies } } };
+  const origin = new URL(page.url()).origin;
+  const localStorage = await page.evaluate(() => Object.entries(window.localStorage));
+  return { data: { ok: cookies.length > 0, cookieCount: cookies.length, finalUrl: page.url(),
+                   state: { cookies, origins: [{ origin, localStorage }] } } };
 }
 """
 

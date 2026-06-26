@@ -20,7 +20,8 @@ def _realm(**kw):
 
 def test_build_login_form_includes_creds_and_profile():
     code, ctx = login_scripts.build_login(_realm())
-    assert "Browserless.saveProfile" in code
+    assert "saveProfile" not in code
+    assert "page.cookies()" in code
     assert ctx["username"] == "u" and ctx["password"] == "p"
     assert ctx["profileName"] == "realm-x"
     assert ctx["loginUrl"] == "https://x.com/login"

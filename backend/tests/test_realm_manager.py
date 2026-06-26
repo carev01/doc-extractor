@@ -46,14 +46,16 @@ async def _add(factory, **kw):
 
 
 async def test_active_realm_short_circuits(factory, monkeypatch):
+    snap = {"cookies": [{"name": "sid", "value": "x"}]}
     r = await _add(factory, status=RealmStatus.ACTIVE,
+                   state_snapshot=snap,
                    last_login_at=datetime.now(timezone.utc))
     login = AsyncMock()
     monkeypatch.setattr(realm_manager, "run_scripted_login", login)
     async with factory() as s:
         realm = await s.get(AuthRealm, r.id)
-        name = await realm_manager.ensure_profile(s, realm)
-    assert name == "realm-x"
+        result = await realm_manager.ensure_session(s, realm)
+    assert result == snap
     login.assert_not_awaited()
 
 
@@ -62,18 +64,22 @@ async def test_needs_login_without_creds_raises(factory):
     async with factory() as s:
         realm = await s.get(AuthRealm, r.id)
         with pytest.raises(realm_manager.NeedsLoginError):
-            await realm_manager.ensure_profile(s, realm)
+            await realm_manager.ensure_session(s, realm)
 
 
 async def test_needs_login_with_creds_runs_scripted(factory, monkeypatch):
     r = await _add(factory, status=RealmStatus.NEEDS_LOGIN, username="u", password="p")
+    snap = {"cookies": []}
+
     async def fake_login(db, realm):
         realm.status = RealmStatus.ACTIVE
+        realm.state_snapshot = snap
+
     monkeypatch.setattr(realm_manager, "run_scripted_login", fake_login)
     async with factory() as s:
         realm = await s.get(AuthRealm, r.id)
-        name = await realm_manager.ensure_profile(s, realm)
-    assert name == "realm-x"
+        result = await realm_manager.ensure_session(s, realm)
+    assert result == snap
 
 
 async def test_run_scripted_login_stores_snapshot(factory, monkeypatch):

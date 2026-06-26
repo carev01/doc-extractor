@@ -1,4 +1,4 @@
-"""Realm session lifecycle — ensure a usable Browserless profile exists."""
+"""Realm session lifecycle — ensure a usable auth state dict exists."""
 
 import logging
 from datetime import datetime, timezone
@@ -16,16 +16,15 @@ class NeedsLoginError(Exception):
     """A realm has no usable session and cannot be logged in without a human."""
 
 
-async def ensure_profile(db: AsyncSession, realm: AuthRealm) -> str:
-    """Return a usable Browserless profile name for `realm`, logging in via
-    scripted creds if needed. Raises NeedsLoginError when a human is required."""
-    if realm.status == RealmStatus.ACTIVE:
-        return realm.browserless_profile_name
+async def ensure_session(db: AsyncSession, realm: AuthRealm) -> dict:
+    """Return the realm's auth state dict, logging in via scripted creds if needed.
+    Raises NeedsLoginError when a human is required."""
+    if realm.status == RealmStatus.ACTIVE and realm.state_snapshot:
+        return realm.state_snapshot
     if realm.username and realm.password:
         await run_scripted_login(db, realm)
-        return realm.browserless_profile_name
-    await invalidate(db, realm, RealmStatus.NEEDS_LOGIN,
-                     "No stored credentials; assisted login required")
+        return realm.state_snapshot
+    await invalidate(db, realm, RealmStatus.NEEDS_LOGIN, "No stored session; assisted login required")
     raise NeedsLoginError(f"Realm {realm.id} needs an assisted login")
 
 
