@@ -119,3 +119,38 @@ async def test_changed_image_clears_old_file(factory, tmp_path):
     # Only the current image remains in the article's media dir.
     files = os.listdir(os.path.join(settings.media_dir, str(art.id)))
     assert len(files) == 1
+
+
+def _pdf_no_image() -> bytes:
+    """Same section title as _pdf() (so the article matches by topic_key) but the
+    figure is gone — an update that drops all images."""
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Section with a figure, now text only and changed")
+    doc.set_toc([[1, "Figure section", 1]])
+    return doc.tobytes()
+
+
+async def test_update_that_removes_all_images_clears_dir(factory, tmp_path):
+    sid = await _source(factory, tmp_path)
+    with open(pdf_path_for(sid, settings.pdf_dir), "wb") as fh:
+        fh.write(_pdf())
+    await _run(factory, sid)
+    async with factory() as s:
+        art = (await s.execute(
+            select(Article).where(Article.source_id == sid))).scalar_one()
+        art_id = art.id
+    art_dir = os.path.join(settings.media_dir, str(art_id))
+    assert os.listdir(art_dir) == [os.listdir(art_dir)[0]]  # image present pre-update
+
+    # Re-extract a figure-less version of the same section → updated, no images.
+    with open(pdf_path_for(sid, settings.pdf_dir), "wb") as fh:
+        fh.write(_pdf_no_image())
+    await _run(factory, sid)
+
+    async with factory() as s:
+        imgs = (await s.execute(
+            select(ArticleImage).where(ArticleImage.article_id == art_id))).scalars().all()
+        assert imgs == []                       # ArticleImage rows gone
+    # The stale image file must be gone (dir cleared / removed).
+    assert not os.path.isdir(art_dir) or os.listdir(art_dir) == []

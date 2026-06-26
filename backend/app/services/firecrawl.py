@@ -761,15 +761,18 @@ class FirecrawlService:
                     if src != full_src and src.startswith(("/", "./", "../")):
                         markdown_content = markdown_content.replace(src, served_url)
 
-        elif pdf_images:
+        elif pdf_images is not None:
             # PDF source images: written by render_segments as content-addressed
-            # bytes. Clear the article's media dir so only current figures remain,
-            # write each image, record an ArticleImage row, and rewrite the bare
-            # canonical "<sha>.png" reference to the served /media URL. The hash was
-            # already taken on the canonical markdown, so served paths don't diff.
+            # bytes. Clear the article's media dir so only current figures remain —
+            # reaching here with pdf_images == [] (a section that lost all its
+            # figures on update) still wipes the stale files. Then write each image,
+            # record an ArticleImage row, and rewrite the bare canonical "<sha>.png"
+            # reference to the served /media URL. The hash was already taken on the
+            # canonical markdown, so served paths don't diff.
             article_img_dir = os.path.join(media_root, str(article.id))
             shutil.rmtree(article_img_dir, ignore_errors=True)
-            os.makedirs(article_img_dir, exist_ok=True)
+            if pdf_images:
+                os.makedirs(article_img_dir, exist_ok=True)
             for i, img in enumerate(pdf_images):
                 with open(os.path.join(article_img_dir, img.filename), "wb") as fh:
                     fh.write(img.data)
