@@ -16,7 +16,6 @@ from app.core.database import Base
 from app.models import Vendor, Product, DocumentationSource, ExtractionRun
 
 TEST_DATABASE_URL = settings.database_url.rsplit("/", 1)[0] + "/docextractor_test"
-pytestmark = pytest.mark.asyncio
 
 
 @pytest_asyncio.fixture
@@ -32,6 +31,7 @@ async def factory():
     await engine.dispose()
 
 
+@pytest.mark.asyncio
 async def test_source_type_defaults_web_and_pdf_hash_nullable(factory):
     async with factory() as s:
         v = Vendor(name="V"); s.add(v); await s.flush()
