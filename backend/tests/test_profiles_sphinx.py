@@ -119,6 +119,39 @@ async def test_crawl_tolerates_a_missing_page():
     assert "Community" in titles and "Configuration" in titles  # unaffected
 
 
+def test_extract_strips_pdf_note_and_go_back_keeps_real_notes():
+    # Mirrors Bacula: a wrapping <blockquote> holds the "download as PDF" note,
+    # a genuine note follows, and the body ends with a "Go back to:" breadcrumb.
+    html = (
+        '<html><body><div role="main"><div itemprop="articleBody">'
+        '<blockquote id="x"><div><div class="note admonition">'
+        '  <p class="admonition-title">Note</p>'
+        '  <p>You can download this article as a '
+        '     <a class="pdflink reference external" href="/pdf/x.pdf">PDF</a></p>'
+        '</div></div></blockquote>'
+        '<section><h1>Installation</h1>'
+        '  <div class="note admonition"><p class="admonition-title">Note</p>'
+        '    <p>This is a real note worth keeping.</p></div>'
+        '  <p>Real install prose.</p>'
+        '  <p>Go to: <a href="other.html">Other topic</a>.</p>'
+        '  <p>Go back to: <a href="../index.html">Installation</a>.</p>'
+        '</section>'
+        '</div></div></body></html>'
+    )
+    out = SphinxProfile().extract_content_html(html, f"{BASE}/install/EnterpriseInstall/index.html")
+    assert "Real install prose." in out
+    assert "Installation" in out                        # title kept
+    assert "download this article as a PDF" not in out  # PDF note removed
+    assert "<blockquote" not in out                     # no empty wrapper left
+    assert "This is a real note worth keeping." in out  # genuine note preserved
+    assert "Go to:" in out                              # real cross-ref kept
+    assert "Go back to:" not in out                     # breadcrumb removed
+
+
+def test_extract_returns_none_when_no_body():
+    assert SphinxProfile().extract_content_html("<html><body><p>x</p></body></html>", BASE) is None
+
+
 def test_content_scopes_role_main_and_drops_toctree_and_chrome():
     cfg = SphinxProfile().content_config()
     assert cfg["includeTags"] == ["[role=main]"]

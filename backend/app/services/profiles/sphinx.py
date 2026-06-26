@@ -29,6 +29,7 @@ from bs4 import BeautifulSoup
 
 from app.services.profiles import registry
 from app.services.profiles.base import TocEntry
+from app.services.profiles.content_scope import scope_content_html
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +188,45 @@ class SphinxProfile:
             "onlyMainContent": False,
             "waitFor": 1500,
         }
+
+    def extract_content_html(self, raw_html: str, url: str) -> str | None:
+        """Scope the topic body, then strip two recurring bits of page chrome the
+        ``content_config`` CSS selectors can't target:
+
+          - the "You can download this article as a PDF" note box — a normal
+            ``.admonition`` (so it can't be excluded wholesale without dropping
+            real notes), identified by the ``a.pdflink`` download link inside it;
+          - the trailing "Go back to: <parent>" navigation paragraph — a bare
+            ``<p>`` with no class, identifiable only by its text.
+
+        Everything else (image absolutising, the content_config include/exclude
+        scoping) is delegated to the shared ``scope_content_html``.
+        """
+        cfg = self.content_config()
+        scoped = scope_content_html(
+            raw_html, url, cfg["includeTags"], cfg.get("excludeTags") or []
+        )
+        if not scoped:
+            return None
+        soup = BeautifulSoup(scoped, "html.parser")
+
+        # Drop the "download as PDF" note box (keep genuine notes).
+        for a in soup.select("a.pdflink"):
+            box = a.find_parent(class_="admonition") or a.find_parent("blockquote") or a.parent
+            if box is not None:
+                box.decompose()
+        # The PDF note sits in a wrapping <blockquote>; remove any left empty.
+        for bq in soup.find_all("blockquote"):
+            if not bq.get_text(strip=True):
+                bq.decompose()
+
+        # Drop the trailing "Go back to: …" breadcrumb paragraph.
+        for p in soup.find_all("p"):
+            if p.get_text(strip=True).lower().startswith("go back to"):
+                p.decompose()
+
+        inner = soup.decode_contents().strip()
+        return inner or None
 
 
 PROFILE = SphinxProfile()
