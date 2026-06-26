@@ -18,6 +18,7 @@ from app.core.database import async_session
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.source import DocumentationSource, SourceStatus
 from app.services.firecrawl import firecrawl_service
+from app.services.maintenance import run_maintenance_sweeps
 from app.services.queue import claim_next_run, claim_next_export
 from app.services.export_runner import run_export_job_sync
 
@@ -200,9 +201,21 @@ async def run_one(claim_session_factory=None, work_session_factory=None) -> bool
     return True
 
 
+async def _maintenance_tick() -> None:
+    """Run the hourly-gated volume sweeps (export purge + media GC). The worker
+    mounts the media and exports volumes, so it — not the scheduler — drives
+    these. Self-gated, so calling it every loop is cheap when not due."""
+    try:
+        async with async_session() as db:
+            await run_maintenance_sweeps(db)
+    except Exception:
+        logger.exception("Maintenance sweep error; will retry next loop")
+
+
 async def main_loop() -> None:
     logger.info("Worker %s started", WORKER_ID)
     while True:
+        await _maintenance_tick()
         try:
             handled = await run_one()
         except Exception:
