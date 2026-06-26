@@ -1293,6 +1293,22 @@ class FirecrawlService:
         # async engine. We reload ``run`` from this PK before the completion path.
         run_pk = run.id
 
+        if source.source_type == "pdf":
+            from app.services import pdf_import
+            try:
+                return await pdf_import.run_pdf_extraction(self, db, source, run, run_pk)
+            except pdf_import.PdfAcquireError as exc:
+                run = (await db.execute(
+                    select(ExtractionRun).where(ExtractionRun.id == run_pk)
+                )).scalar_one()
+                run.status = RunStatus.FAILED
+                run.error_message = str(exc)[:4096]
+                run.completed_at = datetime.now(timezone.utc)
+                source.status = SourceStatus.FAILED
+                source.last_extracted_at = run.completed_at
+                await db.flush()
+                return run
+
         try:
             await self._check_available()
 
