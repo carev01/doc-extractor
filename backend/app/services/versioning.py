@@ -7,6 +7,8 @@ the version token swapped back to ``{version}`` — so the same topic across
 versions shares one key and its history continues across a version bump.
 """
 
+import re
+
 VERSION_PLACEHOLDER = "{version}"
 
 
@@ -45,3 +47,18 @@ def detect_version_token(base_url: str, version: str) -> str | None:
     if not version or version not in base_url:
         return None
     return base_url.replace(version, VERSION_PLACEHOLDER, 1)
+
+
+def _slug(text: str) -> str:
+    """Lowercase, keep alphanumerics, collapse everything else to single hyphens."""
+    s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return s
+
+
+def derive_pdf_topic_key(path: list[str]) -> str:
+    """Stable topic key for a PDF article from its outline path (ancestor titles +
+    own title). Slugged per segment and joined with "/" so re-converting the same
+    PDF yields the same key — which keeps incremental diffs stable. Empty path
+    (single-segment whole-document fallback) maps to "document"."""
+    parts = [_slug(p) for p in path if _slug(p)]
+    return "/".join(parts) if parts else "document"
