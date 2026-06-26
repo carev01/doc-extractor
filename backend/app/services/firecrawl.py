@@ -614,7 +614,13 @@ class FirecrawlService:
                 # Unchanged content, but scraped this run — record the scrape time
                 # and re-link to the freshly-rebuilt TOC entry (the prior link was
                 # NULLed when the TOC was rebuilt) so the page isn't orphaned.
+                # Advance source_url to this run's URL (matching the "same" branch
+                # above): _reconcile_removals re-links survivors by source_url, so a
+                # stale URL — e.g. a PDF section whose #page anchor shifted, or a web
+                # version bump — would otherwise mis-flag this unchanged article as
+                # removed.
                 existing_article.extracted_at = datetime.now(timezone.utc)
+                existing_article.source_url = url
                 existing_article.toc_entry_id = toc_entry_id
                 existing_article.sort_order = sort_order
                 existing_article.title = title

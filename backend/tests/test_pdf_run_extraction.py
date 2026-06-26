@@ -112,3 +112,39 @@ async def test_modified_pdf_diffs(factory, tmp_path):
             .where(Article.source_id == sid)
         )).scalar()
         assert nver >= 1  # at least one prior version snapshotted
+
+
+def _pdf_with_cover() -> bytes:
+    """Same chapter content as _pdf(), but with a blank cover page inserted at
+    the front — so each chapter's #page anchor shifts by one while its rendered
+    markdown stays byte-identical."""
+    doc = fitz.open()
+    doc.new_page().insert_text((72, 72), "Cover")          # page 0 (not in TOC)
+    for i in range(2):
+        doc.new_page().insert_text((72, 72), f"Body for chapter {i+1}. ")
+    doc.set_toc([[1, "Chapter 1", 2], [1, "Chapter 2", 3]])
+    return doc.tobytes()
+
+
+async def test_page_shift_unchanged_section_not_removed(factory, tmp_path):
+    """Inserting a cover page shifts every section's #page anchor (new pdf_hash,
+    full re-run) but leaves each section's content byte-identical (hash match →
+    'unchanged'). The unchanged articles must NOT be mis-flagged as removed —
+    process_article_result advances source_url so _reconcile_removals re-links them."""
+    sid = await _make_pdf_source(factory, tmp_path)
+    await _run(factory, sid)
+    with open(pdf_path_for(sid, str(tmp_path)), "wb") as fh:
+        fh.write(_pdf_with_cover())
+    run2 = await _run(factory, sid)
+
+    async with factory() as s:
+        r = await s.get(ExtractionRun, run2)
+        assert r.articles_unchanged == 2      # both sections matched by content hash
+        arts = (await s.execute(
+            select(Article).where(Article.source_id == sid).order_by(Article.sort_order)
+        )).scalars().all()
+        assert [a.title for a in arts] == ["Chapter 1", "Chapter 2"]
+        # The crux: neither section is flagged removed, and each points at its
+        # new page-anchored URL.
+        assert all(a.removed_at is None for a in arts)
+        assert all(a.source_url.endswith(("#page=2", "#page=3")) for a in arts)
