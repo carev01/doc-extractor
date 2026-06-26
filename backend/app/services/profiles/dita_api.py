@@ -1,8 +1,12 @@
-"""IBM Documentation (``www.ibm.com/docs``) profile.
+"""DITA documentation portal with a TOC/content API (e.g. IBM Documentation).
 
-IBM's documentation platform is a React/Carbon single-page app: the page HTML is
-an empty shell and both the navigation tree and the topic bodies are loaded
-client-side from a JSON/HTML API (discovered in the SPA bundle):
+Targets documentation platforms that ship DITA-generated topics through a
+versioned TOC/content REST API behind a JS single-page app — currently IBM
+Documentation (``www.ibm.com/docs``), the same engine across every IBM product.
+The name is the generic mechanism (DITA topics + JSON/HTML API), not the vendor.
+
+The page HTML is an empty shell; both the navigation tree and the topic bodies
+are loaded client-side from a JSON/HTML API (discovered in the SPA bundle):
 
     GET /docs/api/v1/toc/<product>/<version>?lang=<lang>
         -> {"toc": {"label", "href", "topicId", "topics": [ ...recursive ]}}
@@ -35,8 +39,8 @@ from app.services.profiles.base import TocEntry
 _DOCS_PATH_RE = re.compile(r"/docs/([a-z]{2})/([^/]+)/([^/?#]+)")
 
 
-class IbmDocsProfile:
-    name = "ibm_docs"
+class DitaApiProfile:
+    name = "dita_api"
     # Topic bodies come from the content API as static HTML, fetched per-entry
     # via content_url and scoped by the generic raw_http scoper (content_config).
     content_engine = "raw_http"
@@ -87,10 +91,10 @@ class IbmDocsProfile:
                 href = (node.get("href") or "").strip()
                 title = (node.get("label") or "").strip()
                 kids = node.get("topics") or []
-                # Every IBM toc node is a real topic page (it has an href even
-                # when it also has children). Emit only nodes whose href is an
-                # actual topic file; structural-only hrefs (the product root,
-                # which has no .html) become url-less section headers.
+                # Every toc node is a real topic page (it has an href even when
+                # it also has children). Emit only nodes whose href is an actual
+                # topic file; structural-only hrefs (the product root, which has
+                # no .html) become url-less section headers.
                 if href.endswith(".html"):
                     out.append(TocEntry(
                         title=title or href,
@@ -122,5 +126,5 @@ class IbmDocsProfile:
         }
 
 
-PROFILE = IbmDocsProfile()
+PROFILE = DitaApiProfile()
 registry.register(PROFILE)
