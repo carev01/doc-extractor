@@ -3,7 +3,7 @@
 Counts pages carried over from a prior interrupted attempt (resume checkpoint),
 kept separate from the new/updated/unchanged breakdown.
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: f1e2d3c4b5a6
 Revises: 9ad7b7dc0fc7
 """
 from typing import Sequence, Union
@@ -11,7 +11,7 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "a1b2c3d4e5f6"
+revision: str = "f1e2d3c4b5a6"
 down_revision: Union[str, Sequence[str], None] = "9ad7b7dc0fc7"
 branch_labels = None
 depends_on = None
