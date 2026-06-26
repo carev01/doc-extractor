@@ -32,6 +32,6 @@ def test_render_segments_matches_per_segment_and_preserves_order():
         Segment("Beta", 1, 1, 1, ["Beta"]),
     ]
     batch = render_segments(pdf, segs)
-    assert batch == [segment_to_markdown(pdf, s) for s in segs]
-    assert "Alpha section content" in batch[0]
-    assert "Beta section content" in batch[1]
+    assert [md for md, _ in batch] == [segment_to_markdown(pdf, s) for s in segs]
+    assert "Alpha section content" in batch[0][0]
+    assert "Beta section content" in batch[1][0]
