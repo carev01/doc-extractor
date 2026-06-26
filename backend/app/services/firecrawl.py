@@ -1297,16 +1297,29 @@ class FirecrawlService:
             from app.services import pdf_import
             try:
                 return await pdf_import.run_pdf_extraction(self, db, source, run, run_pk)
-            except pdf_import.PdfAcquireError as exc:
+            except Exception as exc:
+                # Any PDF-pipeline failure (download error, corrupt/unparseable
+                # PDF, conversion error, …) must mark the run FAILED rather than
+                # leaving it orphaned in RUNNING (which the uq_active_run_per_source
+                # index would then use to block re-runs). Roll back first: a failure
+                # mid-transaction aborts the session and detaches the in-memory
+                # run/source, so reload both by PK before writing the failure state.
+                logger.exception("PDF extraction failed for source %s", source_id)
+                await db.rollback()
                 run = (await db.execute(
                     select(ExtractionRun).where(ExtractionRun.id == run_pk)
                 )).scalar_one()
+                source = (await db.execute(
+                    select(DocumentationSource).where(DocumentationSource.id == source_id)
+                )).scalar_one()
+                now = datetime.now(timezone.utc)
                 run.status = RunStatus.FAILED
                 run.error_message = str(exc)[:4096]
-                run.completed_at = datetime.now(timezone.utc)
+                run.completed_at = now
                 source.status = SourceStatus.FAILED
-                source.last_extracted_at = run.completed_at
-                await db.flush()
+                source.error_message = str(exc)[:4096]
+                source.last_extracted_at = now
+                await db.commit()
                 return run
 
         try:

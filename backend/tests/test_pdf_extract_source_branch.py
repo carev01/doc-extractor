@@ -62,3 +62,31 @@ async def test_extract_source_runs_pdf_pipeline(factory, tmp_path):
         assert run.status == RunStatus.COMPLETED
         n = (await s.execute(select(Article).where(Article.source_id == sid))).scalars().all()
         assert len(n) == 1 and n[0].title == "Intro"
+
+
+async def test_corrupt_pdf_marks_run_failed_not_orphaned(factory, tmp_path):
+    settings.pdf_dir = str(tmp_path)
+    async with factory() as s:
+        v = Vendor(name="V"); s.add(v); await s.flush()
+        p = Product(vendor_id=v.id, name="P"); s.add(p); await s.flush()
+        src = DocumentationSource(product_id=p.id, name="M",
+                                  base_url="file://x.pdf", source_type="pdf")
+        s.add(src); await s.flush()
+        run = ExtractionRun(source_id=src.id); s.add(run); await s.commit()
+        sid, rid = src.id, run.id
+    # A file with PDF content-type bytes that PyMuPDF cannot parse.
+    with open(pdf_path_for(sid, str(tmp_path)), "wb") as fh:
+        fh.write(b"%PDF-1.4 not actually a valid pdf body")
+
+    svc = FirecrawlService()
+    async with factory() as s:
+        await svc.extract_source(s, sid, run_id=rid)
+        await s.commit()
+
+    # The run must be FAILED (with a message) — never left orphaned in RUNNING.
+    async with factory() as s:
+        run = await s.get(ExtractionRun, rid)
+        assert run.status == RunStatus.FAILED
+        assert run.error_message
+        src = await s.get(DocumentationSource, sid)
+        assert src.status.value == "failed"
