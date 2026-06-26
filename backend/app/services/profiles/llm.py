@@ -90,6 +90,69 @@ def _strip_fences(text: str) -> str:
     return m.group(1) if m else text.strip()
 
 
+async def call_llm(prompt: str) -> str:
+    """Send a single-turn prompt to the configured LLM provider and return the text.
+
+    Raises ``ValueError`` when ``llm_api_key`` is not set.
+    Raises ``httpx.HTTPStatusError`` on HTTP errors.
+    Raises ``ValueError`` for an unknown provider.
+    Callers are responsible for catching exceptions and applying fallbacks.
+
+    Parameters
+    ----------
+    prompt:
+        The full prompt to send as the user turn.
+
+    Returns
+    -------
+    str
+        Raw text response from the model (fences not stripped — use
+        ``_strip_fences`` if the caller expects JSON).
+    """
+    api_key = settings.llm_api_key
+    if not api_key:
+        raise ValueError("llm_api_key is not set")
+
+    provider = settings.llm_provider
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        if provider == "anthropic":
+            base_url = settings.llm_base_url or _ANTHROPIC_BASE_URL
+            model = settings.llm_model or _ANTHROPIC_DEFAULT_MODEL
+            headers = {
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            }
+            body = {
+                "model": model,
+                "max_tokens": settings.llm_max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            resp = await client.post(base_url, headers=headers, json=body)
+            resp.raise_for_status()
+            return resp.json()["content"][0]["text"]
+
+        if provider == "openai":
+            base_url = settings.llm_base_url or _OPENAI_BASE_URL
+            model = settings.llm_model or _OPENAI_DEFAULT_MODEL
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "content-type": "application/json",
+            }
+            body = {
+                "model": model,
+                "max_tokens": settings.llm_max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+                "response_format": {"type": "json_object"},
+            }
+            resp = await client.post(base_url, headers=headers, json=body)
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+
+        raise ValueError(f"Unknown LLM provider: {provider!r}")
+
+
 async def derive_spec(html: str, root_url: str) -> "dict | None":
     """Call the configured LLM to derive a selector spec for a documentation root page.
 
@@ -113,63 +176,16 @@ async def derive_spec(html: str, root_url: str) -> "dict | None":
         logger.warning("LLM derive_spec skipped: llm_api_key is not set")
         return None
 
-    provider = settings.llm_provider
     snippet = html[:20_000]
+    prompt = (
+        f"{_SYSTEM_PROMPT}\n\n"
+        f"URL: {root_url}\n\n"
+        f"HTML (truncated):\n{snippet}"
+    )
 
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            if provider == "anthropic":
-                base_url = settings.llm_base_url or _ANTHROPIC_BASE_URL
-                model = settings.llm_model or _ANTHROPIC_DEFAULT_MODEL
-                headers = {
-                    "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                }
-                body = {
-                    "model": model,
-                    "max_tokens": settings.llm_max_tokens,
-                    "system": _SYSTEM_PROMPT,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": f"URL: {root_url}\n\nHTML (truncated):\n{snippet}",
-                        }
-                    ],
-                }
-                resp = await client.post(base_url, headers=headers, json=body)
-                resp.raise_for_status()
-                text = resp.json()["content"][0]["text"]
-
-            elif provider == "openai":
-                base_url = settings.llm_base_url or _OPENAI_BASE_URL
-                model = settings.llm_model or _OPENAI_DEFAULT_MODEL
-                headers = {
-                    "Authorization": f"Bearer {api_key}",
-                    "content-type": "application/json",
-                }
-                body = {
-                    "model": model,
-                    "max_tokens": settings.llm_max_tokens,
-                    "messages": [
-                        {"role": "system", "content": _SYSTEM_PROMPT},
-                        {
-                            "role": "user",
-                            "content": f"URL: {root_url}\n\nHTML (truncated):\n{snippet}",
-                        },
-                    ],
-                    "response_format": {"type": "json_object"},
-                }
-                resp = await client.post(base_url, headers=headers, json=body)
-                resp.raise_for_status()
-                text = resp.json()["choices"][0]["message"]["content"]
-
-            else:
-                logger.warning("LLM derive_spec: unknown provider %r", provider)
-                return None
-
+        text = await call_llm(prompt)
         return json.loads(_strip_fences(text))
-
     except Exception as exc:  # noqa: BLE001
         logger.warning("LLM derive_spec failed for %s: %s", root_url, exc)
         return None

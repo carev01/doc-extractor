@@ -3,10 +3,14 @@ each segment to markdown, and persist articles through the existing diff path.""
 from __future__ import annotations
 
 import collections
+import json
 import logging
 from dataclasses import dataclass, field
 
 import fitz  # PyMuPDF
+
+from app.core.config import settings
+from app.services.profiles import llm as llm_mod
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +99,84 @@ def segment_pdf(pdf_bytes: bytes) -> list[Segment]:
         segs = _outline_segments(doc)
         if segs:
             return segs
+        segs = heuristic_segments(doc)
+        if segs:
+            return segs
+        return [Segment(title="Document", level=1, page_start=0,
+                        page_end=max(0, doc.page_count - 1), path=[])]
+    finally:
+        doc.close()
+
+
+# ── Async production entry point (outline → LLM → heuristic → single) ────────
+
+
+def _full_text_with_pages(doc: "fitz.Document") -> list[str]:
+    """Per-page plain text (index = 0-based page number)."""
+    return [page.get_text("text") for page in doc]
+
+
+async def _llm_segment_titles(text: str) -> list[dict]:
+    """Ask the configured LLM for an ordered list of {title, level} section
+    headings. Returns [] on any failure (caller falls back to heuristic)."""
+    prompt = (
+        "You are given the plain text of a documentation PDF. Identify its "
+        "section headings in reading order. Respond with ONLY a JSON array of "
+        'objects like {"title": "...", "level": 1}, where level 1 is a top '
+        "section and deeper levels are subsections. No prose.\n\n"
+        f"TEXT:\n{text[:24000]}"
+    )
+    try:
+        raw = await llm_mod.call_llm(prompt)
+        data = json.loads(llm_mod._strip_fences(raw))
+        out = []
+        for item in data:
+            t = str(item.get("title", "")).strip()
+            if t:
+                out.append({"title": t, "level": int(item.get("level", 1) or 1)})
+        return out
+    except Exception as exc:  # noqa: BLE001 - fallback is intentional
+        logger.warning("LLM segmentation failed, falling back: %s", exc)
+        return []
+
+
+def _titles_to_segments(doc: "fitz.Document", titles: list[dict]) -> list[Segment]:
+    pages = _full_text_with_pages(doc)
+    last_page = doc.page_count - 1
+    located: list[tuple[int, str, int]] = []  # (page0, title, level)
+    for item in titles:
+        title = item["title"]
+        page0 = next((i for i, t in enumerate(pages) if title in t), None)
+        if page0 is not None:
+            located.append((page0, title, item["level"]))
+    if not located:
+        return []
+    segs: list[Segment] = []
+    stack: list[str] = []
+    for i, (pno, title, level) in enumerate(located):
+        end = located[i + 1][0] - 1 if i + 1 < len(located) else last_page
+        end = max(pno, end)
+        stack = stack[: level - 1]
+        stack.append(title)
+        segs.append(Segment(title=title, level=level, page_start=pno,
+                            page_end=end, path=list(stack)))
+    return segs
+
+
+async def segment_pdf_async(pdf_bytes: bytes) -> list[Segment]:
+    """Production segmenter: outline-first, then LLM (when enabled), then the
+    font-size heuristic, then a single whole-document segment."""
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        segs = _outline_segments(doc)
+        if segs:
+            return segs
+        if settings.llm_fallback_enabled:
+            text = "\n".join(_full_text_with_pages(doc))
+            titles = await _llm_segment_titles(text)
+            segs = _titles_to_segments(doc, titles)
+            if segs:
+                return segs
         segs = heuristic_segments(doc)
         if segs:
             return segs
