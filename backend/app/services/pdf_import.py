@@ -11,9 +11,11 @@ from dataclasses import dataclass, field
 
 import fitz  # PyMuPDF
 import httpx
+import pymupdf4llm
 
 from app.core.config import settings
 from app.services.profiles import llm as llm_mod
+from app.services.sanitize import sanitize_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -223,3 +225,14 @@ async def segment_pdf_async(pdf_bytes: bytes) -> list[Segment]:
                         page_end=max(0, doc.page_count - 1), path=[])]
     finally:
         doc.close()
+
+
+def segment_to_markdown(pdf_bytes: bytes, segment: Segment) -> str:
+    """Render a segment's page range to clean markdown."""
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        pages = list(range(segment.page_start, segment.page_end + 1))
+        md = pymupdf4llm.to_markdown(doc, pages=pages)
+    finally:
+        doc.close()
+    return sanitize_markdown(md or "")
