@@ -8,6 +8,7 @@ import Dashboard from "./components/Dashboard";
 import ExportPanel from "./components/ExportPanel";
 import ChangelogPanel from "./components/ChangelogPanel";
 import DocsBrowser from "./components/DocsBrowser";
+import { Logins } from "./views/Logins";
 import "./App.css";
 
 type View =
@@ -18,7 +19,8 @@ type View =
   | "export"
   | "changelog"
   | "jobs"
-  | "dashboard";
+  | "dashboard"
+  | "logins";
 const SOURCE_TABS = ["browse", "export", "changelog"] as const;
 const SOURCE_TAB_LABELS: Record<string, string> = {
   browse: "Browse",
@@ -123,11 +125,19 @@ export default function App() {
           >
             Dashboard
           </button>
+          <button
+            className={view === "logins" ? "active" : ""}
+            onClick={() => setView("logins")}
+          >
+            Logins
+          </button>
         </nav>
       </header>
 
       <main className="app-main">
         {view === "jobs" && <JobsView />}
+
+        {view === "logins" && <Logins />}
 
         {view === "dashboard" && (
           <Dashboard onSelectSource={handleSelectSource} />

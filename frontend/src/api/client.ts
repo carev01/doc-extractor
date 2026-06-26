@@ -32,6 +32,8 @@ import type {
   PickableSource,
   DashboardResponse,
   SourceImportResult,
+  AuthRealm,
+  AuthRealmCreate,
 } from "../types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -141,6 +143,7 @@ export async function createSource(data: {
   base_url: string;
   url_template?: string;
   platform?: string;
+  auth_realm_id?: string | null;
 }): Promise<DocumentationSource> {
   const res = await api.post("/sources", data);
   return res.data;
@@ -491,3 +494,20 @@ export async function replacePdfFile(
   const res = await api.put<DocumentationSource>(`/sources/${sourceId}/pdf`, form);
   return res.data;
 }
+
+// ── Auth Realms ──
+
+export const authRealmApi = {
+  list: () => api.get<AuthRealm[]>('/auth-realms').then((r) => r.data),
+  create: (data: AuthRealmCreate) =>
+    api.post<AuthRealm>('/auth-realms', data).then((r) => r.data),
+  update: (id: string, data: Partial<AuthRealmCreate>) =>
+    api.patch<AuthRealm>(`/auth-realms/${id}`, data).then((r) => r.data),
+  remove: (id: string) => api.delete(`/auth-realms/${id}`),
+  login: (id: string) =>
+    api.post<AuthRealm>(`/auth-realms/${id}/login`).then((r) => r.data),
+  uploadSession: (id: string, data: { cookies: unknown[]; origins: unknown[] }) =>
+    api.post<AuthRealm>(`/auth-realms/${id}/session`, data).then((r) => r.data),
+  test: (id: string) =>
+    api.post<AuthRealm>(`/auth-realms/${id}/test`).then((r) => r.data),
+};

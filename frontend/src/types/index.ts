@@ -34,6 +34,7 @@ export interface DocumentationSource {
   id: string;
   product_id: string;
   job_id: string | null;
+  auth_realm_id?: string | null;
   name: string;
   base_url: string;
   status: SourceStatus;
@@ -413,4 +414,28 @@ export interface SourceImportResult {
   skipped: number;
   errors: number;
   rows: SourceImportRow[];
+}
+
+export interface AuthRealm {
+  id: string;
+  name: string;
+  login_domain: string;
+  auth_type: 'form' | 'b2c' | 'oidc';
+  login_url: string | null;
+  status: 'active' | 'needs_login' | 'expired' | 'login_failed';
+  has_username: boolean;
+  has_password: boolean;
+  has_totp: boolean;
+  last_login_at: string | null;
+  error_message: string | null;
+}
+
+export interface AuthRealmCreate {
+  name: string;
+  login_domain: string;
+  auth_type: 'form' | 'b2c' | 'oidc';
+  login_url?: string | null;
+  username?: string | null;
+  password?: string | null;
+  totp_secret?: string | null;
 }
