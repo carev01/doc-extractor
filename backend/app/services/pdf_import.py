@@ -2,6 +2,7 @@
 each segment to markdown, and persist articles through the existing diff path."""
 from __future__ import annotations
 
+import collections
 import logging
 from dataclasses import dataclass, field
 
@@ -42,6 +43,44 @@ def _outline_segments(doc: "fitz.Document") -> list[Segment]:
     return segs
 
 
+def _body_font_size(doc: "fitz.Document") -> float:
+    sizes: collections.Counter = collections.Counter()
+    for page in doc:
+        for block in page.get_text("dict")["blocks"]:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    sizes[round(span["size"], 1)] += len(span.get("text", ""))
+    return sizes.most_common(1)[0][0] if sizes else 12.0
+
+
+def heuristic_segments(doc: "fitz.Document") -> list[Segment]:
+    """Detect headings by font size (>= 1.25x body, short line) and split there.
+    Returns [] when no headings stand out (caller falls back to single segment)."""
+    body = _body_font_size(doc)
+    threshold = body * 1.25
+    headings: list[tuple[int, str]] = []  # (page0, title)
+    for pno, page in enumerate(doc):
+        for block in page.get_text("dict")["blocks"]:
+            for line in block.get("lines", []):
+                spans = line.get("spans", [])
+                if not spans:
+                    continue
+                text = "".join(s.get("text", "") for s in spans).strip()
+                max_size = max((s["size"] for s in spans), default=0)
+                if text and len(text) <= 120 and max_size >= threshold:
+                    headings.append((pno, text))
+    if not headings:
+        return []
+    last_page = doc.page_count - 1
+    segs: list[Segment] = []
+    for i, (pno, title) in enumerate(headings):
+        end = headings[i + 1][0] - 1 if i + 1 < len(headings) else last_page
+        end = max(pno, end)
+        segs.append(Segment(title=title, level=1, page_start=pno,
+                            page_end=end, path=[title]))
+    return segs
+
+
 def segment_pdf(pdf_bytes: bytes) -> list[Segment]:
     """Split a PDF into ordered article segments on natural content boundaries.
 
@@ -56,7 +95,9 @@ def segment_pdf(pdf_bytes: bytes) -> list[Segment]:
         segs = _outline_segments(doc)
         if segs:
             return segs
-        # Worst case: one segment for the whole document.
+        segs = heuristic_segments(doc)
+        if segs:
+            return segs
         return [Segment(title="Document", level=1, page_start=0,
                         page_end=max(0, doc.page_count - 1), path=[])]
     finally:
