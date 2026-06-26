@@ -1286,6 +1286,12 @@ class FirecrawlService:
         run.current_phase = "toc_discovery"
         source.status = SourceStatus.EXTRACTING
         await db.commit()
+        # Capture the run PK now, while it's still safe to read. The content
+        # phase commits and — on a per-page error — rolls back the session; a
+        # rollback expires (and can detach) the in-memory run, after which even a
+        # bare ``run.id`` read attempts lazy IO and raises MissingGreenlet on the
+        # async engine. We reload ``run`` from this PK before the completion path.
+        run_pk = run.id
 
         try:
             await self._check_available()
@@ -1398,7 +1404,7 @@ class FirecrawlService:
                 spec_fn = getattr(profile, "browserless_content_spec", None)
                 content_spec = spec_fn() if callable(spec_fn) else None
                 await self._scrape_via_browserless(
-                    db, source_id, run.id, url_to_entry, content_spec=content_spec
+                    db, source_id, run_pk, url_to_entry, content_spec=content_spec
                 )
             elif _resolve_content_engine(source, profile) == "raw_http":
                 # Statically-served content: fetch each page verbatim (no JS) and
@@ -1407,7 +1413,7 @@ class FirecrawlService:
                 # class (e.g. flare_webhelp) or a per-source profile_config
                 # override (e.g. LLM-derived category_accordion sources).
                 await self._scrape_via_raw_http(
-                    db, source_id, run.id, url_to_entry, profile, checkpoint
+                    db, source_id, run_pk, url_to_entry, profile, checkpoint
                 )
             else:
                 # Submit in capped chunks (≤ MAX_BATCH_URLS) processed
@@ -1436,7 +1442,7 @@ class FirecrawlService:
                     # session) at each batch boundary and stop cleanly.
                     ctrl = (
                         await db.execute(
-                            select(ExtractionRun.control).where(ExtractionRun.id == run.id)
+                            select(ExtractionRun.control).where(ExtractionRun.id == run_pk)
                         )
                     ).scalar_one_or_none()
                     if ctrl:
@@ -1449,14 +1455,23 @@ class FirecrawlService:
                     run.firecrawl_job_id = job_id
                     await db.commit()
                     await self._poll_batch_and_process(
-                        db, source_id, run.id, chunk_map, job_id, batch_tag=batch_tag,
+                        db, source_id, run_pk, chunk_map, job_id, batch_tag=batch_tag,
                         content_config=content_cfg,
                     )
                     # Checkpoint the chunk only after it's fully processed.
                     await checkpoint.add_content_done(chunk)
 
+            # Content-phase commits/rollbacks expired (and may have detached) the
+            # in-memory run; reload a live instance by its PK so the completion
+            # path can read/write its attributes without triggering lazy IO.
+            run = (
+                await db.execute(
+                    select(ExtractionRun).where(ExtractionRun.id == run_pk)
+                )
+            ).scalar_one()
+
             # Record removals (pages gone from the rebuilt TOC) before completing.
-            await self._reconcile_removals(db, source_id, run.id)
+            await self._reconcile_removals(db, source_id, run_pk)
 
             # Whole run succeeded — drop the resume checkpoint (TOC + content).
             await checkpoint.clear()
@@ -1475,7 +1490,7 @@ class FirecrawlService:
                         ExtractionRun.articles_unchanged,
                         ExtractionRun.articles_resumed,
                         ExtractionRun.error_message,
-                    ).where(ExtractionRun.id == run.id)
+                    ).where(ExtractionRun.id == run_pk)
                 )
             ).one()
             persisted = persisted_count(extracted, updated, unchanged, resumed)
