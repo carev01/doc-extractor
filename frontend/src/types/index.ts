@@ -39,6 +39,7 @@ export interface DocumentationSource {
   status: SourceStatus;
   platform?: string | null;
   url_template: string | null;
+  source_type: string;
   last_extracted_at: string | null;
   error_message: string | null;
   created_at: string;

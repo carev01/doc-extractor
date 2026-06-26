@@ -20,6 +20,9 @@ import {
   assignSourceToJob,
   unassignSourceFromJob,
   detectVersionToken,
+  createPdfSourceFromUrl,
+  uploadPdfSource,
+  replacePdfFile,
 } from "../api/client";
 import ProductVersionBar from "./ProductVersionBar";
 import { apiError } from "../api/errors";
@@ -67,6 +70,9 @@ export default function SourceList({
   const [jobs, setJobs] = useState<Job[]>([]);
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
+  const [addKind, setAddKind] = useState<"web" | "pdf_url" | "pdf_upload">("web");
+  const [pdfUrl, setPdfUrl] = useState("");
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [templatize, setTemplatize] = useState(true);
@@ -106,23 +112,32 @@ export default function SourceList({
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !baseUrl.trim()) return;
+    if (addKind === "web" && (!name.trim() || !baseUrl.trim())) return;
     setLoading(true);
     setError("");
     try {
-      const tmpl =
-        product.version && templatize && baseUrl.includes(product.version)
-          ? baseUrl.replaceAll(product.version, "{version}")
-          : undefined;
-      await createSource({
-        product_id: product.id,
-        name: name.trim(),
-        base_url: baseUrl.trim(),
-        ...(tmpl ? { url_template: tmpl } : {}),
-      });
+      if (addKind === "web") {
+        const tmpl =
+          product.version && templatize && baseUrl.includes(product.version)
+            ? baseUrl.replaceAll(product.version, "{version}")
+            : undefined;
+        await createSource({
+          product_id: product.id,
+          name: name.trim(),
+          base_url: baseUrl.trim(),
+          ...(tmpl ? { url_template: tmpl } : {}),
+        });
+        setBaseUrl("");
+        setTemplatize(true);
+      } else if (addKind === "pdf_url") {
+        await createPdfSourceFromUrl(product.id, name.trim(), pdfUrl.trim());
+      } else {
+        if (!pdfFile) return;
+        await uploadPdfSource(product.id, name.trim(), pdfFile);
+      }
       setName("");
-      setBaseUrl("");
-      setTemplatize(true);
+      setPdfUrl("");
+      setPdfFile(null);
       await fetchSources();
     } catch (e) {
       setError(apiError(e, "Failed to create source"));
@@ -156,14 +171,38 @@ export default function SourceList({
           onChange={(e) => setName(e.target.value)}
           required
         />
-        <input
-          type="url"
-          placeholder="Documentation base URL"
-          value={baseUrl}
-          onChange={(e) => setBaseUrl(e.target.value)}
-          required
-        />
-        {product.version && baseUrl.includes(product.version) && (
+        <select value={addKind} onChange={(e) => setAddKind(e.target.value as typeof addKind)}>
+          <option value="web">Web URL</option>
+          <option value="pdf_url">PDF from URL</option>
+          <option value="pdf_upload">PDF upload</option>
+        </select>
+        {addKind === "web" && (
+          <input
+            type="url"
+            placeholder="Documentation base URL"
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            required
+          />
+        )}
+        {addKind === "pdf_url" && (
+          <input
+            type="url"
+            placeholder="https://…/document.pdf"
+            value={pdfUrl}
+            onChange={(e) => setPdfUrl(e.target.value)}
+            required
+          />
+        )}
+        {addKind === "pdf_upload" && (
+          <input
+            type="file"
+            accept="application/pdf"
+            onChange={(e) => setPdfFile(e.target.files?.[0] ?? null)}
+            required
+          />
+        )}
+        {addKind === "web" && product.version && baseUrl.includes(product.version) && (
           <label className="templatize-hint">
             <input
               type="checkbox"
@@ -412,6 +451,7 @@ function SourceItem({
     >
       <div className="item-info">
         <strong>{source.name}</strong>
+        {source.source_type === "pdf" && <span className="status-badge" style={{ backgroundColor: "#5a7fa3" }}>PDF</span>}
         <span className="sub">{source.base_url}</span>
         <div className="item-meta">
           {statusBadge(source.status)}
@@ -617,6 +657,20 @@ function SourceItem({
         >
           ✎
         </button>
+        {source.source_type === "pdf" && source.base_url.startsWith("file://") && (
+          <label className="link-btn" style={{ cursor: "pointer" }}>
+            Replace file
+            <input
+              type="file"
+              accept="application/pdf"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) replacePdfFile(source.id, f).then(() => onSourceChanged());
+              }}
+            />
+          </label>
+        )}
         <button
           className="btn-danger-sm"
           onClick={(e) => {

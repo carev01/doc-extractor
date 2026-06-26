@@ -80,6 +80,9 @@ class ExtractionRun(Base):
     articles_resumed: Mapped[int] = mapped_column(
         Integer, default=0, server_default="0", nullable=False
     )
+    # SHA-256 of the PDF bytes for a pdf source (NULL for web runs); lets a
+    # re-run fast-path to "all unchanged" when the PDF is byte-identical.
+    pdf_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(4096), nullable=True)
     firecrawl_job_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     current_phase: Mapped[str | None] = mapped_column(String(64), nullable=True)

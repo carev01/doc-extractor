@@ -614,7 +614,13 @@ class FirecrawlService:
                 # Unchanged content, but scraped this run — record the scrape time
                 # and re-link to the freshly-rebuilt TOC entry (the prior link was
                 # NULLed when the TOC was rebuilt) so the page isn't orphaned.
+                # Advance source_url to this run's URL (matching the "same" branch
+                # above): _reconcile_removals re-links survivors by source_url, so a
+                # stale URL — e.g. a PDF section whose #page anchor shifted, or a web
+                # version bump — would otherwise mis-flag this unchanged article as
+                # removed.
                 existing_article.extracted_at = datetime.now(timezone.utc)
+                existing_article.source_url = url
                 existing_article.toc_entry_id = toc_entry_id
                 existing_article.sort_order = sort_order
                 existing_article.title = title
@@ -1292,6 +1298,35 @@ class FirecrawlService:
         # bare ``run.id`` read attempts lazy IO and raises MissingGreenlet on the
         # async engine. We reload ``run`` from this PK before the completion path.
         run_pk = run.id
+
+        if source.source_type == "pdf":
+            from app.services import pdf_import
+            try:
+                return await pdf_import.run_pdf_extraction(self, db, source, run, run_pk)
+            except Exception as exc:
+                # Any PDF-pipeline failure (download error, corrupt/unparseable
+                # PDF, conversion error, …) must mark the run FAILED rather than
+                # leaving it orphaned in RUNNING (which the uq_active_run_per_source
+                # index would then use to block re-runs). Roll back first: a failure
+                # mid-transaction aborts the session and detaches the in-memory
+                # run/source, so reload both by PK before writing the failure state.
+                logger.exception("PDF extraction failed for source %s", source_id)
+                await db.rollback()
+                run = (await db.execute(
+                    select(ExtractionRun).where(ExtractionRun.id == run_pk)
+                )).scalar_one()
+                source = (await db.execute(
+                    select(DocumentationSource).where(DocumentationSource.id == source_id)
+                )).scalar_one()
+                now = datetime.now(timezone.utc)
+                run.status = RunStatus.FAILED
+                run.error_message = str(exc)[:4096]
+                run.completed_at = now
+                source.status = SourceStatus.FAILED
+                source.error_message = str(exc)[:4096]
+                source.last_extracted_at = now
+                await db.commit()
+                return run
 
         try:
             await self._check_available()

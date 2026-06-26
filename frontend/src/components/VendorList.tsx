@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import type { Vendor } from "../types";
 import { listVendors, createVendor, updateVendor, deleteVendor } from "../api/client";
 import { apiError } from "../api/errors";
+import BulkImport from "./BulkImport";
 
 interface Props {
   onSelect: (vendor: Vendor) => void;
@@ -14,6 +15,7 @@ export default function VendorList({ onSelect, selectedId }: Props) {
   const [website, setWebsite] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [showImport, setShowImport] = useState(false);
 
   const fetchVendors = async () => {
     try {
@@ -70,7 +72,12 @@ export default function VendorList({ onSelect, selectedId }: Props) {
 
   return (
     <div className="vendor-list">
-      <h2>Vendors</h2>
+      <div className="dashboard-header">
+        <h2>Vendors</h2>
+        <button className="btn-primary-sm" onClick={() => setShowImport(true)}>
+          Import CSV
+        </button>
+      </div>
 
       {error && <div className="error">{error}</div>}
 
@@ -131,6 +138,17 @@ export default function VendorList({ onSelect, selectedId }: Props) {
           <li className="empty">No vendors yet. Add one above.</li>
         )}
       </ul>
+      {showImport && (
+        <BulkImport
+          onClose={() => setShowImport(false)}
+          onImported={() => {
+            setShowImport(false);
+            listVendors()
+              .then((data) => setVendors(data.vendors))
+              .catch(() => setError("Failed to load vendors"));
+          }}
+        />
+      )}
     </div>
   );
 }

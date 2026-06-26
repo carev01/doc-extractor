@@ -2,15 +2,18 @@
 
 import csv as csvlib
 import io
+import os
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select, func, literal, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.core.database import get_db
+from app.services.pdf_import import pdf_path_for
 from app.models.article import Article
 from app.models.article_version import ArticleVersion
 from app.models.extraction_run import ExtractionRun, RunStatus
@@ -246,6 +249,80 @@ async def import_sources(body: SourceImportRequest, db: AsyncSession = Depends(g
     return SourceImportResult(
         created=created, skipped=skipped, errors=errors, rows=rows,
     )
+
+
+@router.post("/pdf", response_model=SourceResponse, status_code=201)
+async def create_pdf_source(
+    product_id: uuid.UUID = Form(...),
+    name: str = Form(...),
+    pdf_url: str | None = Form(None),
+    file: UploadFile | None = File(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a PDF source from either a URL (re-fetchable) or an uploaded file."""
+    product = (
+        await db.execute(select(Product).where(Product.id == product_id))
+    ).scalar_one_or_none()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    if bool(pdf_url) == bool(file):
+        raise HTTPException(status_code=422, detail="Provide exactly one of pdf_url or file")
+
+    if pdf_url:
+        source = DocumentationSource(
+            product_id=product_id, name=name, base_url=pdf_url, source_type="pdf",
+        )
+        db.add(source)
+        await db.commit()
+        await db.refresh(source)
+        return source
+
+    # Upload path.
+    if file.content_type not in ("application/pdf", "application/x-pdf"):
+        raise HTTPException(status_code=415, detail="File must be a PDF")
+    data = await file.read()
+    if len(data) > settings.pdf_max_upload_bytes:
+        raise HTTPException(status_code=413, detail="PDF exceeds the maximum upload size")
+
+    source = DocumentationSource(
+        product_id=product_id, name=name, base_url="pending", source_type="pdf",
+    )
+    db.add(source)
+    await db.flush()
+    source.base_url = f"file://{source.id}.pdf"
+    os.makedirs(settings.pdf_dir, exist_ok=True)
+    with open(pdf_path_for(source.id, settings.pdf_dir), "wb") as fh:
+        fh.write(data)
+    await db.commit()
+    await db.refresh(source)
+    return source
+
+
+@router.put("/{source_id}/pdf", response_model=SourceResponse)
+async def replace_pdf_file(
+    source_id: uuid.UUID,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Replace the stored file for an upload-origin PDF source."""
+    source = (
+        await db.execute(select(DocumentationSource).where(DocumentationSource.id == source_id))
+    ).scalar_one_or_none()
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+    if source.source_type != "pdf" or not source.base_url.startswith("file://"):
+        raise HTTPException(status_code=409, detail="Not an upload-origin PDF source")
+    if file.content_type not in ("application/pdf", "application/x-pdf"):
+        raise HTTPException(status_code=415, detail="File must be a PDF")
+    data = await file.read()
+    if len(data) > settings.pdf_max_upload_bytes:
+        raise HTTPException(status_code=413, detail="PDF exceeds the maximum upload size")
+    os.makedirs(settings.pdf_dir, exist_ok=True)
+    with open(pdf_path_for(source.id, settings.pdf_dir), "wb") as fh:
+        fh.write(data)
+    await db.commit()
+    await db.refresh(source)
+    return source
 
 
 @router.get("/{source_id}", response_model=SourceResponse)

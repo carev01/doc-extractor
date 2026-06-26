@@ -84,6 +84,11 @@ class Settings(BaseSettings):
     raw_http_max_failure_rate: float = 0.3
     raw_http_min_attempts: int = 10
 
+    # PDF source import — uploaded PDFs live on a local volume (a PVC in k8s),
+    # mirroring media_dir/export_dir. Uploads larger than the cap are rejected.
+    pdf_dir: str = "pdf_uploads"
+    pdf_max_upload_bytes: int = 100 * 1024 * 1024  # 100 MiB
+
     model_config = {
         "env_prefix": "DOCEXTRACTOR_",
         "case_sensitive": False,

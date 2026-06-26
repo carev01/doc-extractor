@@ -34,6 +34,10 @@ class DocumentationSource(Base):
     )
     name: Mapped[str] = mapped_column(String(512), nullable=False)
     base_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    # "web" (crawled) | "pdf" (imported from a PDF URL or upload).
+    source_type: Mapped[str] = mapped_column(
+        String(16), default="web", server_default="web", nullable=False
+    )
     # Base URL with a literal "{version}" placeholder. NULL = non-versioned source.
     url_template: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     status: Mapped[SourceStatus] = mapped_column(

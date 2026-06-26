@@ -30,6 +30,7 @@ class SourceResponse(BaseModel):
     id: uuid.UUID
     product_id: uuid.UUID
     job_id: uuid.UUID | None
+    source_type: str
     name: str
     base_url: str
     url_template: str | None

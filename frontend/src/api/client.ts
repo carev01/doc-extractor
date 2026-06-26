@@ -453,3 +453,41 @@ export async function importSources(csvText: string): Promise<SourceImportResult
   const res = await api.post<SourceImportResult>("/sources/import", { csv: csvText });
   return res.data;
 }
+
+// ── PDF sources ──
+
+export async function createPdfSourceFromUrl(
+  productId: string,
+  name: string,
+  pdfUrl: string,
+): Promise<DocumentationSource> {
+  const form = new FormData();
+  form.append("product_id", productId);
+  form.append("name", name);
+  form.append("pdf_url", pdfUrl);
+  const res = await api.post<DocumentationSource>("/sources/pdf", form);
+  return res.data;
+}
+
+export async function uploadPdfSource(
+  productId: string,
+  name: string,
+  file: File,
+): Promise<DocumentationSource> {
+  const form = new FormData();
+  form.append("product_id", productId);
+  form.append("name", name);
+  form.append("file", file);
+  const res = await api.post<DocumentationSource>("/sources/pdf", form);
+  return res.data;
+}
+
+export async function replacePdfFile(
+  sourceId: string,
+  file: File,
+): Promise<DocumentationSource> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await api.put<DocumentationSource>(`/sources/${sourceId}/pdf`, form);
+  return res.data;
+}
