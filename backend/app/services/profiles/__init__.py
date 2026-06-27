@@ -33,6 +33,7 @@ from app.services.profiles import helpjuice  # noqa: F401,E402
 from app.services.profiles import dita_api  # noqa: F401,E402
 from app.services.profiles import sphinx  # noqa: F401,E402
 from app.services.profiles import grouped_nav  # noqa: F401,E402
+from app.services.profiles import warmup_book  # noqa: F401,E402
 from app.services.profiles import generic  # noqa: F401,E402
 from app.services.profiles import llm  # noqa: F401,E402
 
