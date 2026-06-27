@@ -118,8 +118,14 @@ class WarmupBookProfile:
 
     def browserless_content_spec(self) -> dict:
         """Content path: warm up past the WAF, then take the innerHTML of the
-        chapter ``<article>``."""
-        return {"selector": _CONTENT_SELECTOR, "warmup_url": _WARMUP_URL}
+        chapter ``<article>``, dropping page chrome — the ``nav.pagination``
+        PreviousNext footer and the per-heading ``.copy-link-tooltip`` copy
+        widgets ("Copy link / Link copied to clipboard!")."""
+        return {
+            "selector": _CONTENT_SELECTOR,
+            "warmup_url": _WARMUP_URL,
+            "excludeTags": ["nav.pagination", ".copy-link-tooltip"],
+        }
 
     def content_config(self) -> dict:
         # Unused for content (render_engine=browserless), but kept for parity.

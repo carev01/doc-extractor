@@ -338,7 +338,11 @@ export default async function ({ page, context }) {
     try { await page.goto(warmupUrl, { waitUntil: 'networkidle2', timeout: 60000 }); } catch (e) {}
     await new Promise(r => setTimeout(r, 4000));
   }
-  await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+  // Tolerate a networkidle2 timeout: a very large server-rendered page (e.g. a
+  // Red Hat OADP chapter, ~3MB) may never go network-idle within 60s, but its
+  // article is already in the initial HTML. Without this, the throw fails the
+  // whole render and the page is dropped from the run.
+  try { await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 }); } catch (e) {}
   if (selector) {
     try { await page.waitForSelector(selector, { timeout: 30000 }); } catch (e) {}
   }

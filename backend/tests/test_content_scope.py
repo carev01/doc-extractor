@@ -15,9 +15,34 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.services.profiles.content_scope import scope_content_html
+from app.services.profiles.content_scope import scope_content_html, strip_selectors
 
 BASE = "https://docs.example.com/guide/install/"
+
+
+def test_strip_selectors_drops_chrome_keeps_body():
+    # Mirrors a Red Hat chapter's <article> innerHTML: prose + a per-heading
+    # copy-link widget + a PreviousNext pagination footer.
+    html = (
+        '<h1>Chapter 2</h1>'
+        '<rh-tooltip class="copy-link-tooltip"><span class="copy-link-text">Copy link</span>'
+        '<span class="copy-link-text-confirmation">Link copied to clipboard!</span></rh-tooltip>'
+        '<p>Real chapter prose.</p>'
+        '<nav class="pagination"><a>Previous</a><a>Next</a></nav>'
+    )
+    out = strip_selectors(html, ["nav.pagination", ".copy-link-tooltip"])
+    assert "Real chapter prose." in out
+    assert "Chapter 2" in out
+    assert "Copy link" not in out
+    assert "Link copied to clipboard!" not in out
+    assert "Previous" not in out and "Next" not in out
+
+
+def test_strip_selectors_noop_without_selectors():
+    html = "<p>untouched</p>"
+    assert strip_selectors(html, None) == html
+    assert strip_selectors(html, []) == html
+    assert strip_selectors("", ["p"]) == ""
 
 
 def test_scopes_by_class_selector():
