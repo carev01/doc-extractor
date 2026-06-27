@@ -193,8 +193,13 @@ async def test_articles_total_excludes_empty_segments(factory, tmp_path, monkeyp
     sid = await _make_pdf_source(factory, tmp_path)  # _pdf() → 2 sections
 
     # Force the second section to render empty (e.g. an image-only page).
-    monkeypatch.setattr(pdf_import, "render_segments",
-                        lambda pdf_bytes, segments: [("Real content.", []), ("", [])])
+    async def _fake_convert(pdf_bytes, segments, progress=None):
+        out = [("Real content.", []), ("", [])]
+        for i in range(len(out)):
+            if progress is not None:
+                await progress(i + 1, len(out))
+        return out
+    monkeypatch.setattr(pdf_import, "convert_segments_async", _fake_convert)
 
     run_pk = await _run(factory, sid)
     async with factory() as s:
