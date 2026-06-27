@@ -12,7 +12,7 @@
 
 - Spec: `docs/superpowers/specs/2026-06-27-pdf-conversion-docling-vlm-design.md`.
 - Settings use the `DOCEXTRACTOR_` env prefix via `pydantic-settings` (`app/core/config.py`).
-- VLM is **OpenRouter (OpenAI-compatible), never Claude/Anthropic**. Default model `google/gemini-2.0-flash-001`.
+- VLM is **OpenRouter (OpenAI-compatible), never Claude/Anthropic**. Default model `qwen/qwen3-vl-32b-instruct`.
 - Conversion is CPU-bound and MUST run off the event loop via `asyncio.to_thread` so the worker heartbeat keeps ticking (see `worker-event-loop-heartbeat` memory / PR #90).
 - Never regress to "no output": Docling failure falls back to a whole-doc `pymupdf4llm` conversion.
 - No DB schema change. `process_article_result` / `_reconcile_removals` / TOC-tree build stay as-is.
@@ -60,7 +60,7 @@ def test_pdf_converter_defaults():
     assert s.pdf_vlm_escalation_enabled is True
     assert s.pdf_vlm_base_url == "https://openrouter.ai/api/v1/chat/completions"
     assert s.pdf_vlm_api_key == ""
-    assert s.pdf_vlm_model == "google/gemini-2.0-flash-001"
+    assert s.pdf_vlm_model == "qwen/qwen3-vl-32b-instruct"
     assert s.pdf_vlm_max_pages_per_run == 30
     assert s.pdf_vlm_dpi == 150
 
@@ -89,7 +89,7 @@ In `backend/app/core/config.py`, immediately after the `pdf_max_upload_bytes` li
     pdf_vlm_escalation_enabled: bool = True
     pdf_vlm_base_url: str = "https://openrouter.ai/api/v1/chat/completions"
     pdf_vlm_api_key: str = ""
-    pdf_vlm_model: str = "google/gemini-2.0-flash-001"
+    pdf_vlm_model: str = "qwen/qwen3-vl-32b-instruct"
     pdf_vlm_max_pages_per_run: int = 30
     pdf_vlm_dpi: int = 150
 ```

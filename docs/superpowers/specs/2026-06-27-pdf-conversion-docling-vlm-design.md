@@ -161,7 +161,7 @@ independent from the segmentation `llm_*` settings (which may remain Anthropic).
 | `pdf_vlm_escalation_enabled` | `true` | Master switch for Layer B |
 | `pdf_vlm_base_url` | `https://openrouter.ai/api/v1/chat/completions` | VLM endpoint |
 | `pdf_vlm_api_key` | `""` | OpenRouter key (empty → escalation skipped) |
-| `pdf_vlm_model` | `google/gemini-2.0-flash-001` | Cheap, strong-on-docs vision model |
+| `pdf_vlm_model` | `qwen/qwen3-vl-32b-instruct` | Cheap, strong-on-docs vision model |
 | `pdf_vlm_max_pages_per_run` | `30` | Token guardrail |
 | `pdf_vlm_dpi` | `150` | Render resolution for escalated pages |
 
