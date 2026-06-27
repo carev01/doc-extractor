@@ -46,6 +46,24 @@ def _find_all(scope, selector: str) -> list:
     return scope.select(selector)
 
 
+def strip_selectors(html: str, selectors: list[str] | None) -> str:
+    """Drop every element matching any of ``selectors`` from ``html``.
+
+    Exclude-only counterpart to :func:`scope_content_html`, for the Browserless
+    content path (which already has the scoped article innerHTML, so it only
+    needs chrome removed — e.g. a Red Hat chapter's ``nav.pagination`` PreviousNext
+    footer and ``.copy-link-tooltip`` per-heading copy widgets). Returns ``html``
+    unchanged when there is nothing to do.
+    """
+    if not html or not selectors:
+        return html
+    soup = BeautifulSoup(html, "html.parser")
+    for sel in selectors:
+        for el in _find_all(soup, sel):
+            el.decompose()
+    return str(soup)
+
+
 def scope_content_html(
     raw_html: str,
     url: str,

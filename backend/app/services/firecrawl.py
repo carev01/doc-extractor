@@ -29,7 +29,7 @@ from app.services.auth import realm_manager
 from app.services.auth.realm_manager import NeedsLoginError
 from app.services.blockpage import is_auth_wall, is_block_page
 from app.services.profiles import registry as profile_registry
-from app.services.profiles.content_scope import scope_content_html
+from app.services.profiles.content_scope import scope_content_html, strip_selectors
 from app.services.profiles.detector import detect_platform
 import app.services.profiles.llm as llm_mod
 from app.services.profiles.scraper import Scraper
@@ -901,9 +901,14 @@ class FirecrawlService:
                         warmup_url=(content_spec or {}).get("warmup_url"), client=client,
                         auth_state=auth_state,
                     )
-                    # Normalise to the shape the persist loop expects.
+                    # Normalise to the shape the persist loop expects, dropping
+                    # any chrome the profile flags via excludeTags (the warmup
+                    # render returns the selector's innerHTML, so this is an
+                    # exclude-only pass — e.g. Red Hat PreviousNext / copy-link).
+                    html = (data or {}).get("innerHtml", "")
+                    html = strip_selectors(html, (content_spec or {}).get("excludeTags"))
                     return {
-                        "contentHtml": (data or {}).get("innerHtml", ""),
+                        "contentHtml": html,
                         "contentText": "",
                         "title": (data or {}).get("title", ""),
                     }

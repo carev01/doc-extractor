@@ -114,6 +114,9 @@ async def test_missing_render_returns_empty():
     assert await WarmupBookProfile().build_toc(INDEX, FakeScraper({})) == []
 
 
-def test_content_spec_targets_article_with_warmup():
+def test_content_spec_targets_article_with_warmup_and_strips_chrome():
     spec = WarmupBookProfile().browserless_content_spec()
-    assert spec == {"selector": "article", "warmup_url": "https://docs.redhat.com/en"}
+    assert spec["selector"] == "article"
+    assert spec["warmup_url"] == "https://docs.redhat.com/en"
+    # PreviousNext footer + per-heading copy-link widgets are dropped.
+    assert spec["excludeTags"] == ["nav.pagination", ".copy-link-tooltip"]
