@@ -15,6 +15,7 @@ short page, so a genuine doc *about* access-denied errors isn't misclassified.
 """
 
 import re
+from urllib.parse import urlparse
 
 # "Reference #18.8c42…" — the id Akamai stamps on its denial page.
 _AKAMAI_REF_RE = re.compile(r"reference\s*#\s*\d", re.IGNORECASE)
@@ -61,4 +62,43 @@ def is_block_page(text: str) -> bool:
         if "just a moment" in low and "javascript" in low:
             return True
 
+    return False
+
+
+# Login-host fragments matched against the *hostname only*: the bare ones
+# ("login"/"signin") would false-positive against a doc page whose path contains
+# "login" (e.g. /configure-login-policy), so they must only count in the netloc.
+_LOGIN_HOST_MARKERS = (
+    "login", "signin", "sign-in", "b2clogin.com",
+    "onepassport", "auth0.com", "okta.com", "accounts.google.com",
+)
+
+# IdP path fragments specific enough to flag anywhere in the URL.
+_LOGIN_URL_MARKERS = ("oauth2", "/authorize", "/saml")
+
+# Auth-wall phrases. Short-page-gated like _SHORT_MARKERS so a real article that
+# documents authentication isn't misflagged.
+_AUTH_WALL_MARKERS = (
+    "requires authentication",
+    "please sign in to continue",
+    "you must be logged in to view",
+    "session has expired",
+)
+
+
+def is_auth_wall(text: str, final_url: str | None = None,
+                 login_domain: str | None = None) -> bool:
+    """Return True if a scrape was bounced to a login wall / IdP rather than
+    returning documentation content."""
+    if final_url:
+        low_url = final_url.lower()
+        netloc = urlparse(low_url).netloc
+        if any(m in netloc for m in _LOGIN_HOST_MARKERS):
+            return True
+        if any(m in low_url for m in _LOGIN_URL_MARKERS):
+            return True
+    if text:
+        low = text.lower()
+        if len(text.strip()) <= _SHORT_PAGE_LIMIT and any(m in low for m in _AUTH_WALL_MARKERS):
+            return True
     return False

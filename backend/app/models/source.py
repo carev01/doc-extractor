@@ -32,6 +32,11 @@ class DocumentationSource(Base):
     job_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
     )
+    # Optional login realm. NULL = public source (no auth). SET NULL on realm
+    # delete so removing a realm just makes its sources public-only again.
+    auth_realm_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("auth_realms.id", ondelete="SET NULL"), nullable=True
+    )
     name: Mapped[str] = mapped_column(String(512), nullable=False)
     base_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     # "web" (crawled) | "pdf" (imported from a PDF URL or upload).
@@ -62,6 +67,7 @@ class DocumentationSource(Base):
     # Relationships
     product: Mapped["Product"] = relationship("Product", back_populates="sources")
     job: Mapped["Job | None"] = relationship("Job", back_populates="sources")
+    auth_realm: Mapped["AuthRealm | None"] = relationship("AuthRealm")
     extraction_runs: Mapped[list["ExtractionRun"]] = relationship(
         "ExtractionRun", back_populates="source", cascade="all, delete-orphan"
     )

@@ -5,6 +5,7 @@ import type {
   ExtractionRun,
   Job,
   ProfileOption,
+  AuthRealm,
 } from "../types";
 import {
   listSources,
@@ -23,6 +24,7 @@ import {
   createPdfSourceFromUrl,
   uploadPdfSource,
   replacePdfFile,
+  authRealmApi,
 } from "../api/client";
 import ProductVersionBar from "./ProductVersionBar";
 import { apiError } from "../api/errors";
@@ -68,11 +70,13 @@ export default function SourceList({
 }: Props) {
   const [sources, setSources] = useState<DocumentationSource[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [authRealms, setAuthRealms] = useState<AuthRealm[]>([]);
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [addKind, setAddKind] = useState<"web" | "pdf_url" | "pdf_upload">("web");
   const [pdfUrl, setPdfUrl] = useState("");
   const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [authRealmId, setAuthRealmId] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [templatize, setTemplatize] = useState(true);
@@ -108,6 +112,11 @@ export default function SourceList({
       .catch(() => {
         /* non-fatal: job dropdown just stays empty */
       });
+    authRealmApi.list()
+      .then(setAuthRealms)
+      .catch(() => {
+        /* non-fatal: realm dropdown just stays empty */
+      });
   }, [product.id]);
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -126,6 +135,7 @@ export default function SourceList({
           name: name.trim(),
           base_url: baseUrl.trim(),
           ...(tmpl ? { url_template: tmpl } : {}),
+          ...(authRealmId ? { auth_realm_id: authRealmId } : {}),
         });
         setBaseUrl("");
         setTemplatize(true);
@@ -138,6 +148,7 @@ export default function SourceList({
       setName("");
       setPdfUrl("");
       setPdfFile(null);
+      setAuthRealmId("");
       await fetchSources();
     } catch (e) {
       setError(apiError(e, "Failed to create source"));
@@ -212,6 +223,20 @@ export default function SourceList({
             Detected version {product.version} — store as{" "}
             <code>{baseUrl.replaceAll(product.version, "{version}")}</code>
           </label>
+        )}
+        {authRealms.length > 0 && (
+          <select
+            value={authRealmId}
+            onChange={(e) => setAuthRealmId(e.target.value)}
+            title="Auth realm (optional)"
+          >
+            <option value="">(public — no auth)</option>
+            {authRealms.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name} [{r.login_domain}]
+              </option>
+            ))}
+          </select>
         )}
         <button type="submit" disabled={loading}>
           {loading ? "Adding..." : "Add Source"}

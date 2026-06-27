@@ -58,6 +58,7 @@ async def create_source(body: SourceCreate, db: AsyncSession = Depends(get_db)):
         name=body.name,
         base_url=base_url,
         url_template=body.url_template,
+        auth_realm_id=body.auth_realm_id,
     )
     db.add(source)
     await db.commit()
@@ -382,6 +383,11 @@ async def update_source(
         # New-dict assignment so SQLAlchemy detects the JSONB change.
         remaining = {k: v for k, v in source.profile_config.items() if k != "llm_spec"}
         source.profile_config = remaining or None
+
+    # auth_realm_id uses exclude_unset so callers can explicitly clear it (set to null).
+    update_data = body.model_dump(exclude_unset=True)
+    if "auth_realm_id" in update_data:
+        source.auth_realm_id = update_data["auth_realm_id"]
 
     await db.commit()
     await db.refresh(source)

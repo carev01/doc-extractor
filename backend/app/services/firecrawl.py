@@ -24,7 +24,10 @@ from app.models.image import ArticleImage
 from app.models.product import Product
 from app.models.source import DocumentationSource, SourceStatus
 from app.models.toc import TOCEntry
-from app.services.blockpage import is_block_page
+from app.models.auth_realm import AuthRealm, RealmStatus
+from app.services.auth import realm_manager
+from app.services.auth.realm_manager import NeedsLoginError
+from app.services.blockpage import is_auth_wall, is_block_page
 from app.services.profiles import registry as profile_registry
 from app.services.profiles.content_scope import scope_content_html
 from app.services.profiles.detector import detect_platform
@@ -860,6 +863,7 @@ class FirecrawlService:
         run_id: uuid.UUID,
         url_to_entry: dict[str, dict],
         content_spec: dict | None = None,
+        auth_state: dict | None = None,
     ) -> None:
         """Content scrape for Browserless-rendered platforms: render each article
         in Browserless (real Chrome) and persist the extracted body.
@@ -895,6 +899,7 @@ class FirecrawlService:
                     data = await browserless_client.warmup_render(
                         url, selector=selector,
                         warmup_url=(content_spec or {}).get("warmup_url"), client=client,
+                        auth_state=auth_state,
                     )
                     # Normalise to the shape the persist loop expects.
                     return {
@@ -902,7 +907,7 @@ class FirecrawlService:
                         "contentText": "",
                         "title": (data or {}).get("title", ""),
                     }
-                return await browserless_client.render(url, client=client)
+                return await browserless_client.render(url, client=client, auth_state=auth_state)
             except BrowserlessError as exc:
                 logger.warning("Browserless render failed for %s: %s", url, exc)
                 return None
@@ -916,6 +921,16 @@ class FirecrawlService:
                         continue
                     html = data.get("contentHtml") or ""
                     md = markdownify(html).strip() if html else (data.get("contentText") or "").strip()
+                    # Auth wall detection — only for authenticated sources. The
+                    # browserless path also serves non-auth platforms (e.g.
+                    # Salesforce Help), whose article URLs may legitimately
+                    # contain "login"; gating on auth_state avoids aborting those.
+                    # Use the page's post-redirect URL (finalUrl) when available
+                    # so an IdP bounce is caught even if the body lacks wall text.
+                    if auth_state is not None and is_auth_wall(
+                        md or html, final_url=data.get("finalUrl") or url
+                    ):
+                        raise NeedsLoginError(f"Auth wall detected at {url}; session may have expired")
                     if not md:
                         logger.warning("Empty content from %s — skipping", url)
                         continue
@@ -1330,6 +1345,25 @@ class FirecrawlService:
         # async engine. We reload ``run`` from this PK before the completion path.
         run_pk = run.id
 
+        # Authenticated source: resolve an auth state dict up front. If the
+        # realm needs a human login or has no usable session, fail the run
+        # cleanly instead of proceeding and scraping a login page.
+        auth_state: dict | None = None
+        if source.auth_realm_id is not None:
+            realm = await db.get(AuthRealm, source.auth_realm_id)
+            try:
+                if realm is None:
+                    raise NeedsLoginError("Auth realm not found for source")
+                auth_state = await realm_manager.ensure_session(db, realm)
+            except NeedsLoginError as exc:
+                run.status = RunStatus.FAILED
+                run.error_message = f"Authenticated source needs login: {exc}"
+                run.completed_at = datetime.now(timezone.utc)
+                source.status = SourceStatus.FAILED
+                source.error_message = str(exc)[:4096]
+                await db.commit()
+                return run
+
         if source.source_type == "pdf":
             from app.services import pdf_import
             try:
@@ -1462,16 +1496,40 @@ class FirecrawlService:
             # and gives the UI live per-page progress via the counters.
             url_to_entry = {e["url"]: e for e in toc_entries if e.get("url")}
 
-            if getattr(profile, "render_engine", None) == "browserless":
+            if auth_state is not None or getattr(profile, "render_engine", None) == "browserless":
                 # Browserless-rendered platforms: Firecrawl can't get the content
                 # (shadow DOM for Salesforce; Akamai block for support manuals), so render
                 # each article in Browserless. A profile may supply a content_spec
                 # (selector + warm-up) for the simple light-DOM extraction path.
+                # Authenticated sources always use this path regardless of profile,
+                # so the auth_state can be injected into every Browserless render.
                 spec_fn = getattr(profile, "browserless_content_spec", None)
                 content_spec = spec_fn() if callable(spec_fn) else None
-                await self._scrape_via_browserless(
-                    db, source_id, run_pk, url_to_entry, content_spec=content_spec
-                )
+                try:
+                    await self._scrape_via_browserless(
+                        db, source_id, run_pk, url_to_entry,
+                        content_spec=content_spec, auth_state=auth_state,
+                    )
+                except NeedsLoginError as exc:
+                    # Auth wall hit mid-run — session has expired. Mark the realm
+                    # EXPIRED so the UI surfaces a re-login prompt, then fail the run.
+                    if source.auth_realm_id is not None:
+                        realm = await db.get(AuthRealm, source.auth_realm_id)
+                        await realm_manager.invalidate(
+                            db, realm, RealmStatus.EXPIRED, str(exc)
+                        )
+                    run = (
+                        await db.execute(
+                            select(ExtractionRun).where(ExtractionRun.id == run_pk)
+                        )
+                    ).scalar_one()
+                    run.status = RunStatus.FAILED
+                    run.error_message = f"Session expired mid-run: {exc}"
+                    run.completed_at = datetime.now(timezone.utc)
+                    source.status = SourceStatus.FAILED
+                    source.error_message = str(exc)[:4096]
+                    await db.commit()
+                    return run
             elif _resolve_content_engine(source, profile) == "raw_http":
                 # Statically-served content: fetch each page verbatim (no JS) and
                 # scope the body ourselves. A JS-rendering scrape would capture

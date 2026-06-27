@@ -24,6 +24,16 @@ logger = logging.getLogger(__name__)
 _FUNCTION_CODE = r"""
 export default async function ({ page, context }) {
   const { url, waitMs } = context;
+  const authState = context.authState;
+  if (authState) {
+    if (authState.cookies && authState.cookies.length) await page.setCookie(...authState.cookies);
+    if (authState.origins) {
+      for (const o of authState.origins) {
+        await page.goto(o.origin, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.evaluate((items) => { for (const [k, v] of items) localStorage.setItem(k, v); }, o.localStorage || []);
+      }
+    }
+  }
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
   await new Promise(r => setTimeout(r, waitMs || 9000));
   const data = await page.evaluate(() => {
@@ -61,6 +71,7 @@ export default async function ({ page, context }) {
       title,
     };
   });
+  data.finalUrl = page.url();  // post-redirect URL, for auth-wall detection
   return { data, type: 'application/json' };
 }
 """
@@ -73,6 +84,16 @@ export default async function ({ page, context }) {
 _HTML_FUNCTION_CODE = r"""
 export default async function ({ page, context }) {
   const { url, waitMs, waitSelector } = context;
+  const authState = context.authState;
+  if (authState) {
+    if (authState.cookies && authState.cookies.length) await page.setCookie(...authState.cookies);
+    if (authState.origins) {
+      for (const o of authState.origins) {
+        await page.goto(o.origin, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.evaluate((items) => { for (const [k, v] of items) localStorage.setItem(k, v); }, o.localStorage || []);
+      }
+    }
+  }
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
   if (waitSelector) {
     // Generous timeout: client-rendered navs can be heavy (some build the tree
@@ -303,6 +324,16 @@ export default async function ({ page, context }) {
   const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
   await page.setUserAgent(ua);
   await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
+  const authState = context.authState;
+  if (authState) {
+    if (authState.cookies && authState.cookies.length) await page.setCookie(...authState.cookies);
+    if (authState.origins) {
+      for (const o of authState.origins) {
+        await page.goto(o.origin, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.evaluate((items) => { for (const [k, v] of items) localStorage.setItem(k, v); }, o.localStorage || []);
+      }
+    }
+  }
   if (warmupUrl) {
     try { await page.goto(warmupUrl, { waitUntil: 'networkidle2', timeout: 60000 }); } catch (e) {}
     await new Promise(r => setTimeout(r, 4000));
@@ -324,6 +355,7 @@ export default async function ({ page, context }) {
   return { data: out, type: 'application/json' };
 }
 """
+
 
 
 class BrowserlessError(Exception):
@@ -359,7 +391,7 @@ class BrowserlessClient:
         """
         endpoint = f"{self.url}/function"
         if session_timeout_ms:
-            endpoint += f"?timeout={session_timeout_ms}"  # token stays in the header
+            endpoint += f"?timeout={session_timeout_ms}"
         # Token as a Bearer header, not ?token=, so it doesn't leak into logs.
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else None
         payload = {"code": code, "context": context}
@@ -408,21 +440,27 @@ class BrowserlessClient:
             raise BrowserlessError(f"Unexpected Browserless payload for {target_url}: {type(data)}")
         return data
 
-    async def render(self, target_url: str, client: httpx.AsyncClient | None = None) -> dict:
+    async def render(self, target_url: str, client: httpx.AsyncClient | None = None,
+                     auth_state: dict | None = None) -> dict:
         """Render ``target_url`` and return {toc, contentHtml, contentText, title}
-        via shadow-DOM extraction (Salesforce Help). Raises BrowserlessError."""
+        via shadow-DOM extraction (Salesforce Help). Raises BrowserlessError.
+        ``auth_state`` injects cookies/localStorage into the session before navigation."""
         return await self._post(
-            _FUNCTION_CODE, {"url": target_url, "waitMs": self.wait_ms}, target_url, client
+            _FUNCTION_CODE, {"url": target_url, "waitMs": self.wait_ms, "authState": auth_state},
+            target_url, client,
         )
 
     async def render_html(self, target_url: str, wait_selector: str | None = None,
-                          client: httpx.AsyncClient | None = None) -> str:
+                          client: httpx.AsyncClient | None = None,
+                          auth_state: dict | None = None) -> str:
         """Return the fully-rendered light-DOM HTML after a JS-rendered element
         (``wait_selector``) appears — for navs/content built client-side into the
-        light DOM (e.g. a client-built #nav). Raises BrowserlessError."""
+        light DOM (e.g. a client-built #nav). Raises BrowserlessError.
+        ``auth_state`` injects cookies/localStorage into the session before navigation."""
         data = await self._post(
             _HTML_FUNCTION_CODE,
-            {"url": target_url, "waitMs": self.wait_ms, "waitSelector": wait_selector},
+            {"url": target_url, "waitMs": self.wait_ms, "waitSelector": wait_selector,
+             "authState": auth_state},
             target_url, client,
         )
         return data.get("html", "")
@@ -481,16 +519,19 @@ class BrowserlessClient:
 
     async def warmup_render(self, target_url: str, selector: str | None = None,
                             warmup_url: str | None = None, wait_ms: int | None = None,
-                            client: httpx.AsyncClient | None = None) -> dict:
+                            client: httpx.AsyncClient | None = None,
+                            auth_state: dict | None = None) -> dict:
         """Render ``target_url`` after a warm-up navigation to ``warmup_url`` (to
         clear a WAF like Akamai), and return ``{outerHtml, innerHtml, title}`` for
         ``selector``. Raises BrowserlessError. Used by the warmup_listgroup profile
         for both TOC (outerHtml of the nav container) and content (innerHtml of the
-        article container)."""
+        article container). ``auth_state`` injects cookies/localStorage before
+        navigation for authenticated sources."""
         return await self._post(
             _WARMUP_RENDER_CODE,
             {"url": target_url, "warmupUrl": warmup_url, "selector": selector,
-             "waitMs": wait_ms if wait_ms is not None else 2000},
+             "waitMs": wait_ms if wait_ms is not None else 2000,
+             "authState": auth_state},
             target_url, client,
             session_timeout_ms=120000, http_timeout_s=150,
         )
@@ -515,6 +556,19 @@ class BrowserlessClient:
         )
         sidebars = data.get("sidebars")
         return sidebars if isinstance(sidebars, dict) else {}
+
+    async def run_login(self, login_code: str, context: dict) -> dict:
+        """Run a login /function that authenticates and captures the session.
+
+        The login_code must navigate, authenticate, and capture the resulting
+        cookies/localStorage; it returns {ok, cookieCount, finalUrl, state}.
+        Uses a generous session timeout because IdP redirects can be slow.
+        """
+        timeout_ms = 120_000
+        return await self._post(
+            login_code, context, context.get("url", "login"),
+            session_timeout_ms=timeout_ms, http_timeout_s=timeout_ms / 1000 + 30,
+        )
 
 
 browserless_client = BrowserlessClient()
