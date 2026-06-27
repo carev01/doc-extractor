@@ -2,6 +2,7 @@
 each segment to markdown, and persist articles through the existing diff path."""
 from __future__ import annotations
 
+import asyncio
 import collections
 import hashlib
 import json
@@ -306,6 +307,35 @@ def render_segments(
         doc.close()
 
 
+async def convert_segments_async(
+    pdf_bytes: bytes,
+    segments: list[Segment],
+    progress: "collections.abc.Callable[[int, int], collections.abc.Awaitable[None]] | None" = None,
+) -> list[tuple[str, list[RenderedImage]]]:
+    """Render every segment to markdown OFF the event loop, one thread hop per
+    segment, so the worker's heartbeat and log-flush tasks keep ticking during a
+    long conversion. ``progress(done, total)`` is awaited after each segment.
+
+    Rendering a large PDF synchronously on the event loop starves the heartbeat,
+    so the scheduler reaps the run as stale (>300s) before it can finish — the
+    "stuck large PDF" bug. Each ``_render_segment`` is CPU-bound and operates on
+    its own page range, so offloading it to a worker thread is safe (the shared
+    ``doc`` is accessed by one thread at a time since the calls are awaited in
+    sequence)."""
+    rendered: list[tuple[str, list[RenderedImage]]] = []
+    total = len(segments)
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        for i, seg in enumerate(segments):
+            md, images = await asyncio.to_thread(_render_segment, doc, seg)
+            rendered.append((md, images))
+            if progress is not None:
+                await progress(i + 1, total)
+    finally:
+        doc.close()
+    return rendered
+
+
 async def _latest_completed_hash(db, source_id) -> str | None:
     return (
         await db.execute(
@@ -380,9 +410,18 @@ async def run_pdf_extraction(service, db, source, run, run_pk) -> ExtractionRun:
     # First occurrence keeps the clean slug; duplicates get -2, -3, … Stable as
     # long as section order is stable, so incremental diffs stay stable.
     key_counts: dict[str, int] = {}
-    # Render every segment up front, opening the PDF once rather than once per
-    # segment.
-    rendered = render_segments(pdf_bytes, segments)
+    # Render every segment, opening the PDF once. Runs off the event loop (one
+    # thread hop per segment) so the worker heartbeat keeps ticking on large
+    # PDFs, and reports per-segment progress + log lines for the UI.
+    logger.info("Converting %d PDF segments to markdown", len(segments))
+
+    async def _convert_progress(done: int, total: int) -> None:
+        run.articles_extracted = done
+        await db.commit()
+        if done == 1 or done % 10 == 0 or done == total:
+            logger.info("PDF conversion: %d/%d segments converted", done, total)
+
+    rendered = await convert_segments_async(pdf_bytes, segments, _convert_progress)
     for i, seg in enumerate(segments):
         parent_id = None
         for j in range(i - 1, -1, -1):
@@ -406,6 +445,9 @@ async def run_pdf_extraction(service, db, source, run, run_pk) -> ExtractionRun:
         article_inputs.append((toc.id, i, seg.title, topic_key, url, rendered[i][0], rendered[i][1]))
 
     run.current_phase = "content_scraping"
+    # The convert phase used articles_extracted to report conversion progress;
+    # reset it so process_article_result counts persisted articles from zero.
+    run.articles_extracted = 0
     # A segment that renders to empty markdown (e.g. an image-only page) is not
     # persisted by process_article_result, so it must not count toward the total —
     # otherwise progress can never reach 100%.
