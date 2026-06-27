@@ -899,6 +899,7 @@ class FirecrawlService:
                     data = await browserless_client.warmup_render(
                         url, selector=selector,
                         warmup_url=(content_spec or {}).get("warmup_url"), client=client,
+                        auth_state=auth_state,
                     )
                     # Normalise to the shape the persist loop expects.
                     return {
@@ -920,11 +921,15 @@ class FirecrawlService:
                         continue
                     html = data.get("contentHtml") or ""
                     md = markdownify(html).strip() if html else (data.get("contentText") or "").strip()
-                    # Auth wall detection: if the session has expired, the page
-                    # will be a login redirect or a short "please sign in" wall.
-                    # Raising NeedsLoginError here propagates to extract_source,
-                    # which invalidates the realm and marks the run FAILED.
-                    if is_auth_wall(md or html, final_url=url):
+                    # Auth wall detection — only for authenticated sources. The
+                    # browserless path also serves non-auth platforms (e.g.
+                    # Salesforce Help), whose article URLs may legitimately
+                    # contain "login"; gating on auth_state avoids aborting those.
+                    # Use the page's post-redirect URL (finalUrl) when available
+                    # so an IdP bounce is caught even if the body lacks wall text.
+                    if auth_state is not None and is_auth_wall(
+                        md or html, final_url=data.get("finalUrl") or url
+                    ):
                         raise NeedsLoginError(f"Auth wall detected at {url}; session may have expired")
                     if not md:
                         logger.warning("Empty content from %s — skipping", url)
@@ -1347,6 +1352,8 @@ class FirecrawlService:
         if source.auth_realm_id is not None:
             realm = await db.get(AuthRealm, source.auth_realm_id)
             try:
+                if realm is None:
+                    raise NeedsLoginError("Auth realm not found for source")
                 auth_state = await realm_manager.ensure_session(db, realm)
             except NeedsLoginError as exc:
                 run.status = RunStatus.FAILED

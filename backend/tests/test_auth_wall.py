@@ -21,3 +21,12 @@ def test_real_doc_about_authentication_not_flagged():
 
 def test_b2c_login_host_redirect_detected():
     assert is_auth_wall("", final_url="https://apwebapp.b2clogin.com/whatever")
+
+
+def test_doc_url_with_login_in_path_not_flagged():
+    # A legitimate doc page whose PATH contains "login" must not be misread as an
+    # auth wall — the bare marker only counts in the hostname.
+    body = ("How to configure a login policy for your environment. " * 80)
+    assert not is_auth_wall(
+        body, final_url="https://docs.cohesity.com/guides/configure-login-policy.html"
+    )
