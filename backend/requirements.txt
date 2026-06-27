@@ -17,6 +17,7 @@ weasyprint==69.0
 pypdf==5.1.0
 PyMuPDF==1.24.14
 pymupdf4llm==0.0.17
+docling==2.107.0
 python-multipart==0.0.18
 cryptography==44.0.0
 pyotp==2.9.0
