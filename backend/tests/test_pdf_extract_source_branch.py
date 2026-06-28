@@ -18,7 +18,9 @@ from app.core.database import Base
 from app.models import Vendor, Product, DocumentationSource, ExtractionRun, Article
 from app.models.extraction_run import RunStatus
 from app.services.firecrawl import FirecrawlService
+from app.services.pdf_convert import ConvertedDoc
 from app.services.pdf_import import pdf_path_for
+import app.services.pdf_import as _pdf_import_mod
 
 TEST_DATABASE_URL = settings.database_url.rsplit("/", 1)[0] + "/docextractor_test"
 pytestmark = pytest.mark.asyncio
@@ -35,6 +37,41 @@ async def factory():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def patch_convert_pdf(monkeypatch):
+    """Patch convert_pdf in the pdf_import namespace so tests don't depend on
+    docling-serve availability. The fake generates ATX-heading markdown from the
+    PDF's actual outline so split_into_segments can find section boundaries.
+    For corrupt PDFs, fitz.open raises naturally and the run is marked failed."""
+    async def fake_convert(pdf_bytes):
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        try:
+            toc = doc.get_toc(simple=True)
+            page_texts = [
+                doc[i].get_text("text").strip()
+                for i in range(doc.page_count)
+            ]
+        finally:
+            doc.close()
+
+        lines = []
+        if toc:
+            for level, title, page1 in toc:
+                p = max(0, page1 - 1)
+                text = page_texts[p] if p < len(page_texts) else ""
+                lines.append(f"{'#' * level} {title}\n\n{text}")
+        else:
+            lines = [t for t in page_texts if t] or ["content"]
+
+        md = "\n\n".join(lines)
+        return ConvertedDoc(
+            markdown=md, headings=[], page_texts=page_texts,
+            table_pages=set(), images=[], engine="fake",
+        )
+
+    monkeypatch.setattr(_pdf_import_mod, "convert_pdf", fake_convert)
 
 
 async def test_extract_source_runs_pdf_pipeline(factory, tmp_path):

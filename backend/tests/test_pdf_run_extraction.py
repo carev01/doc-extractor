@@ -20,7 +20,9 @@ from app.models import (
 )
 from app.models.article_version import ArticleVersion
 from app.services.firecrawl import FirecrawlService
+from app.services.pdf_convert import ConvertedDoc
 from app.services.pdf_import import run_pdf_extraction, pdf_path_for
+import app.services.pdf_import as _pdf_import_mod
 
 TEST_DATABASE_URL = settings.database_url.rsplit("/", 1)[0] + "/docextractor_test"
 pytestmark = pytest.mark.asyncio
@@ -37,6 +39,42 @@ async def factory():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def patch_convert_pdf(monkeypatch):
+    """Patch convert_pdf in the pdf_import namespace so integration tests don't
+    depend on docling-serve availability. The fake generates ATX-heading markdown
+    from the PDF's actual outline so split_into_segments can find section
+    boundaries — the same logic the real pipeline uses, just without the network
+    call."""
+    async def fake_convert(pdf_bytes):
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        try:
+            toc = doc.get_toc(simple=True)
+            page_texts = [
+                doc[i].get_text("text").strip()
+                for i in range(doc.page_count)
+            ]
+        finally:
+            doc.close()
+
+        lines = []
+        if toc:
+            for level, title, page1 in toc:
+                p = max(0, page1 - 1)
+                text = page_texts[p] if p < len(page_texts) else ""
+                lines.append(f"{'#' * level} {title}\n\n{text}")
+        else:
+            lines = [t for t in page_texts if t] or ["content"]
+
+        md = "\n\n".join(lines)
+        return ConvertedDoc(
+            markdown=md, headings=[], page_texts=page_texts,
+            table_pages=set(), images=[], engine="fake",
+        )
+
+    monkeypatch.setattr(_pdf_import_mod, "convert_pdf", fake_convert)
 
 
 def _pdf(extra="") -> bytes:
@@ -189,17 +227,24 @@ async def test_duplicate_sibling_titles_do_not_collide(factory, tmp_path):
 async def test_articles_total_excludes_empty_segments(factory, tmp_path, monkeypatch):
     """A segment that renders to empty markdown is not persisted, so it must not
     count toward articles_total — otherwise progress can never reach 100%."""
-    import app.services.pdf_import as pdf_import
+    from app.services.pdf_convert import RenderedSegment
+
     sid = await _make_pdf_source(factory, tmp_path)  # _pdf() → 2 sections
 
     # Force the second section to render empty (e.g. an image-only page).
-    async def _fake_convert(pdf_bytes, segments, progress=None):
-        out = [("Real content.", []), ("", [])]
-        for i in range(len(out)):
-            if progress is not None:
-                await progress(i + 1, len(out))
-        return out
-    monkeypatch.setattr(pdf_import, "convert_segments_async", _fake_convert)
+    async def _fake_build(pdf_bytes, progress=None):
+        segs = [
+            RenderedSegment(title="Chapter 1", level=1, path=["Chapter 1"],
+                            page_start=0, page_end=0, markdown="Real content.", images=[]),
+            RenderedSegment(title="Chapter 2", level=1, path=["Chapter 2"],
+                            page_start=1, page_end=1, markdown="", images=[]),
+        ]
+        if progress is not None:
+            for i in range(len(segs)):
+                await progress(i + 1, len(segs))
+        return segs
+
+    monkeypatch.setattr(_pdf_import_mod, "build_segments", _fake_build)
 
     run_pk = await _run(factory, sid)
     async with factory() as s:
