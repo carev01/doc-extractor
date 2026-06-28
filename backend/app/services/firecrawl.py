@@ -153,6 +153,14 @@ class RawContentScrapeError(Exception):
     """
 
 
+def _cookie_header(cookies: list[dict] | None) -> str | None:
+    """Build a ``Cookie`` request-header value from a realm cookie list."""
+    if not cookies:
+        return None
+    pairs = [f"{c['name']}={c['value']}" for c in cookies if c.get("name")]
+    return "; ".join(pairs) or None
+
+
 def _resolve_content_engine(source, profile) -> str | None:
     """Resolve the content-scraping engine for a source.
 
@@ -354,12 +362,14 @@ class FirecrawlService:
             logger.warning("Sitemap fallback also failed for %s: %s", root_url, exc)
             return []
 
-    async def fetch_raw(self, url: str) -> str:
+    async def fetch_raw(self, url: str, cookies: list[dict] | None = None) -> str:
         """Plain GET of a static asset, bypassing Firecrawl's HTML cleaning.
 
         Used for non-HTML resources a profile needs verbatim — e.g. MadCap Flare's
         ``Data/*.xml``/``Data/Tocs/*.js`` TOC files, which Firecrawl would strip or
-        mangle. Sends a browser UA; raises on HTTP error.
+        mangle. Sends a browser UA; ``cookies`` (a realm session cookie list)
+        are sent as a ``Cookie`` header for authenticated raw_http sources.
+        Raises on HTTP error.
 
         Retries transient failures (429/5xx, connect/read timeouts) with backoff:
         the raw_http content path fetches hundreds of pages, so without this a
@@ -367,10 +377,12 @@ class FirecrawlService:
         and enough of those trip the run's failure-rate guard (observed on a
         700-page MadCap source). Non-transient errors (e.g. 404) still raise at once.
         """
+        headers = {"User-Agent": _BROWSER_UA}
+        ck = _cookie_header(cookies)
+        if ck:
+            headers["Cookie"] = ck
         resp = await self._request_with_retry(
-            lambda: self.client.get(
-                url, headers={"User-Agent": _BROWSER_UA}, follow_redirects=True
-            ),
+            lambda: self.client.get(url, headers=headers, follow_redirects=True),
             what=f"raw GET {url}",
         )
         return resp.text
