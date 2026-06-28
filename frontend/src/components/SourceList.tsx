@@ -428,6 +428,21 @@ function SourceItem({
         );
       }
 
+      const indeterminatePdf: Record<string, string> = {
+        pdf_acquire: "Downloading PDF…",
+        pdf_convert: "Converting document…",
+        pdf_split: "Splitting into articles…",
+        pdf_escalate: "Refining low-confidence sections…",
+      };
+      if (run.current_phase && indeterminatePdf[run.current_phase]) {
+        return (
+          <div className="run-progress">
+            <span className="run-phase">{indeterminatePdf[run.current_phase]}</span>
+            <div className="progress-bar indeterminate" />
+          </div>
+        );
+      }
+
       return (
         <div className="run-progress">
           <span className="run-phase">

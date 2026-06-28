@@ -48,7 +48,7 @@ async def patch_convert_pdf(monkeypatch):
     from the PDF's actual outline so split_into_segments can find section
     boundaries — the same logic the real pipeline uses, just without the network
     call."""
-    async def fake_convert(pdf_bytes):
+    async def fake_convert(pdf_bytes, on_poll=None):
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         try:
             toc = doc.get_toc(simple=True)
@@ -232,19 +232,15 @@ async def test_articles_total_excludes_empty_segments(factory, tmp_path, monkeyp
     sid = await _make_pdf_source(factory, tmp_path)  # _pdf() → 2 sections
 
     # Force the second section to render empty (e.g. an image-only page).
-    async def _fake_build(pdf_bytes, progress=None):
-        segs = [
+    def _fake_split(converted, outline):
+        return [
             RenderedSegment(title="Chapter 1", level=1, path=["Chapter 1"],
                             page_start=0, page_end=0, markdown="Real content.", images=[]),
             RenderedSegment(title="Chapter 2", level=1, path=["Chapter 2"],
                             page_start=1, page_end=1, markdown="", images=[]),
         ]
-        if progress is not None:
-            for i in range(len(segs)):
-                await progress(i + 1, len(segs))
-        return segs
 
-    monkeypatch.setattr(_pdf_import_mod, "build_segments", _fake_build)
+    monkeypatch.setattr(_pdf_import_mod, "split_into_segments", _fake_split)
 
     run_pk = await _run(factory, sid)
     async with factory() as s:

@@ -97,6 +97,7 @@ class Settings(BaseSettings):
     docling_serve_url: str = "http://docling.home.lan"
     docling_serve_api_key: str = ""          # X-Api-Key (env only — .env is tracked)
     docling_serve_timeout: float = 600.0     # per-request read timeout (s)
+    docling_serve_poll_interval: float = 3.0  # async convert: status poll cadence (s)
     # VLM escalation runs through docling-serve's VLM pipeline, pointed at an
     # OpenAI-compatible remote model (OpenRouter). The app forwards the endpoint,
     # bearer key, and model name in the convert request — never calls Anthropic.

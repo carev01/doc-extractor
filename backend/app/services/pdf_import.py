@@ -8,6 +8,7 @@ import hashlib
 import logging
 import os
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -24,7 +25,7 @@ from app.models.toc import TOCEntry
 from app.services.pdf_convert import (
     ConvertedDoc, RenderedImage, RenderedSegment, convert_pdf, split_into_segments,
 )
-from app.services.pdf_escalate import escalate_segment, score_segment
+from app.services.pdf_escalate import escalate_segments
 from app.services.sanitize import sanitize_markdown
 from app.services.versioning import derive_pdf_topic_key
 
@@ -107,53 +108,13 @@ def _outline_for(pdf_bytes: bytes) -> list[Segment]:
         doc.close()
 
 
-async def build_segments(
-    pdf_bytes: bytes,
-    progress: "collections.abc.Callable[[int, int], collections.abc.Awaitable[None]] | None" = None,
-) -> list[RenderedSegment]:
-    """Convert the whole PDF via docling-serve, split on heading boundaries, then
-    VLM-escalate only low-confidence segments within the per-run page budget."""
-    converted: ConvertedDoc = await convert_pdf(pdf_bytes)
-    outline = _outline_for(pdf_bytes)
+async def process_segments(pdf_bytes, outline, on_poll=None):
+    """Convert (off-loop, async), split on headings, then VLM-escalate the
+    exclusive low-confidence segments. Returns (segments, converted)."""
+    converted = await convert_pdf(pdf_bytes, on_poll=on_poll)
     segments = split_into_segments(converted, outline)
-
-    if not settings.pdf_vlm_escalation_enabled:
-        return segments
-
-    # A segment may only be VLM-escalated if it EXCLUSIVELY owns its page range.
-    # Escalation re-converts the segment's pages via docling's VLM pipeline
-    # (page_range), so re-converting a page shared with sibling/parent segments
-    # would pull their content back in — reintroducing the cross-section bleed the
-    # heading-split just removed. Shared-page segments keep their (already clean)
-    # standard split output.
-    page_owners: dict[int, int] = {}
-    for s in segments:
-        for p in range(s.page_start, s.page_end + 1):
-            page_owners[p] = page_owners.get(p, 0) + 1
-
-    def _exclusive(s: RenderedSegment) -> bool:
-        return all(
-            page_owners.get(p, 0) == 1 for p in range(s.page_start, s.page_end + 1)
-        )
-
-    flagged = [
-        s for s in segments if _exclusive(s) and score_segment(s, converted)
-    ]
-    budget = settings.pdf_vlm_max_pages_per_run
-    done, total = 0, len(flagged)
-    for seg in flagged:
-        pages = seg.page_end - seg.page_start + 1
-        if pages > budget:
-            continue
-        new_md = await escalate_segment(pdf_bytes, seg)
-        seg.markdown = new_md
-        matched = [img for img in converted.images if img.filename in new_md]
-        seg.images = matched or seg.images
-        budget -= pages
-        done += 1
-        if progress is not None:
-            await progress(done, total)
-    return segments
+    await escalate_segments(pdf_bytes, segments, converted)
+    return segments, converted
 
 
 async def _latest_completed_hash(db, source_id) -> str | None:
@@ -210,16 +171,28 @@ async def run_pdf_extraction(service, db, source, run, run_pk) -> ExtractionRun:
         await db.flush()
         return run
 
+    outline = await asyncio.to_thread(_outline_for, pdf_bytes)
+    run.articles_total = len(outline)
     run.current_phase = "pdf_convert"
     await db.commit()
+    logger.info("pdf_convert: converting %d-outline-entry PDF via docling-serve", len(outline))
 
-    async def _convert_progress(done: int, total: int) -> None:
-        run.articles_extracted = done
-        await db.commit()
-        if total and (done == 1 or done % 5 == 0 or done == total):
-            logger.info("PDF VLM escalation: %d/%d segments re-converted", done, total)
+    _t0 = time.monotonic()
+    async def _on_poll(status: dict) -> None:
+        logger.info("pdf_convert: still processing (status=%s, queue=%s, %.0fs elapsed)",
+                    status.get("task_status"), status.get("task_position"),
+                    time.monotonic() - _t0)
 
-    rendered_segments = await build_segments(pdf_bytes, _convert_progress)
+    converted = await convert_pdf(pdf_bytes, on_poll=_on_poll)
+    run.current_phase = "pdf_split"
+    await db.commit()
+    rendered_segments = split_into_segments(converted, outline)
+    logger.info("pdf_split: %d article segments (%s engine)",
+                len(rendered_segments), converted.engine)
+
+    run.current_phase = "pdf_escalate"
+    await db.commit()
+    await escalate_segments(pdf_bytes, rendered_segments, converted)
     run.articles_total = len(rendered_segments)
     await db.commit()
 

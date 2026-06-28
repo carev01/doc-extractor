@@ -7,8 +7,10 @@ page ranges), which eliminates the cross-section bleed of the old page-range
 pipeline."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
+import html
 import logging
 import os
 import re
@@ -24,7 +26,7 @@ from app.core.config import settings
 if TYPE_CHECKING:
     from app.services.pdf_import import Segment
 from app.services import docling_client
-from app.services.docling_client import DoclingServeError
+from app.services.docling_client import DoclingServeError, _PAGE_BREAK
 from app.services.sanitize import sanitize_markdown
 
 logger = logging.getLogger(__name__)
@@ -52,6 +54,7 @@ class ConvertedDoc:
     table_pages: set[int]
     images: list[RenderedImage] = field(default_factory=list)
     engine: str = "docling"
+    page_line_starts: list[int] = field(default_factory=list)
 
 
 # ── image content-addressing ────────────────────────────────────────────────
@@ -145,6 +148,35 @@ def _parse_table_pages(json_content: dict) -> set[int]:
     return pages
 
 
+def _split_page_breaks(markdown: str) -> tuple[str, list[int]]:
+    """Remove page-break placeholder lines; return (clean_md, page_line_starts)
+    where page_line_starts[p] is the clean-markdown line index of page p (0-based)."""
+    out: list[str] = []
+    starts: list[int] = [0]
+    for ln in markdown.split("\n"):
+        if ln.strip() == _PAGE_BREAK:
+            starts.append(len(out))
+        else:
+            out.append(ln)
+    return "\n".join(out), starts
+
+
+def _build_converted_doc(doc: dict, pdf_bytes: bytes) -> ConvertedDoc:
+    md = doc.get("md_content") or ""
+    json_content = doc.get("json_content") or {}
+    md, page_line_starts = _split_page_breaks(md)
+    md, images = _content_address_data_uris(md)
+    return ConvertedDoc(
+        markdown=sanitize_markdown(md),
+        headings=_parse_headings(json_content),
+        page_texts=_page_texts(pdf_bytes),
+        table_pages=_parse_table_pages(json_content),
+        images=images,
+        engine="docling",
+        page_line_starts=page_line_starts,
+    )
+
+
 def _convert_pymupdf(pdf_bytes: bytes) -> ConvertedDoc:
     """Whole-doc pymupdf4llm conversion (no page ranges → no boundary bleed)."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -158,34 +190,27 @@ def _convert_pymupdf(pdf_bytes: bytes) -> ConvertedDoc:
         doc.close()
     return ConvertedDoc(
         markdown=sanitize_markdown(md), headings=[], page_texts=_page_texts(pdf_bytes),
-        table_pages=set(), images=images, engine="pymupdf",
+        table_pages=set(), images=images, engine="pymupdf", page_line_starts=[],
     )
 
 
-async def convert_pdf(pdf_bytes: bytes) -> ConvertedDoc:
-    """Convert a whole PDF to markdown. docling-serve first; pymupdf on failure."""
+async def convert_pdf(pdf_bytes: bytes, on_poll=None) -> ConvertedDoc:
+    """Convert a whole PDF to markdown via docling-serve (async); pymupdf on failure.
+    All heavy synchronous work runs off the event loop so the worker heartbeat
+    keeps ticking on large documents."""
     if settings.pdf_converter == "pymupdf":
-        return _convert_pymupdf(pdf_bytes)
+        return await asyncio.to_thread(_convert_pymupdf, pdf_bytes)
     try:
-        doc = await docling_client.convert(
-            pdf_bytes, pipeline="standard", image_export_mode="embedded"
+        doc = await docling_client.convert_async(
+            pdf_bytes, image_export_mode="embedded",
+            page_break_placeholder=_PAGE_BREAK, on_poll=on_poll,
         )
-        md = doc.get("md_content") or ""
-        if not md.strip():
+        if not (doc.get("md_content") or "").strip():
             raise DoclingServeError("empty markdown")
-        json_content = doc.get("json_content") or {}
-        md, images = _content_address_data_uris(md)
-        return ConvertedDoc(
-            markdown=sanitize_markdown(md),
-            headings=_parse_headings(json_content),
-            page_texts=_page_texts(pdf_bytes),
-            table_pages=_parse_table_pages(json_content),
-            images=images,
-            engine="docling",
-        )
+        return await asyncio.to_thread(_build_converted_doc, doc, pdf_bytes)
     except DoclingServeError as exc:
         logger.warning("docling-serve failed (%s); falling back to pymupdf", exc)
-        return _convert_pymupdf(pdf_bytes)
+        return await asyncio.to_thread(_convert_pymupdf, pdf_bytes)
 
 
 # ── splitting by heading boundaries ─────────────────────────────────────────
@@ -213,13 +238,25 @@ def _heading_lines(lines: list[str]) -> list[tuple[int, str]]:
     return out
 
 
+def _norm_core(s: str) -> str:
+    """Match key: unescape entities, casefold, strip all non-alphanumerics.
+    Makes '1Preface' == '1 Preface' and "What's" == 'What's'."""
+    return re.sub(r"[^a-z0-9]+", "", html.unescape(s).lower())
+
+
 def _find_heading_line(headings: list[tuple[int, str]], title: str, start: int) -> "int | None":
-    t = " ".join(title.lower().split())
+    t = _norm_core(title)
+    if not t:
+        return None
+    # exact-core match first (safest), then containment as a secondary.
+    for idx, text in headings:
+        if idx >= start and _norm_core(text) == t:
+            return idx
     for idx, text in headings:
         if idx < start:
             continue
-        h = " ".join(text.lower().split())
-        if h == t or t in h or h in t:
+        h = _norm_core(text)
+        if t in h or h in t:
             return idx
     return None
 
@@ -233,10 +270,17 @@ def split_into_segments(converted: ConvertedDoc, outline: "list[Segment]") -> li
     boundaries: list[tuple[int, str, int, list[str], int, int]] = []
     if outline:
         cursor = 0
+        starts = converted.page_line_starts
         for seg in outline:
             line = _find_heading_line(heading_lines, seg.title, cursor)
             if line is None:
-                continue
+                # Never drop: fall back to the page where the entry begins.
+                if starts and 0 <= seg.page_start < len(starts):
+                    line = max(starts[seg.page_start], cursor)
+                else:
+                    line = cursor
+                logger.info("split: %r not found as heading; page-fallback line %d",
+                            seg.title, line)
             cursor = line + 1
             boundaries.append((line, seg.title, seg.level, seg.path or [seg.title],
                                seg.page_start, seg.page_end))

@@ -35,7 +35,7 @@ async def test_convert_pdf_parses_docling_response(monkeypatch):
     async def fake_convert(pdf_bytes, **kw):
         return {"md_content": md, "json_content": json_content}
 
-    monkeypatch.setattr(pc.docling_client, "convert", fake_convert)
+    monkeypatch.setattr(pc.docling_client, "convert_async", fake_convert)
     monkeypatch.setattr(pc.settings, "pdf_converter", "docling")
 
     out = await pc.convert_pdf(_pdf())
@@ -53,13 +53,36 @@ async def test_convert_pdf_falls_back_to_pymupdf(monkeypatch):
     async def boom(pdf_bytes, **kw):
         raise dc.DoclingServeError("down")
 
-    monkeypatch.setattr(pc.docling_client, "convert", boom)
+    monkeypatch.setattr(pc.docling_client, "convert_async", boom)
     monkeypatch.setattr(pc.settings, "pdf_converter", "docling")
 
     out = await pc.convert_pdf(_pdf())
     assert out.engine == "pymupdf"
     assert "Alpha" in out.markdown
     assert len(out.page_texts) == 1
+
+
+@pytest.mark.asyncio
+async def test_convert_pdf_uses_async_and_builds_page_line_starts(monkeypatch):
+    from app.services import docling_client as dc
+    md = (f"# A\n\nalpha\n\n{dc._PAGE_BREAK}\n\n# B\n\nbeta\n")
+    json_content = {"texts": [{"label": "section_header", "text": "A", "level": 1,
+                               "prov": [{"page_no": 1}]}], "tables": []}
+
+    async def fake_convert_async(pdf_bytes, **kw):
+        assert kw.get("page_break_placeholder") == dc._PAGE_BREAK
+        return {"md_content": md, "json_content": json_content}
+
+    monkeypatch.setattr(pc.docling_client, "convert_async", fake_convert_async)
+    monkeypatch.setattr(pc.settings, "pdf_converter", "docling")
+
+    out = await pc.convert_pdf(_pdf())
+    assert out.engine == "docling"
+    assert dc._PAGE_BREAK not in out.markdown          # placeholder stripped
+    assert out.page_line_starts and out.page_line_starts[0] == 0
+    assert len(out.page_line_starts) == 2              # two pages
+    # page 2 starts at the '# B' line
+    assert out.markdown.split("\n")[out.page_line_starts[1]].strip() == "# B"
 
 
 def test_content_address_data_uris():
