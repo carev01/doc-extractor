@@ -94,3 +94,65 @@ def test_content_address_data_uris():
     assert images[0].data == png
     assert images[0].filename in new_md
     assert "base64" not in new_md
+
+
+def test_page_batches_ranges():
+    assert pc._page_batches(5, 2) == [(1, 2), (3, 4), (5, 5)]
+    assert pc._page_batches(80, 80) == [(1, 80)]
+    assert pc._page_batches(0, 80) == []
+
+
+def test_merge_docling_docs_joins_with_placeholder():
+    from app.services import docling_client as dc
+    a = {"md_content": "A", "json_content": {"texts": [{"t": 1}], "tables": [{"x": 1}]}}
+    b = {"md_content": "B", "json_content": {"texts": [{"t": 2}], "tables": []}}
+    m = pc._merge_docling_docs([a, b])
+    assert m["md_content"] == f"A\n{dc._PAGE_BREAK}\nB"
+    assert m["json_content"]["texts"] == [{"t": 1}, {"t": 2}]
+    assert m["json_content"]["tables"] == [{"x": 1}]
+
+
+def _npage_pdf(n):
+    import fitz
+    d = fitz.open()
+    for i in range(n):
+        d.new_page().insert_text((72, 72), f"Page {i+1} body")
+    return d.tobytes()
+
+
+@pytest.mark.asyncio
+async def test_convert_pdf_batches_large_doc(monkeypatch):
+    from app.services import docling_client as dc
+    monkeypatch.setattr(pc.settings, "pdf_converter", "docling")
+    monkeypatch.setattr(pc.settings, "pdf_convert_batch_pages", 2)
+    calls = []
+
+    async def fake_convert_async(pdf_bytes, **kw):
+        rng = kw["page_range"]
+        calls.append(rng)
+        pages = [f"# Page {p}" for p in range(rng[0], rng[1] + 1)]
+        return {"md_content": f"\n{dc._PAGE_BREAK}\n".join(pages),
+                "json_content": {"texts": [], "tables": []}}
+
+    monkeypatch.setattr(pc.docling_client, "convert_async", fake_convert_async)
+    out = await pc.convert_pdf(_npage_pdf(5))
+    assert calls == [(1, 2), (3, 4), (5, 5)]          # batched
+    assert out.engine == "docling"
+    assert len(out.page_line_starts) == 5             # all 5 pages stitched
+    assert dc._PAGE_BREAK not in out.markdown
+
+
+@pytest.mark.asyncio
+async def test_convert_pdf_single_call_for_small_doc(monkeypatch):
+    monkeypatch.setattr(pc.settings, "pdf_converter", "docling")
+    monkeypatch.setattr(pc.settings, "pdf_convert_batch_pages", 80)
+    calls = []
+
+    async def fake_convert_async(pdf_bytes, **kw):
+        calls.append(kw.get("page_range"))
+        return {"md_content": "# Only", "json_content": {"texts": [], "tables": []}}
+
+    monkeypatch.setattr(pc.docling_client, "convert_async", fake_convert_async)
+    out = await pc.convert_pdf(_npage_pdf(3))
+    assert calls == [None]                             # single call, no page_range
+    assert out.engine == "docling"

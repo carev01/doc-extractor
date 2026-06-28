@@ -1249,9 +1249,10 @@ class FirecrawlService:
         the ON DELETE SET NULL FK; Phase 2 re-links each page as it is scraped.
         But a *resumed* run skips pages already scraped in a prior cycle, so those
         articles would never be re-linked and would be wrongly flagged removed.
-        Guard against that by authoritatively re-linking every article to its
-        current TOC entry by URL first — so the set of articles still NULL after
-        this is exactly the pages genuinely absent from the rebuilt TOC.
+        Guard against that by authoritatively re-linking articles still NULL after
+        process_article_result (pages a resumed run skipped) to their current TOC
+        entry by URL — so the set of articles still NULL after this is exactly the
+        pages genuinely absent from the rebuilt TOC.
 
         removed_at is only set when currently NULL, so it stays pinned to first
         detection across runs.
@@ -1278,7 +1279,10 @@ class FirecrawlService:
         )
         await db.execute(
             update(Article)
-            .where(Article.source_id == source_id)
+            .where(
+                Article.source_id == source_id,
+                Article.toc_entry_id.is_(None),
+            )
             .values(toc_entry_id=relink)
         )
 

@@ -124,6 +124,47 @@ def _page_texts(pdf_bytes: bytes) -> list[str]:
         doc.close()
 
 
+def _page_count(pdf_bytes: bytes) -> int:
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        return doc.page_count
+    finally:
+        doc.close()
+
+
+def _page_batches(page_count: int, size: int) -> list[tuple[int, int]]:
+    """1-based inclusive page ranges of at most `size` pages."""
+    return [(s + 1, min(s + size, page_count)) for s in range(0, page_count, size)]
+
+
+def _merge_docling_docs(batch_docs: list[dict]) -> dict:
+    """Stitch per-batch docling result dicts into one. docling reports absolute
+    page numbers, so texts/tables concatenate without offset; markdowns join with
+    the page-break placeholder so the merged page stream stays continuous."""
+    mds = [(d.get("md_content") or "") for d in batch_docs]
+    texts: list = []
+    tables: list = []
+    for d in batch_docs:
+        jc = d.get("json_content") or {}
+        texts.extend(jc.get("texts") or [])
+        tables.extend(jc.get("tables") or [])
+    return {
+        "md_content": ("\n" + _PAGE_BREAK + "\n").join(mds),
+        "json_content": {"texts": texts, "tables": tables},
+    }
+
+
+async def _convert_docling_batched(pdf_bytes: bytes, page_count: int, on_poll=None) -> dict:
+    batch_docs: list[dict] = []
+    for start, end in _page_batches(page_count, settings.pdf_convert_batch_pages):
+        doc = await docling_client.convert_async(
+            pdf_bytes, page_range=(start, end), image_export_mode="embedded",
+            page_break_placeholder=_PAGE_BREAK, on_poll=on_poll,
+        )
+        batch_docs.append(doc)
+    return _merge_docling_docs(batch_docs)
+
+
 def _parse_headings(json_content: dict) -> list[DocHeading]:
     out: list[DocHeading] = []
     for item in (json_content.get("texts") or []):
@@ -196,15 +237,20 @@ def _convert_pymupdf(pdf_bytes: bytes) -> ConvertedDoc:
 
 async def convert_pdf(pdf_bytes: bytes, on_poll=None) -> ConvertedDoc:
     """Convert a whole PDF to markdown via docling-serve (async); pymupdf on failure.
+    Large PDFs are converted in page-range batches so docling-serve doesn't OOM.
     All heavy synchronous work runs off the event loop so the worker heartbeat
     keeps ticking on large documents."""
     if settings.pdf_converter == "pymupdf":
         return await asyncio.to_thread(_convert_pymupdf, pdf_bytes)
     try:
-        doc = await docling_client.convert_async(
-            pdf_bytes, image_export_mode="embedded",
-            page_break_placeholder=_PAGE_BREAK, on_poll=on_poll,
-        )
+        page_count = await asyncio.to_thread(_page_count, pdf_bytes)
+        if page_count > settings.pdf_convert_batch_pages:
+            doc = await _convert_docling_batched(pdf_bytes, page_count, on_poll)
+        else:
+            doc = await docling_client.convert_async(
+                pdf_bytes, image_export_mode="embedded",
+                page_break_placeholder=_PAGE_BREAK, on_poll=on_poll,
+            )
         if not (doc.get("md_content") or "").strip():
             raise DoclingServeError("empty markdown")
         return await asyncio.to_thread(_build_converted_doc, doc, pdf_bytes)
