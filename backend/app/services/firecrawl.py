@@ -269,7 +269,14 @@ class FirecrawlService:
         root_html: str | None = None
         try:
             scraper = Scraper(self, auth_cookies=auth_cookies)
-            root_html = await scraper.get_html(source.base_url)
+            if auth_cookies:
+                # Authenticated sources may have a login-gated root (e.g. EON/Fern).
+                # Fetch it with the session cookies via the raw path — Firecrawl
+                # /scrape (get_html) can't inject cookies, so it would see the
+                # login page and detection would miss the real platform.
+                root_html = await scraper.get_raw(source.base_url)
+            else:
+                root_html = await scraper.get_html(source.base_url)
         except Exception as exc:
             logger.warning(
                 "Root HTML fetch failed for %s: %s", source.base_url, exc
