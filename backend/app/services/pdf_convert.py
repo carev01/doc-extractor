@@ -14,11 +14,15 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import fitz  # PyMuPDF
 import pymupdf4llm
 
 from app.core.config import settings
+
+if TYPE_CHECKING:
+    from app.services.pdf_import import Segment
 from app.services import docling_client
 from app.services.docling_client import DoclingServeError
 from app.services.sanitize import sanitize_markdown
@@ -182,3 +186,90 @@ async def convert_pdf(pdf_bytes: bytes) -> ConvertedDoc:
     except DoclingServeError as exc:
         logger.warning("docling-serve failed (%s); falling back to pymupdf", exc)
         return _convert_pymupdf(pdf_bytes)
+
+
+# ── splitting by heading boundaries ─────────────────────────────────────────
+
+@dataclass
+class RenderedSegment:
+    title: str
+    level: int
+    path: list[str]
+    page_start: int
+    page_end: int
+    markdown: str
+    images: list[RenderedImage] = field(default_factory=list)
+
+
+_ATX_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+
+
+def _heading_lines(lines: list[str]) -> list[tuple[int, str]]:
+    out = []
+    for i, ln in enumerate(lines):
+        m = _ATX_RE.match(ln.strip())
+        if m:
+            out.append((i, m.group(2).strip()))
+    return out
+
+
+def _find_heading_line(headings: list[tuple[int, str]], title: str, start: int) -> "int | None":
+    t = " ".join(title.lower().split())
+    for idx, text in headings:
+        if idx < start:
+            continue
+        h = " ".join(text.lower().split())
+        if h == t or t in h or h in t:
+            return idx
+    return None
+
+
+def split_into_segments(converted: ConvertedDoc, outline: "list[Segment]") -> list[RenderedSegment]:
+    md = converted.markdown
+    lines = md.split("\n")
+    heading_lines = _heading_lines(lines)
+
+    # boundary tuples: (line_index, title, level, path, page_start, page_end)
+    boundaries: list[tuple[int, str, int, list[str], int, int]] = []
+    if outline:
+        cursor = 0
+        for seg in outline:
+            line = _find_heading_line(heading_lines, seg.title, cursor)
+            if line is None:
+                continue
+            cursor = line + 1
+            boundaries.append((line, seg.title, seg.level, seg.path or [seg.title],
+                               seg.page_start, seg.page_end))
+    elif converted.headings:
+        cursor = 0
+        stack: list[str] = []
+        for h in converted.headings:
+            line = _find_heading_line(heading_lines, h.text, cursor)
+            if line is None:
+                continue
+            cursor = line + 1
+            stack = stack[: h.level - 1]
+            stack.append(h.text)
+            boundaries.append((line, h.text, h.level, list(stack), h.page0, h.page0))
+    if not boundaries and heading_lines:
+        for idx, text in heading_lines:
+            boundaries.append((idx, text, 1, [text], 0, 0))
+
+    if not boundaries:
+        return [RenderedSegment(
+            title="Document", level=1, path=[], page_start=0,
+            page_end=max(0, len(converted.page_texts) - 1),
+            markdown=md.strip(), images=list(converted.images),
+        )]
+
+    segs: list[RenderedSegment] = []
+    for i, (line, title, level, path, p_start, p_end) in enumerate(boundaries):
+        end_line = boundaries[i + 1][0] if i + 1 < len(boundaries) else len(lines)
+        body = "\n".join(lines[line:end_line]).strip()
+        segs.append(RenderedSegment(
+            title=title, level=level, path=path,
+            page_start=p_start, page_end=p_end,
+            markdown=body,
+            images=[img for img in converted.images if img.filename in body],
+        ))
+    return segs
