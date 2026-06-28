@@ -5,18 +5,15 @@ from __future__ import annotations
 import asyncio
 import collections
 import hashlib
-import json
 import logging
 import os
 import re
-import tempfile
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import fitz  # PyMuPDF
 import httpx
-import pymupdf4llm
 from sqlalchemy import delete, func, select, update
 
 from app.core.config import settings
@@ -24,7 +21,10 @@ from app.models.article import Article
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.source import DocumentationSource, SourceStatus
 from app.models.toc import TOCEntry
-from app.services.profiles import llm as llm_mod
+from app.services.pdf_convert import (
+    ConvertedDoc, RenderedImage, RenderedSegment, convert_pdf, split_into_segments,
+)
+from app.services.pdf_escalate import escalate_segment, score_segment
 from app.services.sanitize import sanitize_markdown
 from app.services.versioning import derive_pdf_topic_key
 
@@ -76,13 +76,6 @@ class Segment:
     path: list[str] = field(default_factory=list)
 
 
-@dataclass
-class RenderedImage:
-    filename: str   # content-addressed: "<sha16>.png"
-    data: bytes
-    alt: str
-
-
 def _outline_segments(doc: "fitz.Document") -> list[Segment]:
     toc = doc.get_toc(simple=True)  # [[level, title, page1based], ...]
     if not toc:
@@ -106,234 +99,43 @@ def _outline_segments(doc: "fitz.Document") -> list[Segment]:
     return segs
 
 
-def _body_font_size(doc: "fitz.Document") -> float:
-    sizes: collections.Counter = collections.Counter()
-    for page in doc:
-        for block in page.get_text("dict")["blocks"]:
-            for line in block.get("lines", []):
-                for span in line.get("spans", []):
-                    sizes[round(span["size"], 1)] += len(span.get("text", ""))
-    return sizes.most_common(1)[0][0] if sizes else 12.0
-
-
-def heuristic_segments(doc: "fitz.Document") -> list[Segment]:
-    """Detect headings by font size (>= 1.25x body, short line) and split there.
-    Returns [] when no headings stand out (caller falls back to single segment)."""
-    body = _body_font_size(doc)
-    threshold = body * 1.25
-    headings: list[tuple[int, str]] = []  # (page0, title)
-    for pno, page in enumerate(doc):
-        for block in page.get_text("dict")["blocks"]:
-            for line in block.get("lines", []):
-                spans = line.get("spans", [])
-                if not spans:
-                    continue
-                text = "".join(s.get("text", "") for s in spans).strip()
-                max_size = max((s["size"] for s in spans), default=0)
-                if text and len(text) <= 120 and max_size >= threshold:
-                    headings.append((pno, text))
-    if not headings:
-        return []
-    last_page = doc.page_count - 1
-    segs: list[Segment] = []
-    for i, (pno, title) in enumerate(headings):
-        end = headings[i + 1][0] - 1 if i + 1 < len(headings) else last_page
-        end = max(pno, end)
-        segs.append(Segment(title=title, level=1, page_start=pno,
-                            page_end=end, path=[title]))
-    return segs
-
-
-def segment_pdf(pdf_bytes: bytes) -> list[Segment]:
-    """Split a PDF into ordered article segments on natural content boundaries.
-
-    Outline-first: when the PDF carries a bookmark outline, each entry becomes a
-    segment spanning from its page to the page before the very next outline entry
-    (regardless of level) — so a parent entry covers only its own pages before its
-    first child, producing a non-overlapping page partition. When there is no usable
-    outline this returns a single whole-document segment (Tasks 4/5 layer
-    LLM/heuristic fallbacks in front of that)."""
+def _outline_for(pdf_bytes: bytes) -> list[Segment]:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
-        segs = _outline_segments(doc)
-        if segs:
-            return segs
-        segs = heuristic_segments(doc)
-        if segs:
-            return segs
-        return [Segment(title="Document", level=1, page_start=0,
-                        page_end=max(0, doc.page_count - 1), path=[])]
+        return _outline_segments(doc)
     finally:
         doc.close()
 
 
-# ── Async production entry point (outline → LLM → heuristic → single) ────────
-
-
-def _full_text_with_pages(doc: "fitz.Document") -> list[str]:
-    """Per-page plain text (index = 0-based page number)."""
-    return [page.get_text("text") for page in doc]
-
-
-async def _llm_segment_titles(text: str) -> list[dict]:
-    """Ask the configured LLM for an ordered list of {title, level} section
-    headings. Returns [] on any failure (caller falls back to heuristic)."""
-    prompt = (
-        "You are given the plain text of a documentation PDF. Identify its "
-        "section headings in reading order. Respond with ONLY a JSON array of "
-        'objects like {"title": "...", "level": 1}, where level 1 is a top '
-        "section and deeper levels are subsections. No prose.\n\n"
-        f"TEXT:\n{text[:24000]}"
-    )
-    try:
-        raw = await llm_mod.call_llm(prompt)
-        data = json.loads(llm_mod._strip_fences(raw))
-        out = []
-        for item in data:
-            t = str(item.get("title", "")).strip()
-            if t:
-                out.append({"title": t, "level": int(item.get("level", 1) or 1)})
-        return out
-    except Exception as exc:  # noqa: BLE001 - fallback is intentional
-        logger.warning("LLM segmentation failed, falling back: %s", exc)
-        return []
-
-
-def _titles_to_segments(doc: "fitz.Document", titles: list[dict]) -> list[Segment]:
-    pages = _full_text_with_pages(doc)
-    last_page = doc.page_count - 1
-    located: list[tuple[int, str, int]] = []  # (page0, title, level)
-    for item in titles:
-        title = item["title"]
-        page0 = next((i for i, t in enumerate(pages) if title in t), None)
-        if page0 is not None:
-            located.append((page0, title, item["level"]))
-    if not located:
-        return []
-    segs: list[Segment] = []
-    stack: list[str] = []
-    for i, (pno, title, level) in enumerate(located):
-        end = located[i + 1][0] - 1 if i + 1 < len(located) else last_page
-        end = max(pno, end)
-        stack = stack[: level - 1]
-        stack.append(title)
-        segs.append(Segment(title=title, level=level, page_start=pno,
-                            page_end=end, path=list(stack)))
-    return segs
-
-
-async def segment_pdf_async(pdf_bytes: bytes) -> list[Segment]:
-    """Production segmenter: outline-first, then LLM (when enabled), then the
-    font-size heuristic, then a single whole-document segment."""
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    try:
-        segs = _outline_segments(doc)
-        if segs:
-            return segs
-        if settings.llm_fallback_enabled:
-            text = "\n".join(_full_text_with_pages(doc))
-            titles = await _llm_segment_titles(text)
-            segs = _titles_to_segments(doc, titles)
-            if segs:
-                return segs
-        segs = heuristic_segments(doc)
-        if segs:
-            return segs
-        return [Segment(title="Document", level=1, page_start=0,
-                        page_end=max(0, doc.page_count - 1), path=[])]
-    finally:
-        doc.close()
-
-
-_IMG_MARKER = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<target>[^)]+)\)")
-
-
-def _render_segment(doc: "fitz.Document", segment: Segment) -> tuple[str, list[RenderedImage]]:
-    """Render a segment to clean markdown, content-addressing any images.
-
-    Images are written to a temp dir by pymupdf4llm, then each marker is rewritten
-    to a bare ``<sha>.png`` canonical reference and the bytes collected — so the
-    markdown is stable across runs/page-shifts and identical figures dedupe."""
-    pages = list(range(segment.page_start, segment.page_end + 1))
-    images: list[RenderedImage] = []
-    seen: dict[str, str] = {}  # original target -> canonical filename
-    seen_shas: set[str] = set()  # canonical filenames already collected
-    with tempfile.TemporaryDirectory() as image_dir:
-        md = pymupdf4llm.to_markdown(
-            doc, pages=pages, write_images=True,
-            image_path=image_dir, image_format="png",
-        ) or ""
-
-        def _replace(m: "re.Match") -> str:
-            target = m.group("target")
-            alt = m.group("alt")
-            path = os.path.join(image_dir, os.path.basename(target))
-            if not os.path.isfile(path):
-                return m.group(0)  # not a written image — leave untouched
-            if target in seen:
-                return f"![{alt}]({seen[target]})"
-            with open(path, "rb") as fh:
-                data = fh.read()
-            filename = hashlib.sha256(data).hexdigest()[:16] + ".png"
-            seen[target] = filename
-            if filename not in seen_shas:
-                seen_shas.add(filename)
-                images.append(RenderedImage(filename=filename, data=data, alt=alt))
-            return f"![{alt}]({filename})"
-
-        md = _IMG_MARKER.sub(_replace, md)
-    return sanitize_markdown(md), images
-
-
-def segment_to_markdown(pdf_bytes: bytes, segment: Segment) -> str:
-    """Render a segment's page range to clean markdown (without images)."""
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    try:
-        md, _images = _render_segment(doc, segment)
-        return md
-    finally:
-        doc.close()
-
-
-def render_segments(
-    pdf_bytes: bytes, segments: list[Segment]
-) -> list[tuple[str, list[RenderedImage]]]:
-    """Render every segment, opening the PDF once. Returns (markdown, images)
-    per segment, aligned with ``segments``."""
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    try:
-        return [_render_segment(doc, seg) for seg in segments]
-    finally:
-        doc.close()
-
-
-async def convert_segments_async(
+async def build_segments(
     pdf_bytes: bytes,
-    segments: list[Segment],
     progress: "collections.abc.Callable[[int, int], collections.abc.Awaitable[None]] | None" = None,
-) -> list[tuple[str, list[RenderedImage]]]:
-    """Render every segment to markdown OFF the event loop, one thread hop per
-    segment, so the worker's heartbeat and log-flush tasks keep ticking during a
-    long conversion. ``progress(done, total)`` is awaited after each segment.
+) -> list[RenderedSegment]:
+    """Convert the whole PDF via docling-serve, split on heading boundaries, then
+    VLM-escalate only low-confidence segments within the per-run page budget."""
+    converted: ConvertedDoc = await convert_pdf(pdf_bytes)
+    outline = _outline_for(pdf_bytes)
+    segments = split_into_segments(converted, outline)
 
-    Rendering a large PDF synchronously on the event loop starves the heartbeat,
-    so the scheduler reaps the run as stale (>300s) before it can finish — the
-    "stuck large PDF" bug. Each ``_render_segment`` is CPU-bound and operates on
-    its own page range, so offloading it to a worker thread is safe (the shared
-    ``doc`` is accessed by one thread at a time since the calls are awaited in
-    sequence)."""
-    rendered: list[tuple[str, list[RenderedImage]]] = []
-    total = len(segments)
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    try:
-        for i, seg in enumerate(segments):
-            md, images = await asyncio.to_thread(_render_segment, doc, seg)
-            rendered.append((md, images))
-            if progress is not None:
-                await progress(i + 1, total)
-    finally:
-        doc.close()
-    return rendered
+    if not settings.pdf_vlm_escalation_enabled:
+        return segments
+
+    flagged = [s for s in segments if score_segment(s, converted)]
+    budget = settings.pdf_vlm_max_pages_per_run
+    done, total = 0, len(flagged)
+    for seg in flagged:
+        pages = seg.page_end - seg.page_start + 1
+        if pages > budget:
+            continue
+        new_md = await escalate_segment(pdf_bytes, seg)
+        seg.markdown = new_md
+        matched = [img for img in converted.images if img.filename in new_md]
+        seg.images = matched or seg.images
+        budget -= pages
+        done += 1
+        if progress is not None:
+            await progress(done, total)
+    return segments
 
 
 async def _latest_completed_hash(db, source_id) -> str | None:
@@ -390,39 +192,27 @@ async def run_pdf_extraction(service, db, source, run, run_pk) -> ExtractionRun:
         await db.flush()
         return run
 
-    # Segment + build the TOC tree (delete-and-rebuild, like the web path).
-    segments = await segment_pdf_async(pdf_bytes)
     run.current_phase = "pdf_convert"
-    run.articles_total = len(segments)
+    await db.commit()
+
+    async def _convert_progress(done: int, total: int) -> None:
+        run.articles_extracted = done
+        await db.commit()
+        if total and (done == 1 or done % 5 == 0 or done == total):
+            logger.info("PDF VLM escalation: %d/%d segments re-converted", done, total)
+
+    rendered_segments = await build_segments(pdf_bytes, _convert_progress)
+    run.articles_total = len(rendered_segments)
     await db.commit()
 
     await db.execute(delete(TOCEntry).where(TOCEntry.source_id == source.id))
     await db.flush()
 
-    # parent via a level stack: each segment's parent is the nearest preceding
-    # entry with a strictly smaller level.
     entry_ids: list[uuid.UUID] = []
     levels: list[int] = []
-    article_inputs: list[tuple] = []  # (toc_id, sort_order, title, topic_key, url, md)
-    # Disambiguate colliding topic keys within this run: two sibling sections
-    # sharing a title slug to the same key, which process_article_result matches
-    # on — without this the later one overwrites the earlier (silent data loss).
-    # First occurrence keeps the clean slug; duplicates get -2, -3, … Stable as
-    # long as section order is stable, so incremental diffs stay stable.
+    article_inputs: list[tuple] = []
     key_counts: dict[str, int] = {}
-    # Render every segment, opening the PDF once. Runs off the event loop (one
-    # thread hop per segment) so the worker heartbeat keeps ticking on large
-    # PDFs, and reports per-segment progress + log lines for the UI.
-    logger.info("Converting %d PDF segments to markdown", len(segments))
-
-    async def _convert_progress(done: int, total: int) -> None:
-        run.articles_extracted = done
-        await db.commit()
-        if done == 1 or done % 10 == 0 or done == total:
-            logger.info("PDF conversion: %d/%d segments converted", done, total)
-
-    rendered = await convert_segments_async(pdf_bytes, segments, _convert_progress)
-    for i, seg in enumerate(segments):
+    for i, seg in enumerate(rendered_segments):
         parent_id = None
         for j in range(i - 1, -1, -1):
             if levels[j] < seg.level:
@@ -442,7 +232,9 @@ async def run_pdf_extraction(service, db, source, run, run_pk) -> ExtractionRun:
         await db.flush()
         entry_ids.append(toc.id)
         levels.append(seg.level)
-        article_inputs.append((toc.id, i, seg.title, topic_key, url, rendered[i][0], rendered[i][1]))
+        article_inputs.append(
+            (toc.id, i, seg.title, topic_key, url, seg.markdown, seg.images)
+        )
 
     run.current_phase = "content_scraping"
     # The convert phase used articles_extracted to report conversion progress;

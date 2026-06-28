@@ -5,7 +5,8 @@ import fitz  # PyMuPDF
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.services.pdf_import import segment_pdf, Segment
+import app.services.pdf_import as pi
+from app.services.pdf_import import Segment
 
 
 def _pdf_with_outline() -> bytes:
@@ -30,7 +31,7 @@ def _pdf_no_outline() -> bytes:
 
 
 def test_outline_segments_have_correct_ranges_levels_paths():
-    segs = segment_pdf(_pdf_with_outline())
+    segs = pi._outline_for(_pdf_with_outline())
     assert [s.title for s in segs] == ["Chapter 1", "Installation", "Chapter 2"]
     assert [s.level for s in segs] == [1, 2, 1]
     # Chapter 1: page 0; Installation: page 1; Chapter 2: pages 2-3
@@ -42,9 +43,6 @@ def test_outline_segments_have_correct_ranges_levels_paths():
     assert segs[2].path == ["Chapter 2"]
 
 
-def test_no_outline_falls_back_to_single_segment():
-    segs = segment_pdf(_pdf_no_outline())
-    assert len(segs) == 1
-    assert segs[0].page_start == 0
-    assert segs[0].page_end == 0
-    assert isinstance(segs[0], Segment)
+def test_no_outline_returns_empty_list():
+    segs = pi._outline_for(_pdf_no_outline())
+    assert segs == []
