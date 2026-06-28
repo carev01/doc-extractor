@@ -69,6 +69,7 @@ async def test_convert_posts_expected_request(monkeypatch):
     assert opts["vlm_pipeline_model_api"]["url"] == "http://router/v1/chat"
     assert opts["vlm_pipeline_model_api"]["headers"]["Authorization"] == "Bearer ork"
     assert opts["vlm_pipeline_model_api"]["params"]["model"] == "qwen/qwen3-vl-32b-instruct"
+    assert opts["vlm_pipeline_model_api"]["response_format"] == "markdown"
 
 
 @pytest.mark.asyncio

@@ -30,6 +30,8 @@ def _vlm_model_api() -> dict:
         "headers": {"Authorization": f"Bearer {settings.pdf_vlm_api_key}"},
         "params": {"model": settings.pdf_vlm_model},
         "prompt": _VLM_PROMPT,
+        # Required by docling-serve's VlmModelApi; we ask the model for markdown.
+        "response_format": "markdown",
     }
 
 
