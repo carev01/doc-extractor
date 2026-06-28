@@ -1,40 +1,47 @@
-# Robust PDF Conversion (Docling + heading-split + VLM escalation) Implementation Plan
+# Robust PDF Conversion (docling-serve + heading-split + VLM escalation) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the page-range PDF→Markdown pipeline with whole-document Docling conversion split on heading boundaries, plus automatic quality-gated VLM escalation (OpenRouter) for the hard pages, eliminating cross-section bleed, truncated tables, and messed formatting.
+**Goal:** Replace the page-range PDF→Markdown pipeline with whole-document conversion via the **docling-serve** HTTP API, split on heading boundaries (never page ranges), plus automatic quality-gated VLM escalation that runs through docling-serve's VLM pipeline (pointed at OpenRouter) for the hard pages.
 
-**Architecture:** Convert the whole PDF once with Docling (reading order + tables intact + page provenance), then split the resulting markdown at heading boundaries (never page ranges). Score each article for low-confidence tables/sparse text and re-convert only those by rendering pages to images and calling a cheap OpenRouter vision model. The existing DB / diff / versioning / TOC and `process_article_result` machinery is unchanged.
+**Architecture:** The backend calls docling-serve (`http://docling.home.lan`, `X-Api-Key` auth) like it calls Firecrawl — no docling/torch embedded in the app image. `POST /v1/convert/source` (base64 file + nested options) returns whole-doc markdown plus a structured `DoclingDocument` (headings with `level`/`page_no`, tables with `page_no`). We split the markdown at heading boundaries, score each article, and re-convert only low-confidence segments via the same API with `pipeline=vlm` + `page_range` + `vlm_pipeline_model_api` (OpenRouter). The existing DB / diff / versioning / TOC and `process_article_result` machinery is unchanged.
 
-**Tech Stack:** Python 3, FastAPI, SQLAlchemy async, PyMuPDF (`fitz`), `pymupdf4llm` (fallback only), `docling`, httpx, pytest (sync DB style).
+**Tech Stack:** Python 3, FastAPI, SQLAlchemy async, PyMuPDF (`fitz`), `pymupdf4llm` (fallback only), httpx, pytest (sync DB style).
 
 ## Global Constraints
 
 - Spec: `docs/superpowers/specs/2026-06-27-pdf-conversion-docling-vlm-design.md`.
+- docling-serve: base URL `http://docling.home.lan`, auth header **`X-Api-Key`**, endpoint `POST /v1/convert/source`, request body `{"sources":[{"kind":"file","base64_string":<b64>,"filename":<name>}],"options":{...}}`, response `{"document":{"md_content","json_content"},"status","errors","processing_time"}` where `status` success is `"success"` (treat `"partial_success"` as success too).
+- VLM is **OpenRouter via docling-serve's `vlm_pipeline_model_api`**, never a direct Claude/Anthropic call. Default model `qwen/qwen3-vl-32b-instruct`.
+- `json_content` (`DoclingDocument`) shape used: `texts[]` items have `label` (`section_header`,`text`,`page_header`,`page_footer`,`list_item`,…), `text`, `level` (int, for headings), `prov[].page_no` (1-based). `tables[]` items have `prov[].page_no`.
+- **Secrets:** `docling_serve_api_key` and `pdf_vlm_api_key` come from env (`DOCEXTRACTOR_…`). `backend/.env` is git-TRACKED — NEVER write keys there. Local validation exports them inline on the command.
 - Settings use the `DOCEXTRACTOR_` env prefix via `pydantic-settings` (`app/core/config.py`).
-- VLM is **OpenRouter (OpenAI-compatible), never Claude/Anthropic**. Default model `qwen/qwen3-vl-32b-instruct`.
-- Conversion is CPU-bound and MUST run off the event loop via `asyncio.to_thread` so the worker heartbeat keeps ticking (see `worker-event-loop-heartbeat` memory / PR #90).
-- Never regress to "no output": Docling failure falls back to a whole-doc `pymupdf4llm` conversion.
+- Conversion/escalation are HTTP I/O via `httpx.AsyncClient` (async) — they do NOT block the event loop, so no `asyncio.to_thread` is needed for them.
+- Never regress to "no output": a docling-serve failure falls back to a whole-doc `pymupdf4llm` conversion.
 - No DB schema change. `process_article_result` / `_reconcile_removals` / TOC-tree build stay as-is.
-- Tests are synchronous (`psycopg2` + sync `Session`); build deterministic PDFs with `fitz`; mock Docling and all network/LLM calls in unit tests. Test files live in `backend/tests/`, each starting with the existing `sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))` shim.
-- Run all backend commands from `backend/`. Test runner: `pytest`.
-- Validation PDF is at the session scratchpad: `$SCRATCH/HYCU_CompatibilityMatrix.pdf` (24 pages; outline puts several sections on the same page — the bleed reproducer).
+- Tests are synchronous (`psycopg2` + sync `Session`); async functions tested with `pytest.mark.asyncio`. Build deterministic PDFs with `fitz`; **mock the docling-serve HTTP client** and all network in unit tests. Test files live in `backend/tests/`, each starting with `sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))`.
+- Run all backend commands from `backend/`. Use `python3` and `pytest` — there is NO `python` on PATH.
+- Validation PDF: `$SCRATCH/HYCU_CompatibilityMatrix.pdf` (24 pages; outline puts several sections on the same page — the bleed reproducer). A reference copy of the docling-serve OpenAPI spec is at `$SCRATCH/docling_serve_v1.12_openapi.json`.
+- Prior work already on the branch: base PDF/VLM settings were added in commit `2230e06` (Task 1 below amends them); the embedded-docling dependency was added then reverted (commit `6402afb`).
 
 ---
 
-### Task 1: Add conversion + VLM settings
+### Task 1: Amend settings for docling-serve
+
+The base `pdf_*`/`pdf_vlm_*` settings already exist (commit `2230e06`). Add the docling-serve client settings and drop the now-unused `pdf_vlm_dpi` (docling-serve renders pages itself).
 
 **Files:**
-- Modify: `backend/app/core/config.py` (after line 90, the `pdf_max_upload_bytes` block)
-- Test: `backend/tests/test_pdf_convert_settings.py` (create)
+- Modify: `backend/app/core/config.py` (the PDF conversion settings block added after `pdf_max_upload_bytes`)
+- Modify: `backend/tests/test_pdf_convert_settings.py`
 
 **Interfaces:**
-- Produces: `settings.pdf_converter: str`, `settings.pdf_vlm_escalation_enabled: bool`, `settings.pdf_vlm_base_url: str`, `settings.pdf_vlm_api_key: str`, `settings.pdf_vlm_model: str`, `settings.pdf_vlm_max_pages_per_run: int`, `settings.pdf_vlm_dpi: int`.
+- Produces: `settings.docling_serve_url: str`, `settings.docling_serve_api_key: str`, `settings.docling_serve_timeout: float`. Removes `settings.pdf_vlm_dpi`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Update the test**
+
+Replace the body of `backend/tests/test_pdf_convert_settings.py` with:
 
 ```python
-# backend/tests/test_pdf_convert_settings.py
 import os
 import sys
 
@@ -44,7 +51,6 @@ from app.core.config import Settings
 
 
 def _settings(**env):
-    # Required fields have no defaults; supply dummies so Settings() constructs.
     base = dict(
         database_url="postgresql+asyncpg://x/y",
         database_url_sync="postgresql+psycopg2://x/y",
@@ -57,151 +63,89 @@ def _settings(**env):
 def test_pdf_converter_defaults():
     s = _settings()
     assert s.pdf_converter == "docling"
+    assert s.docling_serve_url == "http://docling.home.lan"
+    assert s.docling_serve_api_key == ""
+    assert s.docling_serve_timeout == 600.0
     assert s.pdf_vlm_escalation_enabled is True
     assert s.pdf_vlm_base_url == "https://openrouter.ai/api/v1/chat/completions"
     assert s.pdf_vlm_api_key == ""
     assert s.pdf_vlm_model == "qwen/qwen3-vl-32b-instruct"
     assert s.pdf_vlm_max_pages_per_run == 30
-    assert s.pdf_vlm_dpi == 150
 
 
 def test_pdf_settings_override_from_env_kwargs():
-    s = _settings(pdf_converter="pymupdf", pdf_vlm_max_pages_per_run=5)
+    s = _settings(pdf_converter="pymupdf", docling_serve_url="http://x.local",
+                  pdf_vlm_max_pages_per_run=5)
     assert s.pdf_converter == "pymupdf"
+    assert s.docling_serve_url == "http://x.local"
     assert s.pdf_vlm_max_pages_per_run == 5
+
+
+def test_pdf_vlm_dpi_removed():
+    assert not hasattr(_settings(), "pdf_vlm_dpi")
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_pdf_convert_settings.py -v`
-Expected: FAIL — `AttributeError`/validation: `pdf_converter` not defined.
+Expected: FAIL — `docling_serve_url` missing / `pdf_vlm_dpi` still present.
 
-- [ ] **Step 3: Add the settings**
+- [ ] **Step 3: Update the settings block**
 
-In `backend/app/core/config.py`, immediately after the `pdf_max_upload_bytes` line (line 90):
+In `backend/app/core/config.py`, replace the PDF conversion settings block (the one beginning `# PDF conversion engine (Layer A)`) with:
 
 ```python
     # PDF conversion engine (Layer A) and VLM escalation (Layer B).
-    # pdf_converter: "docling" (default, layout/table-aware) | "pymupdf" (fallback).
-    # The VLM path uses OpenRouter (OpenAI-compatible) — never Anthropic — and is
-    # configured independently of the llm_* (segmentation) settings above.
+    # pdf_converter: "docling" (default, remote docling-serve) | "pymupdf"
+    # (in-process fallback engine). docling-serve is consumed over HTTP — no
+    # docling/torch is embedded in this image.
     pdf_converter: str = "docling"
+    docling_serve_url: str = "http://docling.home.lan"
+    docling_serve_api_key: str = ""          # X-Api-Key (env only — .env is tracked)
+    docling_serve_timeout: float = 600.0     # per-request read timeout (s)
+    # VLM escalation runs through docling-serve's VLM pipeline, pointed at an
+    # OpenAI-compatible remote model (OpenRouter). The app forwards the endpoint,
+    # bearer key, and model name in the convert request — never calls Anthropic.
     pdf_vlm_escalation_enabled: bool = True
     pdf_vlm_base_url: str = "https://openrouter.ai/api/v1/chat/completions"
-    pdf_vlm_api_key: str = ""
+    pdf_vlm_api_key: str = ""                 # Bearer key (env only)
     pdf_vlm_model: str = "qwen/qwen3-vl-32b-instruct"
     pdf_vlm_max_pages_per_run: int = 30
-    pdf_vlm_dpi: int = 150
 ```
+
+(This drops the previous `pdf_vlm_dpi` line.)
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_pdf_convert_settings.py -v`
-Expected: PASS (both tests).
+Expected: PASS (three tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add app/core/config.py tests/test_pdf_convert_settings.py
-git commit -m "feat(pdf): add docling/VLM conversion settings"
+git commit -m "feat(pdf): docling-serve client settings; drop pdf_vlm_dpi"
 ```
 
 ---
 
-### Task 2: Add Docling dependency and confirm its API (spike)
-
-This task is verification-based, not TDD: it pins the exact Docling API on the
-installed version so Tasks 4–5 use correct calls. Its deliverable is a confirmed
-probe script committed under `backend/tests/manual/`.
+### Task 2: `docling_client.py` — async HTTP client for docling-serve
 
 **Files:**
-- Modify: `backend/requirements.txt` (after line 19, the `pymupdf4llm` pin)
-- Create: `backend/tests/manual/docling_probe.py`
-
-- [ ] **Step 1: Pin the dependency**
-
-Add to `backend/requirements.txt` after the `pymupdf4llm==0.0.17` line:
-
-```
-docling==2.15.0
-```
-
-- [ ] **Step 2: Install**
-
-Run: `pip install 'docling==2.15.0'`
-Expected: installs (pulls torch + models libs; large). If `2.15.0` is unavailable, install the newest `2.x` and update the pin to match the installed version (`pip show docling`).
-
-- [ ] **Step 3: Write the probe script**
-
-```python
-# backend/tests/manual/docling_probe.py
-"""Manual probe: confirm Docling's heading/table/provenance API on this version.
-
-Run:  SCRATCH=<scratchpad dir> python tests/manual/docling_probe.py
-Prints the engine surface Tasks 4-5 depend on so the field/enum names can be
-verified against the installed docling version.
-"""
-import os
-import sys
-from io import BytesIO
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-
-from docling.document_converter import DocumentConverter
-from docling.datamodel.base_models import DocumentStream
-
-pdf = os.path.join(os.environ["SCRATCH"], "HYCU_CompatibilityMatrix.pdf")
-data = open(pdf, "rb").read()
-
-conv = DocumentConverter()
-res = conv.convert(DocumentStream(name="probe.pdf", stream=BytesIO(data)))
-doc = res.document
-
-md = doc.export_to_markdown()
-print("=== markdown length:", len(md))
-print(md[:600])
-print("\n=== iterate_items labels/levels/pages ===")
-for item, level in doc.iterate_items():
-    label = getattr(item, "label", None)
-    prov = getattr(item, "prov", None) or []
-    page = prov[0].page_no if prov else None
-    text = (getattr(item, "text", "") or "")[:50]
-    print(repr(str(label)), "lvl=", getattr(item, "level", None),
-          "tree_level=", level, "page=", page, "text=", repr(text))
-print("\n=== tables ===", len(getattr(doc, "tables", []) or []))
-for t in (getattr(doc, "tables", []) or []):
-    prov = getattr(t, "prov", None) or []
-    print("table page=", prov[0].page_no if prov else None)
-```
-
-- [ ] **Step 4: Run the probe and record results**
-
-Run: `SCRATCH=/tmp/claude-1000/.../scratchpad python tests/manual/docling_probe.py` (use the real scratchpad path holding `HYCU_CompatibilityMatrix.pdf`).
-Expected: markdown printed; section headings emitted with a recognisable label (e.g. `section_header`/`DocItemLabel.SECTION_HEADER`) and a `level`; tables listed with page numbers. **Record the exact label string and level field name** — Tasks 4 normalises against them.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add requirements.txt tests/manual/docling_probe.py
-git commit -m "build(pdf): add docling dependency + API probe script"
-```
-
----
-
-### Task 3: Add image support to `call_llm`
-
-**Files:**
-- Modify: `backend/app/services/profiles/llm.py:93-165` (the `call_llm` function)
-- Test: `backend/tests/test_call_llm_images.py` (create)
+- Create: `backend/app/services/docling_client.py`
+- Test: `backend/tests/test_docling_client.py` (create)
 
 **Interfaces:**
-- Consumes: nothing new.
-- Produces: `async call_llm(prompt: str, *, system: str | None = None, images: list[bytes] | None = None) -> str`. When `images` is given, the user turn becomes a content-block list. OpenAI/OpenRouter: `{"type":"image_url","image_url":{"url":"data:image/png;base64,<b64>"}}`. Anthropic: `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"<b64>"}}`. Text-only callers are unaffected.
+- Produces:
+  - `class DoclingServeError(Exception)`
+  - `async def convert(pdf_bytes: bytes, *, filename: str = "source.pdf", pipeline: str = "standard", page_range: tuple[int, int] | None = None, use_vlm_api: bool = False, do_ocr: bool = False, image_export_mode: str = "embedded") -> dict` — POSTs `/v1/convert/source` and returns the `document` dict (`{"md_content", "json_content", ...}`). Raises `DoclingServeError` on transport error, non-200, error status, or missing document.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# backend/tests/test_call_llm_images.py
+# backend/tests/test_docling_client.py
+import base64
+import json
 import os
 import sys
 
@@ -209,21 +153,24 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.services.profiles import llm as llm_mod
+import app.services.docling_client as dc
 
 
-class _FakeResp:
-    def __init__(self, payload):
+class _Resp:
+    def __init__(self, payload, status=200):
         self._payload = payload
+        self.status_code = status
 
     def raise_for_status(self):
-        pass
+        if self.status_code >= 400:
+            import httpx
+            raise httpx.HTTPStatusError("err", request=None, response=None)
 
     def json(self):
         return self._payload
 
 
-class _FakeClient:
+class _Client:
     captured = {}
 
     def __init__(self, *a, **k):
@@ -236,185 +183,258 @@ class _FakeClient:
         return False
 
     async def post(self, url, headers=None, json=None):
-        _FakeClient.captured = {"url": url, "headers": headers, "json": json}
-        # OpenAI-shaped response
-        return _FakeResp({"choices": [{"message": {"content": "ok"}}]})
+        _Client.captured = {"url": url, "headers": headers, "json": json}
+        return _Resp({"status": "success",
+                      "document": {"md_content": "# X", "json_content": {"texts": []}}})
 
 
 @pytest.mark.asyncio
-async def test_openai_image_payload_shape(monkeypatch):
-    monkeypatch.setattr(llm_mod.settings, "llm_provider", "openai")
-    monkeypatch.setattr(llm_mod.settings, "llm_api_key", "k")
-    monkeypatch.setattr(llm_mod.settings, "llm_base_url", "http://router/v1/chat")
-    monkeypatch.setattr(llm_mod.settings, "llm_model", "vision-model")
-    monkeypatch.setattr(llm_mod.httpx, "AsyncClient", _FakeClient)
+async def test_convert_posts_expected_request(monkeypatch):
+    monkeypatch.setattr(dc.settings, "docling_serve_url", "http://docling.test")
+    monkeypatch.setattr(dc.settings, "docling_serve_api_key", "secret")
+    monkeypatch.setattr(dc.settings, "pdf_vlm_base_url", "http://router/v1/chat")
+    monkeypatch.setattr(dc.settings, "pdf_vlm_api_key", "ork")
+    monkeypatch.setattr(dc.settings, "pdf_vlm_model", "qwen/qwen3-vl-32b-instruct")
+    monkeypatch.setattr(dc.httpx, "AsyncClient", _Client)
 
-    out = await llm_mod.call_llm("describe", images=[b"\x89PNG_fake"])
-    assert out == "ok"
-    msgs = _FakeClient.captured["json"]["messages"]
-    content = msgs[-1]["content"]
-    assert isinstance(content, list)
-    assert content[0] == {"type": "text", "text": "describe"}
-    assert content[1]["type"] == "image_url"
-    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    doc = await dc.convert(b"%PDF-1.4 fake", pipeline="vlm", page_range=(2, 3),
+                           use_vlm_api=True)
+    assert doc["md_content"] == "# X"
+
+    cap = _Client.captured
+    assert cap["url"] == "http://docling.test/v1/convert/source"
+    assert cap["headers"]["X-Api-Key"] == "secret"
+    body = cap["json"]
+    src = body["sources"][0]
+    assert src["kind"] == "file"
+    assert base64.b64decode(src["base64_string"]) == b"%PDF-1.4 fake"
+    opts = body["options"]
+    assert opts["to_formats"] == ["md", "json"]
+    assert opts["pipeline"] == "vlm"
+    assert opts["page_range"] == [2, 3]
+    assert opts["vlm_pipeline_model_api"]["url"] == "http://router/v1/chat"
+    assert opts["vlm_pipeline_model_api"]["headers"]["Authorization"] == "Bearer ork"
+    assert opts["vlm_pipeline_model_api"]["params"]["model"] == "qwen/qwen3-vl-32b-instruct"
 
 
 @pytest.mark.asyncio
-async def test_text_only_payload_unchanged(monkeypatch):
-    monkeypatch.setattr(llm_mod.settings, "llm_provider", "openai")
-    monkeypatch.setattr(llm_mod.settings, "llm_api_key", "k")
-    monkeypatch.setattr(llm_mod.settings, "llm_base_url", "http://router/v1/chat")
-    monkeypatch.setattr(llm_mod.settings, "llm_model", "m")
-    monkeypatch.setattr(llm_mod.httpx, "AsyncClient", _FakeClient)
+async def test_convert_raises_on_error_status(monkeypatch):
+    class _ErrClient(_Client):
+        async def post(self, url, headers=None, json=None):
+            return _Resp({"status": "failure", "errors": ["boom"], "document": None})
 
-    await llm_mod.call_llm("hello")
-    content = _FakeClient.captured["json"]["messages"][-1]["content"]
-    assert content == "hello"
+    monkeypatch.setattr(dc.settings, "docling_serve_url", "http://docling.test")
+    monkeypatch.setattr(dc.settings, "docling_serve_api_key", "secret")
+    monkeypatch.setattr(dc.httpx, "AsyncClient", _ErrClient)
+
+    with pytest.raises(dc.DoclingServeError):
+        await dc.convert(b"x")
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_call_llm_images.py -v`
-Expected: FAIL — `call_llm()` got an unexpected keyword argument `images`.
+Run: `pytest tests/test_docling_client.py -v`
+Expected: FAIL — `No module named app.services.docling_client`.
 
-- [ ] **Step 3: Implement image support**
-
-In `backend/app/services/profiles/llm.py`, add a helper above `call_llm` and thread `images` through. Replace the `call_llm` signature line and the message-construction in both provider branches:
+- [ ] **Step 3: Implement the client**
 
 ```python
+# backend/app/services/docling_client.py
+"""Thin async client for the docling-serve REST API (PDF→markdown+structure).
+
+docling-serve runs on the homelab k3s; we consume it over HTTP exactly like
+Firecrawl, so no docling/torch dependency is embedded in this image."""
+from __future__ import annotations
+
 import base64
+import logging
 
-def _b64_png(data: bytes) -> str:
-    return base64.b64encode(data).decode("ascii")
+import httpx
+
+from app.core.config import settings
+
+logger = logging.getLogger(__name__)
+
+_VLM_PROMPT = (
+    "Convert this page to markdown. Render every table as a proper Markdown "
+    "table with correct rows and columns. Do not miss any text and only output "
+    "the bare markdown!"
+)
+
+
+class DoclingServeError(Exception):
+    """Raised when docling-serve cannot convert a document."""
+
+
+def _vlm_model_api() -> dict:
+    return {
+        "url": settings.pdf_vlm_base_url,
+        "headers": {"Authorization": f"Bearer {settings.pdf_vlm_api_key}"},
+        "params": {"model": settings.pdf_vlm_model},
+        "prompt": _VLM_PROMPT,
+    }
+
+
+async def convert(
+    pdf_bytes: bytes,
+    *,
+    filename: str = "source.pdf",
+    pipeline: str = "standard",
+    page_range: "tuple[int, int] | None" = None,
+    use_vlm_api: bool = False,
+    do_ocr: bool = False,
+    image_export_mode: str = "embedded",
+) -> dict:
+    """POST a PDF to docling-serve /v1/convert/source; return the `document` dict
+    (`md_content`, `json_content`). Raise DoclingServeError on any failure."""
+    options: dict = {
+        "to_formats": ["md", "json"],
+        "do_ocr": do_ocr,
+        "image_export_mode": image_export_mode,
+        "table_mode": "accurate",
+        "pipeline": pipeline,
+    }
+    if page_range is not None:
+        options["page_range"] = [page_range[0], page_range[1]]
+    if use_vlm_api:
+        options["vlm_pipeline_model_api"] = _vlm_model_api()
+
+    body = {
+        "sources": [{
+            "kind": "file",
+            "base64_string": base64.b64encode(pdf_bytes).decode("ascii"),
+            "filename": filename,
+        }],
+        "options": options,
+    }
+    url = settings.docling_serve_url.rstrip("/") + "/v1/convert/source"
+    headers = {"X-Api-Key": settings.docling_serve_api_key,
+               "content-type": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=settings.docling_serve_timeout) as client:
+            resp = await client.post(url, headers=headers, json=body)
+            resp.raise_for_status()
+            payload = resp.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise DoclingServeError(f"docling-serve request failed: {exc}") from exc
+
+    if payload.get("status") not in ("success", "partial_success"):
+        raise DoclingServeError(
+            f"docling-serve status={payload.get('status')!r} "
+            f"errors={payload.get('errors')}"
+        )
+    doc = payload.get("document")
+    if not doc:
+        raise DoclingServeError("docling-serve returned no document")
+    return doc
 ```
 
-Change the signature to:
+- [ ] **Step 4: Run tests to verify they pass**
 
-```python
-async def call_llm(
-    prompt: str, *, system: str | None = None, images: list[bytes] | None = None
-) -> str:
-```
-
-In the **anthropic** branch, replace the `messages=[{"role": "user", "content": prompt}]` construction with:
-
-```python
-            if images:
-                content = [{"type": "text", "text": prompt}]
-                for img in images:
-                    content.append({
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": _b64_png(img),
-                        },
-                    })
-            else:
-                content = prompt
-            body = {
-                "model": model,
-                "max_tokens": settings.llm_max_tokens,
-                "messages": [{"role": "user", "content": content}],
-            }
-```
-
-In the **openai** branch, replace `messages.append({"role": "user", "content": prompt})` with:
-
-```python
-            if images:
-                user_content = [{"type": "text", "text": prompt}]
-                for img in images:
-                    user_content.append({
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{_b64_png(img)}"},
-                    })
-            else:
-                user_content = prompt
-            messages.append({"role": "user", "content": user_content})
-```
-
-Note: the openai branch sets `response_format={"type": "json_object"}`. Leave it for text-only callers, but it must NOT force JSON for the VLM markdown path — Task 7 calls a separate helper that does not use this function's json_object setting. (Task 7's helper builds its own request; `call_llm`'s openai branch is used only by existing JSON callers.) Therefore the VLM path does **not** go through `call_llm`'s openai branch; it uses the dedicated helper in Task 7. `call_llm`'s `images` support here is kept general (and exercised by the anthropic-shape test path) but the production VLM call uses Task 7's helper.
-
-> Implementer note: because the existing openai branch hard-codes `response_format=json_object`, do not route the VLM markdown call through `call_llm`. Task 7 defines `_vlm_complete` for that. The `images` kwarg on `call_llm` remains for completeness/future use and is covered by the tests above (the openai test asserts payload shape only; it does not assert json_object is absent).
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pytest tests/test_call_llm_images.py -v`
+Run: `pytest tests/test_docling_client.py -v`
 Expected: PASS (both tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add app/services/profiles/llm.py tests/test_call_llm_images.py
-git commit -m "feat(llm): optional image content blocks in call_llm"
+git add app/services/docling_client.py tests/test_docling_client.py
+git commit -m "feat(pdf): async docling-serve HTTP client"
 ```
 
 ---
 
-### Task 4: `pdf_convert.convert_pdf` — whole-doc conversion + pymupdf fallback
+### Task 3: `pdf_convert.convert_pdf` — parse docling-serve output + pymupdf fallback
 
 **Files:**
 - Create: `backend/app/services/pdf_convert.py`
 - Test: `backend/tests/test_pdf_convert.py` (create)
 
 **Interfaces:**
-- Consumes: `RenderedImage` (moved here from `pdf_import.py`).
+- Consumes: `docling_client.convert` / `DoclingServeError` (Task 2).
 - Produces:
+  - `@dataclass RenderedImage(filename: str, data: bytes, alt: str)`
   - `@dataclass DocHeading(text: str, level: int, page0: int)`
-  - `@dataclass ConvertedDoc(markdown: str, headings: list[DocHeading], page_texts: list[str], table_pages: set[int], engine: str)`
-  - `@dataclass RenderedImage(filename: str, data: bytes, alt: str)` (moved from `pdf_import`)
-  - `def convert_pdf(pdf_bytes: bytes) -> ConvertedDoc` — tries Docling, falls back to `pymupdf4llm` whole-doc on any exception. Markdown has content-addressed image refs (`<sha16>.png`); the images themselves are returned via `ConvertedDoc`? No — images are sliced per segment in Task 5, so `ConvertedDoc` also carries `images: list[RenderedImage]`. Add that field.
-  - `def _content_address_images(markdown: str, image_dir: str) -> tuple[str, list[RenderedImage]]` — rewrite `![alt](target)` markers whose target file exists in `image_dir` to `![alt](<sha16>.png)`, collecting deduped bytes (logic identical to the current `_render_segment` replacer).
-
-Update `ConvertedDoc` to include `images: list[RenderedImage]`:
-`ConvertedDoc(markdown, headings, page_texts, table_pages, images, engine)`.
+  - `@dataclass ConvertedDoc(markdown: str, headings: list[DocHeading], page_texts: list[str], table_pages: set[int], images: list[RenderedImage], engine: str)`
+  - `async def convert_pdf(pdf_bytes: bytes) -> ConvertedDoc` — docling-serve standard conversion; on `DoclingServeError`/empty, falls back to `pymupdf4llm` whole-doc.
+  - `def _content_address_data_uris(markdown: str) -> tuple[str, list[RenderedImage]]` — rewrite embedded `data:image/...;base64,…` markers to content-addressed `<sha16>.png`.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # backend/tests/test_pdf_convert.py
+import base64
 import os
 import sys
 
 import fitz
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import app.services.pdf_convert as pc
+import app.services.docling_client as dc
 
 
-def _two_section_pdf() -> bytes:
+def _pdf() -> bytes:
     doc = fitz.open()
     p = doc.new_page()
-    p.insert_text((72, 72), "Alpha Section", fontsize=20)
-    p.insert_text((72, 120), "Alpha body content here.", fontsize=11)
-    p.insert_text((72, 200), "Beta Section", fontsize=20)
-    p.insert_text((72, 240), "Beta body content here.", fontsize=11)
+    p.insert_text((72, 72), "Alpha body content here.")
     return doc.tobytes()
 
 
-def test_pymupdf_fallback_produces_markdown_and_page_texts(monkeypatch):
-    # Force the docling branch to raise so the fallback runs.
-    monkeypatch.setattr(pc, "_convert_docling",
-                        lambda b: (_ for _ in ()).throw(RuntimeError("no docling")))
-    out = pc.convert_pdf(_two_section_pdf())
+@pytest.mark.asyncio
+async def test_convert_pdf_parses_docling_response(monkeypatch):
+    png = b"\x89PNG\r\n\x1a\n" + b"0" * 16
+    data_uri = "data:image/png;base64," + base64.b64encode(png).decode()
+    md = f"# Alpha\n\n![pic]({data_uri})\n"
+    json_content = {
+        "texts": [
+            {"label": "section_header", "text": "Alpha", "level": 1,
+             "prov": [{"page_no": 1}]},
+            {"label": "page_footer", "text": "HYCU | 1", "prov": [{"page_no": 1}]},
+        ],
+        "tables": [{"prov": [{"page_no": 1}]}],
+    }
+
+    async def fake_convert(pdf_bytes, **kw):
+        return {"md_content": md, "json_content": json_content}
+
+    monkeypatch.setattr(pc.docling_client, "convert", fake_convert)
+    monkeypatch.setattr(pc.settings, "pdf_converter", "docling")
+
+    out = await pc.convert_pdf(_pdf())
+    assert out.engine == "docling"
+    assert [h.text for h in out.headings] == ["Alpha"]
+    assert out.headings[0].level == 1 and out.headings[0].page0 == 0
+    assert out.table_pages == {0}
+    assert len(out.images) == 1 and out.images[0].filename.endswith(".png")
+    assert out.images[0].filename in out.markdown
+    assert "data:image/png" not in out.markdown
+
+
+@pytest.mark.asyncio
+async def test_convert_pdf_falls_back_to_pymupdf(monkeypatch):
+    async def boom(pdf_bytes, **kw):
+        raise dc.DoclingServeError("down")
+
+    monkeypatch.setattr(pc.docling_client, "convert", boom)
+    monkeypatch.setattr(pc.settings, "pdf_converter", "docling")
+
+    out = await pc.convert_pdf(_pdf())
     assert out.engine == "pymupdf"
-    assert "Alpha" in out.markdown and "Beta" in out.markdown
+    assert "Alpha" in out.markdown
     assert len(out.page_texts) == 1
-    assert "Alpha" in out.page_texts[0]
 
 
-def test_content_address_images(tmp_path):
-    img = tmp_path / "img0.png"
-    png = (b"\x89PNG\r\n\x1a\n" + b"0" * 32)
-    img.write_bytes(png)
-    md = "before ![a cat](img0.png) after"
-    new_md, images = pc._content_address_images(md, str(tmp_path))
+def test_content_address_data_uris():
+    png = b"\x89PNG\r\n\x1a\n" + b"1" * 16
+    uri = "data:image/png;base64," + base64.b64encode(png).decode()
+    md = f"x ![cat]({uri}) y"
+    new_md, images = pc._content_address_data_uris(md)
     assert len(images) == 1
-    assert images[0].filename.endswith(".png")
+    assert images[0].data == png
     assert images[0].filename in new_md
-    assert "img0.png" not in new_md
+    assert "base64" not in new_md
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -426,25 +446,29 @@ Expected: FAIL — `No module named app.services.pdf_convert`.
 
 ```python
 # backend/app/services/pdf_convert.py
-"""Whole-document PDF→markdown conversion (Docling, with a pymupdf fallback).
+"""Whole-document PDF→markdown conversion via docling-serve, with a pymupdf
+fallback, plus heading-boundary splitting into article segments.
 
-Converting the entire document at once preserves reading order and keeps tables
-whole across page breaks; splitting into articles happens later (pdf_split-style
-logic in split_into_segments) at heading boundaries, never page ranges."""
+Converting the whole document at once preserves reading order and keeps tables
+whole across page breaks; splitting happens later at heading boundaries (never
+page ranges), which eliminates the cross-section bleed of the old page-range
+pipeline."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import logging
 import os
 import re
 import tempfile
 from dataclasses import dataclass, field
-from io import BytesIO
 
 import fitz  # PyMuPDF
 import pymupdf4llm
 
 from app.core.config import settings
+from app.services import docling_client
+from app.services.docling_client import DoclingServeError
 from app.services.sanitize import sanitize_markdown
 
 logger = logging.getLogger(__name__)
@@ -474,10 +498,37 @@ class ConvertedDoc:
     engine: str = "docling"
 
 
+# ── image content-addressing ────────────────────────────────────────────────
+
+_DATA_URI_RE = re.compile(
+    r"!\[(?P<alt>[^\]]*)\]\(data:image/[A-Za-z0-9.+-]+;base64,(?P<b64>[A-Za-z0-9+/=\s]+)\)"
+)
 _IMG_MARKER = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<target>[^)]+)\)")
 
 
-def _content_address_images(markdown: str, image_dir: str) -> tuple[str, list[RenderedImage]]:
+def _content_address_data_uris(markdown: str) -> tuple[str, list[RenderedImage]]:
+    """Rewrite embedded data-URI image markers to content-addressed <sha>.png."""
+    images: list[RenderedImage] = []
+    seen: set[str] = set()
+
+    def _replace(m: "re.Match") -> str:
+        b64 = "".join(m.group("b64").split())
+        try:
+            data = base64.b64decode(b64)
+        except Exception:  # noqa: BLE001 - leave malformed URIs untouched
+            return m.group(0)
+        sha = hashlib.sha256(data).hexdigest()[:16]
+        filename = f"{sha}.png"
+        if sha not in seen:
+            seen.add(sha)
+            images.append(RenderedImage(filename=filename, data=data, alt=m.group("alt")))
+        return f"![{m.group('alt')}]({filename})"
+
+    return _DATA_URI_RE.sub(_replace, markdown), images
+
+
+def _content_address_files(markdown: str, image_dir: str) -> tuple[str, list[RenderedImage]]:
+    """Rewrite file-path image markers (pymupdf4llm fallback) to <sha>.png."""
     images: list[RenderedImage] = []
     seen: dict[str, str] = {}
     seen_shas: set[str] = set()
@@ -485,6 +536,8 @@ def _content_address_images(markdown: str, image_dir: str) -> tuple[str, list[Re
     def _replace(m: "re.Match") -> str:
         target = m.group("target")
         alt = m.group("alt")
+        if target.startswith("data:"):
+            return m.group(0)
         path = os.path.join(image_dir, os.path.basename(target))
         if not os.path.isfile(path):
             return m.group(0)
@@ -502,6 +555,8 @@ def _content_address_images(markdown: str, image_dir: str) -> tuple[str, list[Re
     return _IMG_MARKER.sub(_replace, markdown), images
 
 
+# ── conversion ──────────────────────────────────────────────────────────────
+
 def _page_texts(pdf_bytes: bytes) -> list[str]:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
@@ -510,61 +565,28 @@ def _page_texts(pdf_bytes: bytes) -> list[str]:
         doc.close()
 
 
-def _norm_label(label) -> str:
-    s = str(label).lower()
-    return s.rsplit(".", 1)[-1]  # "DocItemLabel.SECTION_HEADER" -> "section_header"
+def _parse_headings(json_content: dict) -> list[DocHeading]:
+    out: list[DocHeading] = []
+    for item in (json_content.get("texts") or []):
+        if item.get("label") not in ("section_header", "title"):
+            continue
+        text = (item.get("text") or "").strip()
+        if not text:
+            continue
+        prov = item.get("prov") or []
+        page0 = (prov[0].get("page_no", 1) - 1) if prov else 0
+        level = 1 if item.get("label") == "title" else int(item.get("level") or 1)
+        out.append(DocHeading(text=text, level=level, page0=page0))
+    return out
 
 
-def _convert_docling(pdf_bytes: bytes) -> ConvertedDoc:
-    # Imported lazily so the fallback path (and non-PDF code) never pays the
-    # heavy docling import cost, and tests can monkeypatch this function.
-    from docling.datamodel.base_models import DocumentStream
-    from docling.document_converter import DocumentConverter
-
-    with tempfile.TemporaryDirectory() as image_dir:
-        conv = DocumentConverter()
-        result = conv.convert(
-            DocumentStream(name="source.pdf", stream=BytesIO(pdf_bytes))
-        )
-        doc = result.document
-        # Verified against the installed docling version in Task 2's probe.
-        # export_to_markdown writes referenced images into image_dir when the
-        # converter is configured to keep page images; if this version inlines
-        # images differently, adjust per the probe output.
-        try:
-            md = doc.export_to_markdown(artifacts_dir=image_dir)
-        except TypeError:
-            md = doc.export_to_markdown()
-
-        headings: list[DocHeading] = []
-        table_pages: set[int] = set()
-        for item, _tree_level in doc.iterate_items():
-            label = _norm_label(getattr(item, "label", ""))
-            prov = getattr(item, "prov", None) or []
-            page0 = (prov[0].page_no - 1) if prov else 0
-            if label in ("section_header", "title"):
-                text = (getattr(item, "text", "") or "").strip()
-                lvl = int(getattr(item, "level", 1) or 1)
-                if label == "title":
-                    lvl = 1
-                if text:
-                    headings.append(DocHeading(text=text, level=lvl, page0=page0))
-            if "table" in label:
-                table_pages.add(page0)
-        for t in (getattr(doc, "tables", None) or []):
-            prov = getattr(t, "prov", None) or []
-            if prov:
-                table_pages.add(prov[0].page_no - 1)
-
-        md, images = _content_address_images(md, image_dir)
-    return ConvertedDoc(
-        markdown=sanitize_markdown(md),
-        headings=headings,
-        page_texts=_page_texts(pdf_bytes),
-        table_pages=table_pages,
-        images=images,
-        engine="docling",
-    )
+def _parse_table_pages(json_content: dict) -> set[int]:
+    pages: set[int] = set()
+    for t in (json_content.get("tables") or []):
+        prov = t.get("prov") or []
+        if prov:
+            pages.add(prov[0].get("page_no", 1) - 1)
+    return pages
 
 
 def _convert_pymupdf(pdf_bytes: bytes) -> ConvertedDoc:
@@ -575,60 +597,68 @@ def _convert_pymupdf(pdf_bytes: bytes) -> ConvertedDoc:
             md = pymupdf4llm.to_markdown(
                 doc, write_images=True, image_path=image_dir, image_format="png"
             ) or ""
-            md, images = _content_address_images(md, image_dir)
+            md, images = _content_address_files(md, image_dir)
     finally:
         doc.close()
     return ConvertedDoc(
-        markdown=sanitize_markdown(md),
-        headings=[],            # heading-split falls back to ATX headings in the markdown
-        page_texts=_page_texts(pdf_bytes),
-        table_pages=set(),
-        images=images,
-        engine="pymupdf",
+        markdown=sanitize_markdown(md), headings=[], page_texts=_page_texts(pdf_bytes),
+        table_pages=set(), images=images, engine="pymupdf",
     )
 
 
-def convert_pdf(pdf_bytes: bytes) -> ConvertedDoc:
-    """Convert a whole PDF to markdown. Docling first; pymupdf4llm on any failure."""
+async def convert_pdf(pdf_bytes: bytes) -> ConvertedDoc:
+    """Convert a whole PDF to markdown. docling-serve first; pymupdf on failure."""
     if settings.pdf_converter == "pymupdf":
         return _convert_pymupdf(pdf_bytes)
     try:
-        out = _convert_docling(pdf_bytes)
-        if out.markdown.strip():
-            return out
-        logger.warning("Docling produced empty markdown; falling back to pymupdf")
-    except Exception as exc:  # noqa: BLE001 - fallback is intentional
-        logger.warning("Docling conversion failed (%s); falling back to pymupdf", exc)
-    return _convert_pymupdf(pdf_bytes)
+        doc = await docling_client.convert(
+            pdf_bytes, pipeline="standard", image_export_mode="embedded"
+        )
+        md = doc.get("md_content") or ""
+        if not md.strip():
+            raise DoclingServeError("empty markdown")
+        json_content = doc.get("json_content") or {}
+        md, images = _content_address_data_uris(md)
+        return ConvertedDoc(
+            markdown=sanitize_markdown(md),
+            headings=_parse_headings(json_content),
+            page_texts=_page_texts(pdf_bytes),
+            table_pages=_parse_table_pages(json_content),
+            images=images,
+            engine="docling",
+        )
+    except DoclingServeError as exc:
+        logger.warning("docling-serve failed (%s); falling back to pymupdf", exc)
+        return _convert_pymupdf(pdf_bytes)
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_pdf_convert.py -v`
-Expected: PASS (both tests).
+Expected: PASS (three tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add app/services/pdf_convert.py tests/test_pdf_convert.py
-git commit -m "feat(pdf): whole-doc convert_pdf (docling + pymupdf fallback)"
+git commit -m "feat(pdf): convert_pdf via docling-serve with pymupdf fallback"
 ```
 
 ---
 
-### Task 5: `split_into_segments` — heading-split (no page-range bleed)
+### Task 4: `split_into_segments` — heading-split (no page-range bleed)
 
 **Files:**
 - Modify: `backend/app/services/pdf_convert.py` (append)
 - Test: `backend/tests/test_pdf_split.py` (create)
 
 **Interfaces:**
-- Consumes: `ConvertedDoc`, `DocHeading`, `RenderedImage` (Task 4); `Segment` (the outline dataclass from `pdf_import` — `title, level, page_start, page_end, path`).
+- Consumes: `ConvertedDoc`, `DocHeading`, `RenderedImage` (Task 3); `Segment` (the outline dataclass from `pdf_import` — `title, level, page_start, page_end, path`).
 - Produces:
   - `@dataclass RenderedSegment(title: str, level: int, path: list[str], page_start: int, page_end: int, markdown: str, images: list[RenderedImage])`
-  - `def split_into_segments(converted: ConvertedDoc, outline: list[Segment]) -> list[RenderedSegment]` — split `converted.markdown` at heading boundaries. If `outline` is non-empty, use the outline titles as boundaries (locate each title as a markdown heading line); else use `converted.headings`; if neither yields a boundary, fall back to locating ATX headings (`^#{1,6} `) in the markdown; if still none, one whole-doc segment titled "Document".
+  - `def split_into_segments(converted: ConvertedDoc, outline: list[Segment]) -> list[RenderedSegment]` — split `converted.markdown` at heading boundaries. If `outline` is non-empty, use the outline titles as boundaries (locate each as a markdown heading line); else use `converted.headings`; if neither yields a boundary, split on every ATX heading; if still none, one whole-doc segment titled "Document".
 
-Splitting is by **markdown line offset**, so a table is never cut (it lives entirely within one slice) and adjacent sections never bleed (the slice ends exactly at the next heading line).
+Splitting is by **markdown line offset**, so a table is never cut and adjacent sections never bleed.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -653,10 +683,7 @@ def _doc(md, headings=None, table_pages=None):
 
 
 def test_outline_split_has_no_cross_section_bleed():
-    md = (
-        "## Alpha Section\n\nAlpha body.\n\n"
-        "## Beta Section\n\nBeta body.\n"
-    )
+    md = "## Alpha Section\n\nAlpha body.\n\n## Beta Section\n\nBeta body.\n"
     outline = [
         Segment(title="Alpha Section", level=1, page_start=0, page_end=0, path=["Alpha Section"]),
         Segment(title="Beta Section", level=1, page_start=0, page_end=0, path=["Beta Section"]),
@@ -664,24 +691,21 @@ def test_outline_split_has_no_cross_section_bleed():
     segs = split_into_segments(_doc(md), outline)
     assert [s.title for s in segs] == ["Alpha Section", "Beta Section"]
     assert "Alpha body." in segs[0].markdown
-    assert "Beta" not in segs[0].markdown          # no trailing bleed
+    assert "Beta" not in segs[0].markdown
     assert "Beta body." in segs[1].markdown
-    assert "Alpha body." not in segs[1].markdown   # no leading bleed
+    assert "Alpha body." not in segs[1].markdown
 
 
 def test_split_never_cuts_a_table():
-    md = (
-        "## One\n\nintro\n\n"
-        "| a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\n\n"
-        "## Two\n\ntail\n"
-    )
+    md = ("## One\n\nintro\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\n\n"
+          "## Two\n\ntail\n")
     outline = [
         Segment(title="One", level=1, page_start=0, page_end=0, path=["One"]),
         Segment(title="Two", level=1, page_start=0, page_end=0, path=["Two"]),
     ]
     segs = split_into_segments(_doc(md), outline)
     one = next(s for s in segs if s.title == "One").markdown
-    assert "| 1 | 2 |" in one and "| 3 | 4 |" in one   # full table in one slice
+    assert "| 1 | 2 |" in one and "| 3 | 4 |" in one
 
 
 def test_no_outline_uses_docling_headings():
@@ -735,7 +759,6 @@ _ATX_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 
 
 def _heading_lines(lines: list[str]) -> list[tuple[int, str]]:
-    """All ATX heading lines as (line_index, normalized_text)."""
     out = []
     for i, ln in enumerate(lines):
         m = _ATX_RE.match(ln.strip())
@@ -744,9 +767,7 @@ def _heading_lines(lines: list[str]) -> list[tuple[int, str]]:
     return out
 
 
-def _find_heading_line(headings: list[tuple[int, str]], title: str, start: int) -> int | None:
-    """First heading line at/after `start` whose text matches `title` (case/space
-    insensitive, exact-or-contains). Returns the line index or None."""
+def _find_heading_line(headings: list[tuple[int, str]], title: str, start: int) -> "int | None":
     t = " ".join(title.lower().split())
     for idx, text in headings:
         if idx < start:
@@ -757,16 +778,12 @@ def _find_heading_line(headings: list[tuple[int, str]], title: str, start: int) 
     return None
 
 
-def _assign_images(markdown: str, all_images: list[RenderedImage]) -> list[RenderedImage]:
-    return [img for img in all_images if img.filename in markdown]
-
-
 def split_into_segments(converted: ConvertedDoc, outline: list[Segment]) -> list[RenderedSegment]:
     md = converted.markdown
     lines = md.split("\n")
     heading_lines = _heading_lines(lines)
 
-    # Build (line_index, title, level, path, page_start, page_end) boundaries.
+    # boundary tuples: (line_index, title, level, path, page_start, page_end)
     boundaries: list[tuple[int, str, int, list[str], int, int]] = []
     if outline:
         cursor = 0
@@ -778,7 +795,6 @@ def split_into_segments(converted: ConvertedDoc, outline: list[Segment]) -> list
             boundaries.append((line, seg.title, seg.level, seg.path or [seg.title],
                                seg.page_start, seg.page_end))
     elif converted.headings:
-        # Map docling headings to their markdown heading line in order.
         cursor = 0
         stack: list[str] = []
         for h in converted.headings:
@@ -790,7 +806,6 @@ def split_into_segments(converted: ConvertedDoc, outline: list[Segment]) -> list
             stack.append(h.text)
             boundaries.append((line, h.text, h.level, list(stack), h.page0, h.page0))
     if not boundaries and heading_lines:
-        # Last resort: split on every ATX heading.
         for idx, text in heading_lines:
             boundaries.append((idx, text, 1, [text], 0, 0))
 
@@ -798,8 +813,7 @@ def split_into_segments(converted: ConvertedDoc, outline: list[Segment]) -> list
         return [RenderedSegment(
             title="Document", level=1, path=[], page_start=0,
             page_end=max(0, len(converted.page_texts) - 1),
-            markdown=md.strip(),
-            images=list(converted.images),
+            markdown=md.strip(), images=list(converted.images),
         )]
 
     segs: list[RenderedSegment] = []
@@ -809,7 +823,8 @@ def split_into_segments(converted: ConvertedDoc, outline: list[Segment]) -> list
         segs.append(RenderedSegment(
             title=title, level=level, path=path,
             page_start=p_start, page_end=p_end,
-            markdown=body, images=_assign_images(body, converted.images),
+            markdown=body,
+            images=[img for img in converted.images if img.filename in body],
         ))
     return segs
 ```
@@ -817,7 +832,7 @@ def split_into_segments(converted: ConvertedDoc, outline: list[Segment]) -> list
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_pdf_split.py -v`
-Expected: PASS (all four tests).
+Expected: PASS (all four).
 
 - [ ] **Step 5: Commit**
 
@@ -828,21 +843,20 @@ git commit -m "feat(pdf): heading-boundary split (no page-range bleed)"
 
 ---
 
-### Task 6: `pdf_escalate.score_segment` — confidence signals
+### Task 5: `pdf_escalate.score_segment` — confidence signals
 
 **Files:**
 - Create: `backend/app/services/pdf_escalate.py`
 - Test: `backend/tests/test_pdf_escalate_score.py` (create)
 
 **Interfaces:**
-- Consumes: `RenderedSegment` (Task 5), `ConvertedDoc.table_pages` / `page_texts` (Task 4).
-- Produces:
-  - `def score_segment(segment: RenderedSegment, converted: ConvertedDoc) -> list[str]` — returns a list of issue codes; empty means confident. Codes: `"ragged_table"`, `"missing_table"`, `"sparse_text"`.
+- Consumes: `RenderedSegment` (Task 4), `ConvertedDoc.table_pages` / `page_texts` (Task 3).
+- Produces: `def score_segment(segment: RenderedSegment, converted: ConvertedDoc) -> list[str]` — issue codes `"ragged_table"`, `"missing_table"`, `"sparse_text"`; empty == confident.
 
 Heuristics:
-- `ragged_table`: any markdown table whose body rows' pipe-cell count differs from the header row's by more than 0 (after ignoring the `--- | ---` separator), OR a header present with zero body rows.
-- `missing_table`: a page in `[page_start, page_end]` is in `converted.table_pages` but the segment markdown contains no `|` table line.
-- `sparse_text`: segment markdown length < 50% of the concatenated `converted.page_texts[page_start:page_end+1]` length (and that raw length is > 200 chars, to avoid tiny-page noise).
+- `ragged_table`: a markdown table whose body rows' cell count differs from the header, or a header with no separator, or header+separator with zero body rows.
+- `missing_table`: a page in `[page_start, page_end]` is in `converted.table_pages` but the segment markdown has no `|` table line.
+- `sparse_text`: segment markdown length < 50% of concatenated `page_texts[page_start:page_end+1]` length, and that raw length > 200 chars.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -858,10 +872,8 @@ from app.services.pdf_escalate import score_segment
 
 
 def _conv(page_texts, table_pages=None):
-    return ConvertedDoc(
-        markdown="", headings=[], page_texts=page_texts,
-        table_pages=table_pages or set(), images=[], engine="docling",
-    )
+    return ConvertedDoc(markdown="", headings=[], page_texts=page_texts,
+                        table_pages=table_pages or set(), images=[], engine="docling")
 
 
 def _seg(md, p0=0, p1=0):
@@ -881,14 +893,12 @@ def test_ragged_table_flagged():
 
 def test_missing_table_flagged():
     md = "## t\n\njust prose, no table\n"
-    conv = _conv(["x" * 50], table_pages={0})
-    assert "missing_table" in score_segment(_seg(md), conv)
+    assert "missing_table" in score_segment(_seg(md), _conv(["x" * 50], table_pages={0}))
 
 
 def test_sparse_text_flagged():
     md = "## t\n\ntiny\n"
-    conv = _conv(["y" * 1000])
-    assert "sparse_text" in score_segment(_seg(md), conv)
+    assert "sparse_text" in score_segment(_seg(md), _conv(["y" * 1000]))
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -902,10 +912,9 @@ Expected: FAIL — `No module named app.services.pdf_escalate`.
 # backend/app/services/pdf_escalate.py
 """Confidence scoring + VLM re-conversion of low-confidence PDF segments.
 
-The default converter (Docling) is good but not perfect on the hardest tables.
-score_segment flags segments worth re-doing; escalate_segment re-converts them by
-rendering their pages to images and asking a cheap OpenRouter vision model for
-clean markdown."""
+The standard docling-serve conversion is good but not perfect on the hardest
+tables. score_segment flags segments worth re-doing; escalate_segment re-converts
+them via docling-serve's VLM pipeline (pointed at OpenRouter)."""
 from __future__ import annotations
 
 import logging
@@ -920,30 +929,26 @@ _SEP_RE = re.compile(r"^\s*\|?\s*:?-{3,}.*$")
 
 
 def _cell_count(row: str) -> int:
-    # Count cells between the outer pipes.
-    return len([c for c in row.strip().strip("|").split("|")])
+    return len(row.strip().strip("|").split("|"))
 
 
 def _has_ragged_table(md: str) -> bool:
     lines = md.split("\n")
-    i = 0
-    n = len(lines)
+    i, n = 0, len(md.split("\n"))
     while i < n:
         if _TABLE_ROW_RE.match(lines[i]):
             block = []
             while i < n and _TABLE_ROW_RE.match(lines[i]):
                 block.append(lines[i])
                 i += 1
-            # block[0] header; block[1] separator; rest body.
             if len(block) < 2:
-                return True  # header with no separator/body
+                return True
             header_cells = _cell_count(block[0])
             body = [b for b in block[2:] if not _SEP_RE.match(b)]
             if not body:
-                return True  # header + separator, zero body rows
-            for row in body:
-                if _cell_count(row) != header_cells:
-                    return True
+                return True
+            if any(_cell_count(r) != header_cells for r in body):
+                return True
             continue
         i += 1
     return False
@@ -961,8 +966,7 @@ def score_segment(segment: RenderedSegment, converted: ConvertedDoc) -> list[str
         issues.append("missing_table")
 
     raw = "".join(
-        converted.page_texts[p]
-        for p in seg_pages
+        converted.page_texts[p] for p in seg_pages
         if 0 <= p < len(converted.page_texts)
     )
     if len(raw) > 200 and len(md) < 0.5 * len(raw):
@@ -985,18 +989,17 @@ git commit -m "feat(pdf): confidence scoring for converted segments"
 
 ---
 
-### Task 7: `escalate_segment` — render pages + OpenRouter VLM re-conversion
+### Task 6: `escalate_segment` — VLM re-conversion via docling-serve
 
 **Files:**
 - Modify: `backend/app/services/pdf_escalate.py` (append)
 - Test: `backend/tests/test_pdf_escalate_vlm.py` (create)
 
 **Interfaces:**
-- Consumes: `RenderedSegment`; `settings.pdf_vlm_*`.
-- Produces:
-  - `def render_pages_png(pdf_bytes: bytes, page_start: int, page_end: int, dpi: int) -> list[bytes]` — one PNG per page via `fitz`.
-  - `async def _vlm_complete(images: list[bytes], prompt: str) -> str` — POSTs an OpenAI-compatible chat request to `settings.pdf_vlm_base_url` with `settings.pdf_vlm_model`, image content blocks, no `response_format` (we want markdown, not JSON). Returns the message text. Raises on HTTP error / missing key.
-  - `async def escalate_segment(pdf_bytes: bytes, segment: RenderedSegment) -> str` — renders the segment's pages, calls `_vlm_complete`, returns cleaned markdown (the heading line is re-prepended if the model dropped it). Returns the original `segment.markdown` on any failure.
+- Consumes: `RenderedSegment`; `docling_client.convert` / `DoclingServeError`.
+- Produces: `async def escalate_segment(pdf_bytes: bytes, segment: RenderedSegment) -> str` — re-convert the segment's page range via docling-serve's VLM pipeline (`pipeline="vlm"`, `page_range`, `use_vlm_api=True`); return cleaned markdown (re-prepend the heading if the model dropped it). Returns `segment.markdown` unchanged on any `DoclingServeError`.
+
+> Known v1 limitation: an escalated segment's body is replaced with VLM markdown rendered with `image_export_mode="placeholder"`, so figures inside a *flagged* segment are not re-embedded. Flagged segments are overwhelmingly table/text issues, not figures; sub-segment image retention is a future refinement.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1005,141 +1008,94 @@ git commit -m "feat(pdf): confidence scoring for converted segments"
 import os
 import sys
 
-import fitz
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import app.services.pdf_escalate as esc
+import app.services.docling_client as dc
 from app.services.pdf_convert import RenderedSegment
 
 
-def _pdf() -> bytes:
-    doc = fitz.open()
-    doc.new_page().insert_text((72, 72), "hello")
-    return doc.tobytes()
-
-
-def test_render_pages_png_returns_png_bytes():
-    pngs = esc.render_pages_png(_pdf(), 0, 0, dpi=72)
-    assert len(pngs) == 1
-    assert pngs[0][:8] == b"\x89PNG\r\n\x1a\n"
+def _seg(md="broken", title="Fixed", level=1, p0=0, p1=0):
+    return RenderedSegment(title=title, level=level, path=[title],
+                           page_start=p0, page_end=p1, markdown=md, images=[])
 
 
 @pytest.mark.asyncio
-async def test_escalate_replaces_body(monkeypatch):
-    async def fake_vlm(images, prompt):
-        return "## Fixed\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n"
+async def test_escalate_uses_vlm_pipeline_and_page_range(monkeypatch):
+    captured = {}
 
-    monkeypatch.setattr(esc, "_vlm_complete", fake_vlm)
-    seg = RenderedSegment(title="Fixed", level=1, path=["Fixed"],
-                          page_start=0, page_end=0, markdown="broken", images=[])
-    out = await esc.escalate_segment(_pdf(), seg)
+    async def fake_convert(pdf_bytes, **kw):
+        captured.update(kw)
+        return {"md_content": "## Fixed\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n"}
+
+    monkeypatch.setattr(esc.docling_client, "convert", fake_convert)
+    out = await esc.escalate_segment(b"%PDF", _seg(p0=4, p1=5))
+    assert captured["pipeline"] == "vlm"
+    assert captured["use_vlm_api"] is True
+    assert captured["page_range"] == (5, 6)        # 1-based inclusive
     assert "| 1 | 2 |" in out
     assert out.lstrip().startswith("#")
 
 
 @pytest.mark.asyncio
-async def test_escalate_falls_back_on_error(monkeypatch):
-    async def boom(images, prompt):
-        raise RuntimeError("vlm down")
+async def test_escalate_prepends_missing_heading(monkeypatch):
+    async def fake_convert(pdf_bytes, **kw):
+        return {"md_content": "| a | b |\n| --- | --- |\n| 1 | 2 |\n"}
 
-    monkeypatch.setattr(esc, "_vlm_complete", boom)
-    seg = RenderedSegment(title="t", level=1, path=["t"],
-                          page_start=0, page_end=0, markdown="original body", images=[])
-    out = await esc.escalate_segment(_pdf(), seg)
+    monkeypatch.setattr(esc.docling_client, "convert", fake_convert)
+    out = await esc.escalate_segment(b"%PDF", _seg(title="My Table", level=2))
+    assert out.lstrip().startswith("## My Table")
+
+
+@pytest.mark.asyncio
+async def test_escalate_falls_back_on_error(monkeypatch):
+    async def boom(pdf_bytes, **kw):
+        raise dc.DoclingServeError("vlm down")
+
+    monkeypatch.setattr(esc.docling_client, "convert", boom)
+    out = await esc.escalate_segment(b"%PDF", _seg(md="original body"))
     assert out == "original body"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_pdf_escalate_vlm.py -v`
-Expected: FAIL — `module 'app.services.pdf_escalate' has no attribute 'render_pages_png'`.
+Expected: FAIL — `module 'app.services.pdf_escalate' has no attribute 'escalate_segment'`.
 
-- [ ] **Step 3: Implement rendering + VLM call**
+- [ ] **Step 3: Implement escalation**
 
 Append to `backend/app/services/pdf_escalate.py`:
 
 ```python
-import base64
-
-import fitz
-import httpx
-
-from app.core.config import settings
+from app.services import docling_client
+from app.services.docling_client import DoclingServeError
 from app.services.sanitize import sanitize_markdown
-
-_VLM_PROMPT = (
-    "You are converting one or more pages of a product documentation PDF into "
-    "clean GitHub-Flavored Markdown. Reproduce the content faithfully and in "
-    "reading order. Render every table as a proper Markdown table with correct "
-    "rows and columns. Do not add commentary, code fences, or explanations. "
-    "Output ONLY the Markdown."
-)
-
-
-def render_pages_png(pdf_bytes: bytes, page_start: int, page_end: int, dpi: int) -> list[bytes]:
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    try:
-        out: list[bytes] = []
-        last = min(page_end, doc.page_count - 1)
-        for pno in range(max(0, page_start), last + 1):
-            pix = doc.load_page(pno).get_pixmap(dpi=dpi)
-            out.append(pix.tobytes("png"))
-        return out
-    finally:
-        doc.close()
-
-
-async def _vlm_complete(images: list[bytes], prompt: str) -> str:
-    if not settings.pdf_vlm_api_key:
-        raise ValueError("pdf_vlm_api_key is not set")
-    content = [{"type": "text", "text": prompt}]
-    for img in images:
-        b64 = base64.b64encode(img).decode("ascii")
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/png;base64,{b64}"},
-        })
-    body = {
-        "model": settings.pdf_vlm_model,
-        "messages": [{"role": "user", "content": content}],
-        "max_tokens": 4096,
-    }
-    headers = {
-        "Authorization": f"Bearer {settings.pdf_vlm_api_key}",
-        "content-type": "application/json",
-    }
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(settings.pdf_vlm_base_url, headers=headers, json=body)
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
-
-
-def _strip_fences(text: str) -> str:
-    m = re.search(r"```(?:markdown)?\s*(.*?)\s*```", text, re.DOTALL)
-    return m.group(1) if m else text
 
 
 async def escalate_segment(pdf_bytes: bytes, segment: RenderedSegment) -> str:
-    """Re-convert one segment via the VLM. Returns the original markdown on failure."""
+    """Re-convert one segment via docling-serve's VLM pipeline (OpenRouter).
+    Returns the original markdown on any docling-serve failure."""
     try:
-        images = render_pages_png(
-            pdf_bytes, segment.page_start, segment.page_end, settings.pdf_vlm_dpi
+        doc = await docling_client.convert(
+            pdf_bytes,
+            pipeline="vlm",
+            page_range=(segment.page_start + 1, segment.page_end + 1),
+            use_vlm_api=True,
+            image_export_mode="placeholder",
         )
-        if not images:
-            return segment.markdown
-        raw = await _vlm_complete(images, _VLM_PROMPT)
-        cleaned = sanitize_markdown(_strip_fences(raw).strip())
-        if not cleaned.strip():
-            return segment.markdown
-        if not cleaned.lstrip().startswith("#"):
-            hashes = "#" * max(1, segment.level)
-            cleaned = f"{hashes} {segment.title}\n\n{cleaned}"
-        return cleaned
-    except Exception as exc:  # noqa: BLE001 - fallback keeps the docling output
+    except DoclingServeError as exc:
         logger.warning("VLM escalation failed for %r: %s", segment.title, exc)
         return segment.markdown
+
+    cleaned = sanitize_markdown((doc.get("md_content") or "").strip())
+    if not cleaned.strip():
+        return segment.markdown
+    if not cleaned.lstrip().startswith("#"):
+        hashes = "#" * max(1, segment.level)
+        cleaned = f"{hashes} {segment.title}\n\n{cleaned}"
+    return cleaned
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -1151,24 +1107,25 @@ Expected: PASS (all three).
 
 ```bash
 git add app/services/pdf_escalate.py tests/test_pdf_escalate_vlm.py
-git commit -m "feat(pdf): OpenRouter VLM escalation for flagged segments"
+git commit -m "feat(pdf): VLM escalation via docling-serve pipeline"
 ```
 
 ---
 
-### Task 8: Wire the new pipeline into `run_pdf_extraction`
+### Task 7: Wire the new pipeline into `run_pdf_extraction`
 
 **Files:**
-- Modify: `backend/app/services/pdf_import.py` (the conversion/segment section: imports, the `segment_pdf_async`/`convert_segments_async` usage in `run_pdf_extraction`, and remove the now-dead heuristic/LLM segmentation helpers + the page-range `_render_segment`/`render_segments`/`convert_segments_async`).
+- Modify: `backend/app/services/pdf_import.py`
 - Test: `backend/tests/test_pdf_pipeline_integration.py` (create)
 
 **Interfaces:**
-- Consumes: `convert_pdf` (Task 4), `split_into_segments` + `RenderedSegment` (Task 5), `score_segment` + `escalate_segment` (Tasks 6–7), the outline helper `_outline_segments` (kept).
-- Produces: updated `run_pdf_extraction` that (1) converts once off-thread, (2) splits on headings, (3) scores + escalates flagged segments within the page budget, (4) persists via the existing `process_article_result` path. New module-level coroutine:
-  - `async def build_segments(pdf_bytes: bytes, progress=None) -> list[RenderedSegment]` — `convert_pdf` (off-thread) → `_outline_segments` → `split_into_segments` → score → escalate (budgeted) → return. `progress(done, total)` awaited per escalation.
+- Consumes: `convert_pdf`, `split_into_segments`, `RenderedSegment` (Tasks 3-4); `score_segment`, `escalate_segment` (Tasks 5-6); the outline helper `_outline_segments` (kept).
+- Produces:
+  - `async def build_segments(pdf_bytes: bytes, progress=None) -> list[RenderedSegment]` — `convert_pdf` (await, async HTTP) → `_outline_segments` → `split_into_segments` → score → escalate (budgeted by `pdf_vlm_max_pages_per_run`) → return. `progress(done, total)` awaited per escalation.
+  - Updated `run_pdf_extraction` consuming `build_segments`.
 
 Keep: `acquire_pdf`, `Segment`, `_outline_segments`, the byte-hash fast path, the TOC-tree build, `derive_pdf_topic_key` usage, `process_article_result`/`_reconcile_removals` calls.
-Remove: `heuristic_segments`, `_body_font_size`, `_llm_segment_titles`, `_titles_to_segments`, `segment_pdf`, `segment_pdf_async`, `_render_segment`, `segment_to_markdown`, `render_segments`, `convert_segments_async`, `RenderedImage` (now imported from `pdf_convert`), and the `pymupdf4llm`/`tempfile`/`_IMG_MARKER` imports they used. Update the existing PDF tests that referenced removed symbols (see Step 5 note).
+Remove (now dead): `heuristic_segments`, `_body_font_size`, `_llm_segment_titles`, `_titles_to_segments`, `segment_pdf`, `segment_pdf_async`, `_render_segment`, `segment_to_markdown`, `render_segments`, `convert_segments_async`, the module-level `RenderedImage` (now imported from `pdf_convert`), `_IMG_MARKER`, and the `pymupdf4llm`/`tempfile` imports they used. **Keep `import fitz`, `import asyncio`, `import collections`** (still used). Update/delete the PDF tests that referenced removed symbols (Step 5).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1197,12 +1154,12 @@ def _outline_pdf() -> bytes:
 @pytest.mark.asyncio
 async def test_build_segments_splits_outline_without_bleed(monkeypatch):
     md = "## Alpha Section\n\nAlpha body.\n\n## Beta Section\n\nBeta body.\n"
-    monkeypatch.setattr(
-        pi, "convert_pdf",
-        lambda b: ConvertedDoc(markdown=md, headings=[], page_texts=[md, ""],
-                               table_pages=set(), images=[], engine="docling"),
-    )
-    # No VLM escalation in this test.
+
+    async def fake_convert(pdf_bytes):
+        return ConvertedDoc(markdown=md, headings=[], page_texts=[md, ""],
+                            table_pages=set(), images=[], engine="docling")
+
+    monkeypatch.setattr(pi, "convert_pdf", fake_convert)
     monkeypatch.setattr(pi.settings, "pdf_vlm_escalation_enabled", False)
 
     segs = await pi.build_segments(_outline_pdf())
@@ -1213,16 +1170,14 @@ async def test_build_segments_splits_outline_without_bleed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_build_segments_escalates_flagged_only(monkeypatch):
-    # One ragged table (flagged) + one clean section.
-    md = (
-        "## Bad\n\n| a | b |\n| --- | --- |\n| 1 | 2 | 3 |\n\n"
-        "## Good\n\nfine prose here.\n"
-    )
-    monkeypatch.setattr(
-        pi, "convert_pdf",
-        lambda b: ConvertedDoc(markdown=md, headings=[], page_texts=[md, ""],
-                               table_pages=set(), images=[], engine="docling"),
-    )
+    md = ("## Bad\n\n| a | b |\n| --- | --- |\n| 1 | 2 | 3 |\n\n"
+          "## Good\n\nfine prose here.\n")
+
+    async def fake_convert(pdf_bytes):
+        return ConvertedDoc(markdown=md, headings=[], page_texts=[md, ""],
+                            table_pages=set(), images=[], engine="docling")
+
+    monkeypatch.setattr(pi, "convert_pdf", fake_convert)
     monkeypatch.setattr(pi.settings, "pdf_vlm_escalation_enabled", True)
     monkeypatch.setattr(pi.settings, "pdf_vlm_max_pages_per_run", 30)
 
@@ -1235,7 +1190,7 @@ async def test_build_segments_escalates_flagged_only(monkeypatch):
     monkeypatch.setattr(pi, "escalate_segment", fake_escalate)
 
     segs = await pi.build_segments(_outline_pdf())
-    assert calls == ["Bad"]                       # only the flagged one escalated
+    assert calls == ["Bad"]
     bad = next(s for s in segs if s.title == "Bad")
     assert "| 1 | 2 |" in bad.markdown and "| 1 | 2 | 3 |" not in bad.markdown
 ```
@@ -1245,11 +1200,9 @@ async def test_build_segments_escalates_flagged_only(monkeypatch):
 Run: `pytest tests/test_pdf_pipeline_integration.py -v`
 Expected: FAIL — `module 'app.services.pdf_import' has no attribute 'build_segments'`.
 
-- [ ] **Step 3: Implement `build_segments` and rewire**
+- [ ] **Step 3: Rewire `pdf_import.py`**
 
-In `backend/app/services/pdf_import.py`:
-
-(a) Replace the conversion-related imports near the top. Remove `import pymupdf4llm`, the `_IMG_MARKER`, `tempfile`, and add:
+(a) Near the top, remove `import pymupdf4llm`, `import tempfile`, the `_IMG_MARKER` constant, and the local `RenderedImage` dataclass. Keep `import asyncio`, `import collections`, `import fitz`. Add:
 
 ```python
 from app.services.pdf_convert import (
@@ -1258,7 +1211,7 @@ from app.services.pdf_convert import (
 from app.services.pdf_escalate import escalate_segment, score_segment
 ```
 
-(b) Keep `Segment` and `_outline_segments`. Delete the now-dead helpers listed in the Interfaces block (heuristic/LLM/page-range render functions). Add:
+(b) Delete the dead helpers listed in Interfaces (`heuristic_segments`, `_body_font_size`, `_llm_segment_titles`, `_titles_to_segments`, `segment_pdf`, `segment_pdf_async`, `_render_segment`, `segment_to_markdown`, `render_segments`, `convert_segments_async`). Keep `Segment` and `_outline_segments`. Add:
 
 ```python
 def _outline_for(pdf_bytes: bytes) -> list[Segment]:
@@ -1273,9 +1226,9 @@ async def build_segments(
     pdf_bytes: bytes,
     progress: "collections.abc.Callable[[int, int], collections.abc.Awaitable[None]] | None" = None,
 ) -> list[RenderedSegment]:
-    """Convert the whole PDF (off the event loop), split on heading boundaries,
-    then VLM-escalate only low-confidence segments within the per-run page budget."""
-    converted: ConvertedDoc = await asyncio.to_thread(convert_pdf, pdf_bytes)
+    """Convert the whole PDF via docling-serve, split on heading boundaries, then
+    VLM-escalate only low-confidence segments within the per-run page budget."""
+    converted: ConvertedDoc = await convert_pdf(pdf_bytes)
     outline = _outline_for(pdf_bytes)
     segments = split_into_segments(converted, outline)
 
@@ -1284,15 +1237,15 @@ async def build_segments(
 
     flagged = [s for s in segments if score_segment(s, converted)]
     budget = settings.pdf_vlm_max_pages_per_run
-    done = 0
-    total = len(flagged)
+    done, total = 0, len(flagged)
     for seg in flagged:
         pages = seg.page_end - seg.page_start + 1
         if pages > budget:
             continue
         new_md = await escalate_segment(pdf_bytes, seg)
         seg.markdown = new_md
-        seg.images = [img for img in converted.images if img.filename in new_md] or seg.images
+        matched = [img for img in converted.images if img.filename in new_md]
+        seg.images = matched or seg.images
         budget -= pages
         done += 1
         if progress is not None:
@@ -1300,7 +1253,7 @@ async def build_segments(
     return segments
 ```
 
-(c) In `run_pdf_extraction`, replace the segmentation + conversion block. Find the section that currently calls `segment_pdf_async` and `convert_segments_async` (around lines 393–445) and replace it so segments come from `build_segments`:
+(c) In `run_pdf_extraction`, replace the segmentation + conversion block (the part that called `segment_pdf_async` then `convert_segments_async` and built `article_inputs`) with:
 
 ```python
     run.current_phase = "pdf_convert"
@@ -1348,7 +1301,7 @@ async def build_segments(
         )
 ```
 
-The remainder of `run_pdf_extraction` (the `content_scraping` phase reset, `articles_total` reccount over non-empty markdown, the `process_article_result` loop, `_reconcile_removals`, and completion) is **unchanged** — it already consumes `article_inputs` tuples of `(toc_id, sort_order, title, topic_key, url, md, images)`.
+The remainder of `run_pdf_extraction` (the `content_scraping` phase, the non-empty `articles_total` recount, the `process_article_result` loop over `article_inputs`, `_reconcile_removals`, completion) is **unchanged** — it already consumes `(toc_id, sort_order, title, topic_key, url, md, images)` tuples.
 
 - [ ] **Step 4: Run the integration tests**
 
@@ -1357,12 +1310,11 @@ Expected: PASS (both tests).
 
 - [ ] **Step 5: Fix and run the rest of the PDF suite**
 
-Removing the old helpers breaks tests that imported them. Delete/rewrite the now-obsolete tests for removed symbols and keep the still-valid ones:
-- Delete: `tests/test_pdf_segment_heuristic.py`, `tests/test_pdf_segment_llm.py`, `tests/test_pdf_convert_async.py`, `tests/test_pdf_to_markdown.py`, `tests/test_pdf_renderer.py` *(only those asserting removed functions — verify each by grep before deleting)*.
-- In `tests/test_pdf_segment.py`, keep `_outline_segments`-based assertions; remove any importing `segment_pdf`/`segment_to_markdown` (replaced by `split_into_segments`).
+Removing the old helpers breaks tests importing them. Find them:
 
-Run: `grep -rl -E "segment_pdf|segment_to_markdown|convert_segments_async|heuristic_segments|render_segments|_render_segment|_titles_to_segments" tests/`
-For each hit, update or delete the test per the above.
+Run: `grep -rl -E "segment_pdf|segment_to_markdown|convert_segments_async|heuristic_segments|render_segments|_render_segment|_titles_to_segments|_body_font_size|_llm_segment_titles" tests/`
+
+For each hit, delete the test file if its whole purpose was a removed helper (candidates: `test_pdf_segment.py`, `test_pdf_segment_heuristic.py`, `test_pdf_segment_llm.py`, `test_pdf_convert_async.py`, `test_pdf_to_markdown.py`, `test_pdf_renderer.py`), or update it if it also covers kept behaviour. Verify `_outline_segments` still has coverage (keep those assertions, moving them into `test_pdf_split.py`-style if needed).
 
 Run: `pytest tests/ -k pdf -v`
 Expected: PASS (whole PDF suite green).
@@ -1371,83 +1323,66 @@ Expected: PASS (whole PDF suite green).
 
 ```bash
 git add app/services/pdf_import.py tests/
-git commit -m "feat(pdf): wire docling+split+escalation pipeline into run_pdf_extraction"
+git commit -m "feat(pdf): wire docling-serve convert+split+escalation into run_pdf_extraction"
 ```
 
 ---
 
-### Task 9: Pre-bake Docling models into the worker image
+### Task 8: Validate against the real HYCU PDF + live docling-serve
 
-**Files:**
-- Modify: `backend/Dockerfile`
+Manual validation against the running service. The controller supplies the
+docling-serve and OpenRouter keys via env (never committed).
 
-**Interfaces:** none (build-time only).
+**Files:** none (produces a "Validation result" note appended to the spec).
 
-- [ ] **Step 1: Inspect the current Dockerfile**
+- [ ] **Step 1: Run the standard pipeline (no escalation) on the HYCU PDF**
 
-Run: `sed -n '1,80p' Dockerfile`
-Identify where `pip install -r requirements.txt` runs.
-
-- [ ] **Step 2: Add a model pre-fetch layer**
-
-After the `pip install -r requirements.txt` step, add a layer that downloads Docling's models at build time so the first extraction does not stall:
-
-```dockerfile
-# Pre-fetch Docling models so the first PDF extraction doesn't download at runtime.
-RUN python -c "from docling.document_converter import DocumentConverter; DocumentConverter()" \
-    || docling-tools models download \
-    || true
-```
-
-(The `DocumentConverter()` constructor triggers model acquisition on most 2.x versions; `docling-tools models download` is the explicit fallback. `|| true` keeps the build resilient if the CLI name differs — the runtime fallback to `pymupdf` still protects us.)
-
-- [ ] **Step 3: Build to verify**
-
-Run: `docker build -t docextractor-backend:docling-test .`
-Expected: build succeeds; the model-fetch layer runs without failing the build.
-
-- [ ] **Step 4: Commit**
+Run (from `backend/`, with `$SCRATCH` = the scratchpad holding the PDF, and the docling key in env):
 
 ```bash
-git add Dockerfile
-git commit -m "build(pdf): pre-bake docling models into the worker image"
-```
-
----
-
-### Task 10: Validate against the real HYCU PDF
-
-**Files:** none (manual validation; produces a short note appended to the spec).
-
-**Interfaces:** none.
-
-- [ ] **Step 1: Run the full pipeline on the HYCU PDF**
-
-Run (from `backend/`, with `SCRATCH` set to the scratchpad holding `HYCU_CompatibilityMatrix.pdf`; `pdf_vlm_api_key` optionally set to exercise escalation):
-
-```bash
-SCRATCH=/tmp/claude-1000/.../scratchpad python -c "
+SCRATCH=<scratchpad> DOCEXTRACTOR_DOCLING_SERVE_API_KEY=<key> \
+DOCEXTRACTOR_PDF_VLM_ESCALATION_ENABLED=false python3 -c "
 import asyncio
 import app.services.pdf_import as pi
 data=open('$SCRATCH/HYCU_CompatibilityMatrix.pdf','rb').read()
 segs=asyncio.run(pi.build_segments(data))
 by={s.title:s for s in segs}
-aos=by['Nutanix AOS'].markdown
-print('Nutanix AOS contains VMware vSphere? ', 'VMware vSphere' in aos)
-print('--- Nutanix AOS (first 600 chars) ---'); print(aos[:600])
+aos=by.get('Nutanix AOS')
 print('segment count:', len(segs))
-" 2>&1 | tail -40
+print('has Nutanix AOS:', aos is not None)
+if aos:
+    print('AOS contains \"VMware vSphere\":', 'VMware vSphere' in aos.markdown)
+    print('--- AOS (first 600) ---'); print(aos.markdown[:600])
+"
 ```
 
-Expected: `Nutanix AOS contains VMware vSphere?  False`; the AOS table renders once, intact, with consistent columns; no duplicated/mangled loose-text table.
+Expected: `AOS contains "VMware vSphere": False`; the AOS table renders once, intact; no duplicated/mangled loose-text table.
 
-- [ ] **Step 2: Record the result**
+- [ ] **Step 2: Run one VLM escalation round-trip**
 
-Append a short "Validation result" section to
+Run with escalation enabled and both keys in env:
+
+```bash
+SCRATCH=<scratchpad> DOCEXTRACTOR_DOCLING_SERVE_API_KEY=<key> \
+DOCEXTRACTOR_PDF_VLM_API_KEY=<openrouter-key> python3 -c "
+import asyncio, logging
+logging.basicConfig(level=logging.INFO)
+import app.services.pdf_import as pi
+data=open('$SCRATCH/HYCU_CompatibilityMatrix.pdf','rb').read()
+segs=asyncio.run(pi.build_segments(data))
+print('segments:', len(segs))
+"
+```
+
+Expected: completes without error; if any segment is flagged, an escalation log line appears and the run still finishes. (A clean run with no flags is also a valid pass — note which occurred.)
+
+- [ ] **Step 3: Record the result**
+
+Append a "Validation result" section to
 `docs/superpowers/specs/2026-06-27-pdf-conversion-docling-vlm-design.md` noting
-the before/after (bleed gone, table intact) and whether VLM escalation fired.
+before/after (bleed gone, table intact), segment count, and whether escalation fired.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add docs/superpowers/specs/2026-06-27-pdf-conversion-docling-vlm-design.md
@@ -1459,19 +1394,18 @@ git commit -m "docs(pdf): record HYCU validation result"
 ## Self-Review
 
 **Spec coverage:**
-- Module split (`pdf_convert`, `pdf_escalate`, slim `pdf_import`) → Tasks 4–8. ✓
-- Convert-once + heading-split (no page-range bleed; tables whole) → Tasks 4–5. ✓
-- No-outline path via Docling headings, removing font/LLM fallbacks → Tasks 5, 8. ✓
-- Confidence scoring (ragged/missing/sparse) → Task 6. ✓
-- VLM escalation via OpenRouter (Gemini default), segment granularity, page budget → Tasks 7–8. ✓
-- `call_llm` image support → Task 3. ✓
-- New settings → Task 1. ✓
-- Docling dependency + model pre-bake → Tasks 2, 9. ✓
-- Engine + escalation fallbacks (never no output) → Tasks 4, 7. ✓
-- Tests (no-bleed, table-not-cut, scorer, payload shapes, fallback) → Tasks 3–8. ✓
-- HYCU validation → Task 10. ✓
-- Unchanged DB/diff/TOC path → Task 8 preserves `process_article_result`/`_reconcile_removals`. ✓
+- docling-serve client (X-Api-Key, /v1/convert/source, base64 source) → Task 2. ✓
+- Convert-once + parse json_content (headings/tables/images) + pymupdf fallback → Task 3. ✓
+- Heading-split, no page-range bleed, tables whole, no-outline via docling headings → Task 4. ✓
+- Confidence scoring → Task 5. ✓
+- VLM escalation via docling-serve VLM pipeline + page_range + OpenRouter forwarding → Tasks 2 (`use_vlm_api`), 6. ✓
+- Settings incl. docling_serve_* and OpenRouter forwarding; pdf_vlm_dpi dropped → Task 1. ✓
+- Async HTTP (no to_thread); never-no-output fallback → Tasks 3, 7. ✓
+- Secrets via env, never in tracked .env → Global Constraints, Task 8. ✓
+- Embedded docling removed → done pre-plan (commit 6402afb). ✓
+- Unchanged DB/diff/TOC path → Task 7 preserves process_article_result/_reconcile_removals. ✓
+- HYCU validation incl. one VLM round-trip → Task 8. ✓
 
-**Placeholder scan:** No TBD/TODO; every code step shows full code; the only "verify against installed version" notes are in the Docling spike (Task 2) and are concrete probe steps, not deferred work.
+**Placeholder scan:** No TBD/TODO; every code step has full code; the one "known v1 limitation" (escalated-segment images) is an explicit, bounded scope decision, not deferred work.
 
-**Type consistency:** `ConvertedDoc(markdown, headings, page_texts, table_pages, images, engine)` is constructed identically in Tasks 4, 5-tests, 6-tests, 8-tests. `RenderedSegment(title, level, path, page_start, page_end, markdown, images)` consistent across Tasks 5–8. `RenderedImage(filename, data, alt)` defined once in Task 4 and imported elsewhere. `convert_pdf`/`split_into_segments`/`score_segment`/`escalate_segment`/`build_segments` signatures match across producer and consumer tasks.
+**Type consistency:** `ConvertedDoc(markdown, headings, page_texts, table_pages, images, engine)` constructed identically across Tasks 3-7. `RenderedSegment(title, level, path, page_start, page_end, markdown, images)` consistent Tasks 4-7. `RenderedImage(filename, data, alt)` defined in Task 3, imported elsewhere. `docling_client.convert(...)` kwargs (`pipeline`, `page_range`, `use_vlm_api`, `image_export_mode`) match between Task 2 (definition), Task 3 (standard call), and Task 6 (vlm call). `convert_pdf` is async in Tasks 3 and 7. `escalate_segment(pdf_bytes, segment)` async, consistent Tasks 6-7.
