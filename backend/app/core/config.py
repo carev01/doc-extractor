@@ -90,16 +90,21 @@ class Settings(BaseSettings):
     pdf_max_upload_bytes: int = 100 * 1024 * 1024  # 100 MiB
 
     # PDF conversion engine (Layer A) and VLM escalation (Layer B).
-    # pdf_converter: "docling" (default, layout/table-aware) | "pymupdf" (fallback).
-    # The VLM path uses OpenRouter (OpenAI-compatible) — never Anthropic — and is
-    # configured independently of the llm_* (segmentation) settings above.
+    # pdf_converter: "docling" (default, remote docling-serve) | "pymupdf"
+    # (in-process fallback engine). docling-serve is consumed over HTTP — no
+    # docling/torch is embedded in this image.
     pdf_converter: str = "docling"
+    docling_serve_url: str = "http://docling.home.lan"
+    docling_serve_api_key: str = ""          # X-Api-Key (env only — .env is tracked)
+    docling_serve_timeout: float = 600.0     # per-request read timeout (s)
+    # VLM escalation runs through docling-serve's VLM pipeline, pointed at an
+    # OpenAI-compatible remote model (OpenRouter). The app forwards the endpoint,
+    # bearer key, and model name in the convert request — never calls Anthropic.
     pdf_vlm_escalation_enabled: bool = True
     pdf_vlm_base_url: str = "https://openrouter.ai/api/v1/chat/completions"
-    pdf_vlm_api_key: str = ""
+    pdf_vlm_api_key: str = ""                 # Bearer key (env only)
     pdf_vlm_model: str = "qwen/qwen3-vl-32b-instruct"
     pdf_vlm_max_pages_per_run: int = 30
-    pdf_vlm_dpi: int = 150
 
     # Master key for encrypting credentials/sessions at rest (Fernet, urlsafe
     # base64, 32 bytes). Required only when auth_realm rows exist. Generate with:
