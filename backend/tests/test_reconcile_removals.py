@@ -137,3 +137,28 @@ async def test_returned_page_clears_removal_flag(db):
     assert art.removed_at is None
     assert art.removal_run_id is None
     assert art.toc_entry_id == te.id
+
+
+@pytest.mark.asyncio
+async def test_same_url_articles_keep_distinct_toc_links(db):
+    """PDF sections sharing a #page URL, each already linked to its OWN TOC entry,
+    must NOT be collapsed onto one entry by the URL re-link."""
+    source_id = await _source(db)
+    run_id = await _run(db, source_id)
+    te1 = _toc(source_id, "http://x/doc#page=6", 0)
+    te2 = _toc(source_id, "http://x/doc#page=6", 1)  # same url, different entry
+    db.add_all([te1, te2])
+    await db.flush()
+    a1 = _article(source_id, "http://x/doc#page=6", toc_entry_id=te1.id)
+    a1.topic_key = "k1"
+    a2 = _article(source_id, "http://x/doc#page=6", toc_entry_id=te2.id)
+    a2.topic_key = "k2"
+    db.add_all([a1, a2])
+    await db.commit()
+
+    await firecrawl_service._reconcile_removals(db, source_id, run_id)
+
+    rows = {a.topic_key: a for a in (await db.execute(select(Article))).scalars()}
+    assert rows["k1"].toc_entry_id == te1.id
+    assert rows["k2"].toc_entry_id == te2.id
+    assert rows["k1"].removed_at is None and rows["k2"].removed_at is None
