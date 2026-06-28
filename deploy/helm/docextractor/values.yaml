@@ -58,6 +58,19 @@ llm:
   apiKey: ""
   maxTokens: 2048   # response token budget for spec derivation (reasoning models need headroom)
 
+# -- docling-serve (PDF → Markdown conversion engine, consumed over HTTP)
+docling:
+  serveUrl: http://docling.home.lan
+  apiKey: ""                      # X-Api-Key for docling-serve (OVERRIDE)
+
+# -- PDF VLM escalation — re-converts low-confidence segments via docling-serve's
+# VLM pipeline pointed at an OpenAI-compatible model (default OpenRouter).
+pdfVlm:
+  escalationEnabled: true
+  baseUrl: https://openrouter.ai/api/v1/chat/completions
+  model: qwen/qwen3-vl-32b-instruct
+  apiKey: ""                      # OpenRouter bearer key (OVERRIDE)
+
 # -- Ingress (Traefik)
 ingress:
   enabled: true
