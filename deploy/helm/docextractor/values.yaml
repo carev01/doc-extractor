@@ -71,6 +71,12 @@ pdfVlm:
   model: qwen/qwen3-vl-32b-instruct
   apiKey: ""                      # OpenRouter bearer key (OVERRIDE)
 
+# -- Master key for encrypting authenticated-source credentials/sessions at rest
+# (Fernet, urlsafe base64). REQUIRED to enable authenticated sources; the auth
+# code raises without it. Generate with:
+#   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+secretKey: ""                     # OVERRIDE (never commit a real key)
+
 # -- Ingress (Traefik)
 ingress:
   enabled: true
