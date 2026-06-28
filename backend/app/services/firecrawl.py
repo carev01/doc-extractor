@@ -765,8 +765,9 @@ class FirecrawlService:
                         markdown_content = markdown_content.replace(src, served_url)
 
         elif pdf_images is not None:
-            # PDF source images: written by render_segments as content-addressed
-            # bytes. Clear the article's media dir so only current figures remain —
+            # PDF source images: content-addressed bytes produced by pdf_convert
+            # (segment images). Clear the article's media dir so only current figures
+            # remain —
             # reaching here with pdf_images == [] (a section that lost all its
             # figures on update) still wipes the stale files. Then write each image,
             # record an ArticleImage row, and rewrite the bare canonical "<sha>.png"

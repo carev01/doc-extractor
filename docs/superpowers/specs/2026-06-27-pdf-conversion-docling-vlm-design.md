@@ -1,8 +1,36 @@
 # Robust PDF → Markdown conversion (docling-serve + heading-split + VLM escalation)
 
 **Date:** 2026-06-27
-**Status:** Design — approved; revised to consume docling-serve over HTTP (was: embedded docling)
+**Status:** Implemented & validated against live docling-serve (2026-06-27)
 **Area:** `backend/app/services/pdf_import.py` and new sibling modules
+
+## Validation result (2026-06-27, live `http://docling.home.lan` v1.12.0)
+
+Ran the implemented pipeline on `HYCU_CompatibilityMatrix.pdf` (24 pages).
+
+**Layer A (standard convert + heading-split) — PASS.** 23 segments (one per
+outline entry). The `Nutanix AOS` article no longer contains `VMware vSphere`
+(cross-section **bleed eliminated**), and its compatibility table renders **once,
+intact, correctly attributed** — versus the original mangled + duplicated +
+misattributed output. Conversion ~16 s.
+
+**Layer B (VLM escalation via OpenRouter qwen) — PASS (round-trip), with a
+design refinement.** The OpenRouter `qwen/qwen3-vl-32b-instruct` path through
+docling-serve's `pipeline=vlm` works end-to-end (HTTP 200, markdown returned).
+Two findings, both addressed:
+
+1. **`response_format` is required** in `vlm_pipeline_model_api` — added
+   (`"markdown"`). Without it docling-serve returns 422 and escalation silently
+   falls back.
+2. **Page-level escalation re-bleeds on shared pages.** docling's VLM
+   re-conversion of a page returns *everything* on that page; a segment that
+   shares its page with siblings/parent would pull their content back in. Fixed:
+   escalation now only fires for segments that **exclusively own their page
+   range** (`build_segments`). On HYCU all 6 flagged segments were shared-page
+   parent/intro sections, so none escalate — correct, since docling's standard
+   output for them is already clean. (Observed bonus: on the AOS page, qwen's
+   table was actually *worse* than docling's standard output — confirming VLM
+   should stay a reserved safety net, not the default.)
 
 ## Problem
 
