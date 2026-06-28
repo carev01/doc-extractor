@@ -153,6 +153,14 @@ class RawContentScrapeError(Exception):
     """
 
 
+def _cookie_header(cookies: list[dict] | None) -> str | None:
+    """Build a ``Cookie`` request-header value from a realm cookie list."""
+    if not cookies:
+        return None
+    pairs = [f"{c['name']}={c['value']}" for c in cookies if c.get("name")]
+    return "; ".join(pairs) or None
+
+
 def _resolve_content_engine(source, profile) -> str | None:
     """Resolve the content-scraping engine for a source.
 
@@ -164,6 +172,23 @@ def _resolve_content_engine(source, profile) -> str | None:
     """
     override = (getattr(source, "profile_config", None) or {}).get("content_engine")
     return override or getattr(profile, "content_engine", None)
+
+
+def _select_content_path(
+    has_auth: bool, content_engine: str | None, render_engine: str | None
+) -> str:
+    """Pick the content-scrape path.
+
+    A raw_http profile always uses the raw-HTTP path (cookies are injected when
+    authenticated). An authenticated non-raw_http profile, or one that requires
+    Browserless rendering, uses Browserless. Everything else uses the Firecrawl
+    batch path.
+    """
+    if content_engine == "raw_http":
+        return "raw_http"
+    if has_auth or render_engine == "browserless":
+        return "browserless"
+    return "firecrawl"
 
 
 def _raw_failure_exceeded(attempted: int, failed: int) -> bool:
@@ -215,7 +240,7 @@ class FirecrawlService:
         # empty-content retries scope content the same way the batch did.
         self._content_config_by_source: dict[uuid.UUID, dict] = {}
 
-    async def _resolve_profile(self, source: DocumentationSource):
+    async def _resolve_profile(self, source: DocumentationSource, auth_cookies=None):
         """Pick the extraction profile for a source.
 
         Resolution order:
@@ -243,7 +268,7 @@ class FirecrawlService:
         # 2. Scrape root HTML (needed for both auto-detect and LLM derivation).
         root_html: str | None = None
         try:
-            scraper = Scraper(self)
+            scraper = Scraper(self, auth_cookies=auth_cookies)
             root_html = await scraper.get_html(source.base_url)
         except Exception as exc:
             logger.warning(
@@ -354,26 +379,81 @@ class FirecrawlService:
             logger.warning("Sitemap fallback also failed for %s: %s", root_url, exc)
             return []
 
-    async def fetch_raw(self, url: str) -> str:
+    async def fetch_raw(self, url: str, cookies: list[dict] | None = None) -> str:
         """Plain GET of a static asset, bypassing Firecrawl's HTML cleaning.
 
         Used for non-HTML resources a profile needs verbatim — e.g. MadCap Flare's
         ``Data/*.xml``/``Data/Tocs/*.js`` TOC files, which Firecrawl would strip or
-        mangle. Sends a browser UA; raises on HTTP error.
+        mangle. Sends a browser UA; ``cookies`` (a realm session cookie list)
+        are sent as a ``Cookie`` header for authenticated raw_http sources.
+        Raises on HTTP error.
 
         Retries transient failures (429/5xx, connect/read timeouts) with backoff:
         the raw_http content path fetches hundreds of pages, so without this a
         single momentary blip or short-lived rate-limit permanently drops a page,
         and enough of those trip the run's failure-rate guard (observed on a
         700-page MadCap source). Non-transient errors (e.g. 404) still raise at once.
+
+        When cookies are supplied, redirects are followed manually so the Cookie
+        header is re-attached on every same-host hop. httpx 0.28+ explicitly
+        strips the Cookie header when following redirects automatically (it
+        re-derives it from the client cookie jar, which is empty here), so an
+        authenticated page that 30x-redirects would otherwise land unauthenticated.
         """
-        resp = await self._request_with_retry(
-            lambda: self.client.get(
-                url, headers={"User-Agent": _BROWSER_UA}, follow_redirects=True
-            ),
-            what=f"raw GET {url}",
-        )
-        return resp.text
+        ck = _cookie_header(cookies)
+
+        if not ck:
+            # No cookies — use automatic redirect following (unchanged behaviour).
+            resp = await self._request_with_retry(
+                lambda: self.client.get(url, headers={"User-Agent": _BROWSER_UA}, follow_redirects=True),
+                what=f"raw GET {url}",
+            )
+            return resp.text
+
+        # Cookies supplied — follow redirects manually, re-attaching the Cookie
+        # header on each same-host hop.
+        #
+        # httpx 0.28+ raise_for_status() also raises on 3xx responses, so
+        # _request_with_retry raises on a redirect rather than returning it.
+        # We catch HTTPStatusError for 3xx codes to extract the redirect response
+        # and continue following; real errors (4xx, 5xx) are re-raised.
+        headers = {"User-Agent": _BROWSER_UA, "Cookie": ck}
+        original_host = httpx.URL(url).host
+        current_url = url
+        resp = None
+
+        for _ in range(10):
+            hop_url = current_url  # explicit capture so the lambda closes over this value
+            try:
+                resp = await self._request_with_retry(
+                    lambda: self.client.get(hop_url, headers=headers, follow_redirects=False),
+                    what=f"raw GET {hop_url}",
+                )
+                # Non-redirect (2xx) final response.
+                return resp.text
+            except httpx.HTTPStatusError as exc:
+                code = exc.response.status_code if exc.response is not None else None
+                if code not in (301, 302, 303, 307, 308):
+                    raise  # real error, propagate
+                resp = exc.response  # extract the redirect response
+
+            location = resp.headers.get("location")
+            if not location:
+                return resp.text
+
+            next_url = urljoin(current_url, location)
+
+            # Security: do not forward cookies to a different host. A cross-host
+            # redirect from a valid authenticated session should not happen for
+            # SSR docs; an expired session redirecting to a different login host
+            # must not receive the session cookie.
+            if httpx.URL(next_url).host != original_host:
+                return resp.text
+
+            current_url = next_url
+
+        # Redirect cap reached — return whatever the last response held.
+        return resp.text if resp is not None else ""
 
     async def _request_with_retry(
         self, send: Callable[[], Awaitable[httpx.Response]], what: str
@@ -965,6 +1045,7 @@ class FirecrawlService:
         url_to_entry: dict[str, dict],
         profile,
         checkpoint,
+        auth_cookies: list[dict] | None = None,
     ) -> None:
         """Content scrape for statically-served platforms (``content_engine ==
         "raw_http"``, e.g. frame-based Flare WebHelp).
@@ -1031,7 +1112,7 @@ class FirecrawlService:
 
         async def _fetch(url: str) -> str | None:
             try:
-                return await self.fetch_raw(url)
+                return await self.fetch_raw(url, cookies=auth_cookies)
             except Exception as exc:  # network / HTTP error — skip this page
                 logger.warning("Raw fetch failed for %s: %s", url, exc)
                 return None
@@ -1407,7 +1488,8 @@ class FirecrawlService:
             await self._check_available()
 
             # ── Phase 1: Build ordered TOC via the source's extraction profile ──
-            profile = await self._resolve_profile(source)
+            auth_cookies = (auth_state or {}).get("cookies")
+            profile = await self._resolve_profile(source, auth_cookies=auth_cookies)
             await db.commit()  # persist auto-detected platform name, if any
             content_cfg = profile.content_config()
             self._content_config_by_source[source_id] = content_cfg
@@ -1430,7 +1512,7 @@ class FirecrawlService:
             # transaction.
             checkpoint = TocBuildCheckpoint(async_session, source_id)
             toc_objs = await profile.build_toc(
-                source.base_url, Scraper(self, checkpoint=checkpoint)
+                source.base_url, Scraper(self, checkpoint=checkpoint, auth_cookies=auth_cookies)
             )
             toc_entries = [
                 {
@@ -1506,7 +1588,24 @@ class FirecrawlService:
             # and gives the UI live per-page progress via the counters.
             url_to_entry = {e["url"]: e for e in toc_entries if e.get("url")}
 
-            if auth_state is not None or getattr(profile, "render_engine", None) == "browserless":
+            path = _select_content_path(
+                auth_state is not None,
+                _resolve_content_engine(source, profile),
+                getattr(profile, "render_engine", None),
+            )
+            if path == "raw_http":
+                # Statically-served content: fetch each page verbatim (no JS) and
+                # scope the body ourselves. A JS-rendering scrape would capture
+                # only the dynamic shell. The engine may come from the profile
+                # class (e.g. flare_webhelp) or a per-source profile_config
+                # override (e.g. LLM-derived category_accordion sources).
+                # Cookies are injected when the source is authenticated (raw_http
+                # profiles that sit behind a cookie-gated login).
+                await self._scrape_via_raw_http(
+                    db, source_id, run_pk, url_to_entry, profile, checkpoint,
+                    auth_cookies=auth_cookies,
+                )
+            elif path == "browserless":
                 # Browserless-rendered platforms: Firecrawl can't get the content
                 # (shadow DOM for Salesforce; Akamai block for support manuals), so render
                 # each article in Browserless. A profile may supply a content_spec
@@ -1540,15 +1639,6 @@ class FirecrawlService:
                     source.error_message = str(exc)[:4096]
                     await db.commit()
                     return run
-            elif _resolve_content_engine(source, profile) == "raw_http":
-                # Statically-served content: fetch each page verbatim (no JS) and
-                # scope the body ourselves. A JS-rendering scrape would capture
-                # only the dynamic shell. The engine may come from the profile
-                # class (e.g. flare_webhelp) or a per-source profile_config
-                # override (e.g. LLM-derived category_accordion sources).
-                await self._scrape_via_raw_http(
-                    db, source_id, run_pk, url_to_entry, profile, checkpoint
-                )
             else:
                 # Submit in capped chunks (≤ MAX_BATCH_URLS) processed
                 # sequentially, so a huge doc set doesn't overwhelm Firecrawl

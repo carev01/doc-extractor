@@ -13,9 +13,10 @@ class Scraper:
     interruption; profiles that don't need it ignore it.
     """
 
-    def __init__(self, firecrawl, checkpoint=None):
+    def __init__(self, firecrawl, checkpoint=None, auth_cookies=None):
         self._fc = firecrawl
         self.checkpoint = checkpoint
+        self._auth_cookies = auth_cookies
 
     async def get_html(self, url: str, wait_ms: int = 1500) -> str:
         data = await self._fc._firecrawl_request(
@@ -26,7 +27,7 @@ class Scraper:
 
     async def get_raw(self, url: str) -> str:
         """Verbatim GET of a static asset (e.g. Flare Data/*.js|xml TOC files)."""
-        return await self._fc.fetch_raw(url)
+        return await self._fc.fetch_raw(url, cookies=self._auth_cookies)
 
     async def map_urls(self, root_url: str) -> list[str]:
         return await self._fc.map_urls(root_url)
