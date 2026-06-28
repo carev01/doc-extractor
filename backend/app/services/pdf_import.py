@@ -120,7 +120,25 @@ async def build_segments(
     if not settings.pdf_vlm_escalation_enabled:
         return segments
 
-    flagged = [s for s in segments if score_segment(s, converted)]
+    # A segment may only be VLM-escalated if it EXCLUSIVELY owns its page range.
+    # Escalation re-converts the segment's pages via docling's VLM pipeline
+    # (page_range), so re-converting a page shared with sibling/parent segments
+    # would pull their content back in — reintroducing the cross-section bleed the
+    # heading-split just removed. Shared-page segments keep their (already clean)
+    # standard split output.
+    page_owners: dict[int, int] = {}
+    for s in segments:
+        for p in range(s.page_start, s.page_end + 1):
+            page_owners[p] = page_owners.get(p, 0) + 1
+
+    def _exclusive(s: RenderedSegment) -> bool:
+        return all(
+            page_owners.get(p, 0) == 1 for p in range(s.page_start, s.page_end + 1)
+        )
+
+    flagged = [
+        s for s in segments if _exclusive(s) and score_segment(s, converted)
+    ]
     budget = settings.pdf_vlm_max_pages_per_run
     done, total = 0, len(flagged)
     for seg in flagged:
