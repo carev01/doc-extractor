@@ -880,7 +880,7 @@ class FirecrawlService:
         detection falls back to content hashing (change_status=None), as there
         is no Firecrawl changeTracking baseline on this path.
         """
-        from markdownify import markdownify
+        from app.services.html_to_md import html_to_markdown
 
         from app.services.browserless import BrowserlessError, browserless_client
 
@@ -925,7 +925,7 @@ class FirecrawlService:
                     if not data:
                         continue
                     html = data.get("contentHtml") or ""
-                    md = markdownify(html).strip() if html else (data.get("contentText") or "").strip()
+                    md = html_to_markdown(html) if html else (data.get("contentText") or "").strip()
                     # Auth wall detection — only for authenticated sources. The
                     # browserless path also serves non-auth platforms (e.g.
                     # Salesforce Help), whose article URLs may legitimately
@@ -991,7 +991,7 @@ class FirecrawlService:
         tried), the run is failed loudly (``RawContentScrapeError``) rather than
         completing with a silently-partial doc set.
         """
-        from markdownify import markdownify
+        from app.services.html_to_md import html_to_markdown
 
         # Profile-specific extractor, else the generic selector-based scoper.
         profile_extractor = getattr(profile, "extract_content_html", None)
@@ -1062,7 +1062,7 @@ class FirecrawlService:
                     logger.warning("No content body found at %s — skipping", url)
                     failed += 1
                     continue
-                md = markdownify(body_html).strip()
+                md = html_to_markdown(body_html)
                 if not md:
                     logger.warning("Empty content from %s — skipping", url)
                     failed += 1
