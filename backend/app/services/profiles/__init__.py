@@ -35,6 +35,7 @@ from app.services.profiles import sphinx  # noqa: F401,E402
 from app.services.profiles import grouped_nav  # noqa: F401,E402
 from app.services.profiles import warmup_book  # noqa: F401,E402
 from app.services.profiles import prerendered_toc  # noqa: F401,E402
+from app.services.profiles import rspress  # noqa: F401,E402
 from app.services.profiles import generic  # noqa: F401,E402
 from app.services.profiles import llm  # noqa: F401,E402
 
