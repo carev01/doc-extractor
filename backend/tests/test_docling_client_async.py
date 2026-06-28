@@ -62,3 +62,33 @@ async def test_convert_async_raises_on_failure(monkeypatch):
     monkeypatch.setattr(dc.httpx, "AsyncClient", _SeqClient)
     with pytest.raises(dc.DoclingServeError):
         await dc.convert_async(b"%PDF")
+
+
+class _FlakyClient:
+    """submit ok; first poll GET raises 502, then poll(success), then result."""
+    def __init__(self, *a, **k):
+        self.gets = 0
+        self.seq = [
+            {"task_id": "T1", "task_status": "success"},
+            {"status": "success", "document": {"md_content": "# OK", "json_content": {}}},
+        ]
+    async def __aenter__(self): return self
+    async def __aexit__(self, *a): return False
+    async def post(self, url, headers=None, json=None):
+        return _Resp({"task_id": "T1", "task_status": "pending"})
+    async def get(self, url, headers=None):
+        self.gets += 1
+        if self.gets == 1:
+            import httpx
+            raise httpx.HTTPError("502 Bad Gateway")
+        return _Resp(self.seq.pop(0))
+
+
+@pytest.mark.asyncio
+async def test_convert_async_tolerates_transient_poll_error(monkeypatch):
+    monkeypatch.setattr(dc.settings, "docling_serve_url", "http://d.test")
+    monkeypatch.setattr(dc.settings, "docling_serve_api_key", "k")
+    monkeypatch.setattr(dc.settings, "docling_serve_poll_interval", 0.0)
+    monkeypatch.setattr(dc.httpx, "AsyncClient", _FlakyClient)
+    doc = await dc.convert_async(b"%PDF")
+    assert doc["md_content"] == "# OK"   # recovered despite the transient 502

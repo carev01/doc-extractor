@@ -95,6 +95,30 @@ async def convert(
     return doc
 
 
+_POLL_MAX_TRANSIENT = 5  # consecutive transient GET failures tolerated per call
+
+
+async def _get_json_with_retry(client, url, headers, deadline) -> dict:
+    """GET + parse JSON, tolerating transient HTTP errors (e.g. a 502 from the
+    ingress while docling-serve is busy on a large doc) until the deadline. A
+    single transient blip must not abandon an in-progress conversion."""
+    transient = 0
+    while True:
+        try:
+            r = await client.get(url, headers=headers)
+            r.raise_for_status()
+            return await asyncio.to_thread(r.json)
+        except (httpx.HTTPError, ValueError) as exc:
+            transient += 1
+            if transient > _POLL_MAX_TRANSIENT or time.monotonic() > deadline:
+                raise
+            logger.warning(
+                "docling-serve transient error on %s (%d/%d): %s; retrying",
+                url.rsplit("/", 2)[-2:], transient, _POLL_MAX_TRANSIENT, exc,
+            )
+            await asyncio.sleep(settings.docling_serve_poll_interval)
+
+
 def _build_options(*, page_range, use_vlm_api, do_ocr, image_export_mode,
                    page_break_placeholder) -> dict:
     options: dict = {
@@ -156,9 +180,8 @@ async def convert_async(
                 if time.monotonic() > deadline:
                     raise DoclingServeError("docling-serve conversion timed out")
                 await asyncio.sleep(settings.docling_serve_poll_interval)
-                r = await client.get(base + f"/v1/status/poll/{task_id}", headers=headers)
-                r.raise_for_status()
-                status = await asyncio.to_thread(r.json)
+                status = await _get_json_with_retry(
+                    client, base + f"/v1/status/poll/{task_id}", headers, deadline)
                 if on_poll is not None:
                     try:
                         await on_poll(status)
@@ -168,9 +191,8 @@ async def convert_async(
             if status.get("task_status") == _TERMINAL_FAIL:
                 raise DoclingServeError(f"docling-serve task failed: {status}")
 
-            rr = await client.get(base + f"/v1/result/{task_id}", headers=headers)
-            rr.raise_for_status()
-            payload = await asyncio.to_thread(rr.json)
+            payload = await _get_json_with_retry(
+                client, base + f"/v1/result/{task_id}", headers, deadline)
     except (httpx.HTTPError, ValueError) as exc:
         raise DoclingServeError(f"docling-serve async request failed: {exc}") from exc
 
