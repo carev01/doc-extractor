@@ -19,6 +19,13 @@ from bs4 import BeautifulSoup
 from app.services.profiles import registry
 from app.services.profiles.base import TocEntry
 
+# The article body container, and the page chrome to drop (right-rail "on this
+# page" TOC, prev/next + edit footer, any in-doc breadcrumb/nav). Shared by the
+# raw_http content path (content_config) and the authenticated Browserless path
+# (browserless_content_spec) so both scope identically.
+_CONTENT_SELECTOR = ".rspress-doc"
+_EXCLUDE_TAGS = [".rspress-local-toc-container", ".rspress-doc-footer", "nav"]
+
 
 class RspressProfile:
     name = "rspress"
@@ -86,11 +93,21 @@ class RspressProfile:
 
     def content_config(self) -> dict:
         return {
-            "includeTags": [".rspress-doc"],
-            # Drop the right-rail "on this page" TOC, the prev/next + edit
-            # footer, and any in-doc breadcrumb/nav.
-            "excludeTags": [".rspress-local-toc-container", ".rspress-doc-footer", "nav"],
+            "includeTags": [_CONTENT_SELECTOR],
+            "excludeTags": _EXCLUDE_TAGS,
             "onlyMainContent": False,
+        }
+
+    def browserless_content_spec(self) -> dict:
+        """Content spec for the authenticated Browserless path. Authenticated
+        sources always render via Browserless (raw_http can't inject the
+        session), so scope to the same article container and drop the same
+        chrome as content_config. No warm-up: gating is by session cookie, not
+        a JS-clearance WAF."""
+        return {
+            "selector": _CONTENT_SELECTOR,
+            "warmup_url": None,
+            "excludeTags": _EXCLUDE_TAGS,
         }
 
 

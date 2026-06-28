@@ -143,3 +143,14 @@ async def test_parents_resolve_section_as_parent():
 async def test_missing_sidebar_returns_empty():
     s = FakeScraper({}, raw_by_url={ROOT: "<html><body><div class='rspress-doc'>x</div></body></html>"})
     assert await RspressProfile().build_toc(ROOT, s) == []
+
+
+def test_browserless_content_spec_scopes_to_rspress_doc():
+    # Authenticated rspress sources use the Browserless content path (raw_http
+    # can't carry a session). It must scope to the same article container and
+    # drop the same chrome as the raw_http content_config.
+    cfg = RspressProfile().content_config()
+    spec = RspressProfile().browserless_content_spec()
+    assert spec["selector"] == ".rspress-doc"
+    assert spec["warmup_url"] is None
+    assert spec["excludeTags"] == cfg["excludeTags"]
