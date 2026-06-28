@@ -46,3 +46,36 @@ async def test_fetch_raw_no_cookie_header_when_absent():
     await svc.fetch_raw("https://x/p")
     assert seen["cookie"] is None
     await svc.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_fetch_raw_cookie_survives_same_host_redirect():
+    """Cookie header must be re-attached after a same-host 302 redirect.
+
+    httpx 0.28+ explicitly strips the Cookie header when following redirects
+    (it re-derives it from the client cookie jar, which is empty). This test
+    confirms fetch_raw re-attaches the cookie on the second hop.
+    """
+    requests_seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests_seen.append({
+            "url": str(request.url),
+            "cookie": request.headers.get("cookie"),
+        })
+        if len(requests_seen) == 1:
+            # First hop: redirect to /p2 on the same host
+            return httpx.Response(302, headers={"location": "/p2"})
+        return httpx.Response(200, text="<html>page2</html>")
+
+    svc = FirecrawlService()
+    svc.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    result = await svc.fetch_raw("https://x/p1", cookies=[{"name": "SAML", "value": "tok"}])
+    await svc.client.aclose()
+
+    assert len(requests_seen) == 2, f"Expected 2 requests, got {len(requests_seen)}"
+    assert requests_seen[0]["cookie"] == "SAML=tok", "Cookie missing on first hop"
+    assert requests_seen[1]["cookie"] == "SAML=tok", (
+        "Cookie must be re-attached on same-host redirect; "
+        f"got: {requests_seen[1]['cookie']!r}"
+    )

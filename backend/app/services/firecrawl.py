@@ -393,16 +393,67 @@ class FirecrawlService:
         single momentary blip or short-lived rate-limit permanently drops a page,
         and enough of those trip the run's failure-rate guard (observed on a
         700-page MadCap source). Non-transient errors (e.g. 404) still raise at once.
+
+        When cookies are supplied, redirects are followed manually so the Cookie
+        header is re-attached on every same-host hop. httpx 0.28+ explicitly
+        strips the Cookie header when following redirects automatically (it
+        re-derives it from the client cookie jar, which is empty here), so an
+        authenticated page that 30x-redirects would otherwise land unauthenticated.
         """
-        headers = {"User-Agent": _BROWSER_UA}
         ck = _cookie_header(cookies)
-        if ck:
-            headers["Cookie"] = ck
-        resp = await self._request_with_retry(
-            lambda: self.client.get(url, headers=headers, follow_redirects=True),
-            what=f"raw GET {url}",
-        )
-        return resp.text
+
+        if not ck:
+            # No cookies — use automatic redirect following (unchanged behaviour).
+            resp = await self._request_with_retry(
+                lambda: self.client.get(url, headers={"User-Agent": _BROWSER_UA}, follow_redirects=True),
+                what=f"raw GET {url}",
+            )
+            return resp.text
+
+        # Cookies supplied — follow redirects manually, re-attaching the Cookie
+        # header on each same-host hop.
+        #
+        # httpx 0.28+ raise_for_status() also raises on 3xx responses, so
+        # _request_with_retry raises on a redirect rather than returning it.
+        # We catch HTTPStatusError for 3xx codes to extract the redirect response
+        # and continue following; real errors (4xx, 5xx) are re-raised.
+        headers = {"User-Agent": _BROWSER_UA, "Cookie": ck}
+        original_host = httpx.URL(url).host
+        current_url = url
+        resp = None
+
+        for _ in range(10):
+            hop_url = current_url  # explicit capture so the lambda closes over this value
+            try:
+                resp = await self._request_with_retry(
+                    lambda: self.client.get(hop_url, headers=headers, follow_redirects=False),
+                    what=f"raw GET {hop_url}",
+                )
+                # Non-redirect (2xx) final response.
+                return resp.text
+            except httpx.HTTPStatusError as exc:
+                code = exc.response.status_code if exc.response is not None else None
+                if code not in (301, 302, 303, 307, 308):
+                    raise  # real error, propagate
+                resp = exc.response  # extract the redirect response
+
+            location = resp.headers.get("location")
+            if not location:
+                return resp.text
+
+            next_url = urljoin(current_url, location)
+
+            # Security: do not forward cookies to a different host. A cross-host
+            # redirect from a valid authenticated session should not happen for
+            # SSR docs; an expired session redirecting to a different login host
+            # must not receive the session cookie.
+            if httpx.URL(next_url).host != original_host:
+                return resp.text
+
+            current_url = next_url
+
+        # Redirect cap reached — return whatever the last response held.
+        return resp.text if resp is not None else ""
 
     async def _request_with_retry(
         self, send: Callable[[], Awaitable[httpx.Response]], what: str
