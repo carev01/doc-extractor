@@ -36,3 +36,11 @@ def test_build_login_computes_totp_when_seeded():
 def test_build_login_selector_overrides_win():
     code, ctx = login_scripts.build_login(_realm(login_selectors={"username": "#email"}))
     assert ctx["selectors"]["username"] == "#email"
+
+
+def test_login_code_presses_enter_when_no_submit_button():
+    # Some login forms (e.g. AvePoint AOS SSO) have no clickable submit button
+    # and submit on Enter. The template must fall back to pressing Enter when
+    # none of the submit selectors match, instead of silently not submitting.
+    code, _ = login_scripts.build_login(_realm())
+    assert "keyboard.press('Enter')" in code

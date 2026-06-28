@@ -40,10 +40,23 @@ export default async function ({ page, context }) {
   const pw = await page.$(selectors.password.split(',')[0]);
   if (!pw) { const n = await page.$(selectors.submit.split(',')[0]); if (n) await n.click().catch(() => {}); }
   await type(selectors.password, password);
-  const submit = await page.$(selectors.submit.split(',')[0]);
-  if (submit) await Promise.all([
+  // Click the first matching submit control; if none match (some forms, e.g.
+  // AvePoint AOS SSO, have no clickable submit button), submit via Enter.
+  let submitted = false;
+  for (const sel of selectors.submit.split(',')) {
+    const btn = await page.$(sel.trim());
+    if (btn) {
+      await Promise.all([
+        page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 }).catch(() => {}),
+        btn.click(),
+      ]);
+      submitted = true;
+      break;
+    }
+  }
+  if (!submitted) await Promise.all([
     page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 }).catch(() => {}),
-    submit.click(),
+    page.keyboard.press('Enter'),
   ]);
   if (otp) { await type(selectors.otp, otp);
     const s2 = await page.$(selectors.submit.split(',')[0]);
