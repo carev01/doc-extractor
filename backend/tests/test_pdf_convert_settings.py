@@ -23,6 +23,7 @@ def test_pdf_converter_defaults():
     assert s.docling_serve_api_key == ""
     assert s.docling_serve_timeout == 600.0
     assert s.docling_serve_poll_interval == 3.0
+    assert s.pdf_convert_batch_pages == 80
     assert s.pdf_vlm_escalation_enabled is True
     assert s.pdf_vlm_base_url == "https://openrouter.ai/api/v1/chat/completions"
     assert s.pdf_vlm_api_key == ""
