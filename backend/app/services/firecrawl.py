@@ -174,6 +174,23 @@ def _resolve_content_engine(source, profile) -> str | None:
     return override or getattr(profile, "content_engine", None)
 
 
+def _select_content_path(
+    has_auth: bool, content_engine: str | None, render_engine: str | None
+) -> str:
+    """Pick the content-scrape path.
+
+    A raw_http profile always uses the raw-HTTP path (cookies are injected when
+    authenticated). An authenticated non-raw_http profile, or one that requires
+    Browserless rendering, uses Browserless. Everything else uses the Firecrawl
+    batch path.
+    """
+    if content_engine == "raw_http":
+        return "raw_http"
+    if has_auth or render_engine == "browserless":
+        return "browserless"
+    return "firecrawl"
+
+
 def _raw_failure_exceeded(attempted: int, failed: int) -> bool:
     """True when the raw_http run should abort: enough pages were attempted and
     the failure fraction exceeds the configured ceiling. Below
@@ -223,7 +240,7 @@ class FirecrawlService:
         # empty-content retries scope content the same way the batch did.
         self._content_config_by_source: dict[uuid.UUID, dict] = {}
 
-    async def _resolve_profile(self, source: DocumentationSource):
+    async def _resolve_profile(self, source: DocumentationSource, auth_cookies=None):
         """Pick the extraction profile for a source.
 
         Resolution order:
@@ -251,7 +268,7 @@ class FirecrawlService:
         # 2. Scrape root HTML (needed for both auto-detect and LLM derivation).
         root_html: str | None = None
         try:
-            scraper = Scraper(self)
+            scraper = Scraper(self, auth_cookies=auth_cookies)
             root_html = await scraper.get_html(source.base_url)
         except Exception as exc:
             logger.warning(
@@ -977,6 +994,7 @@ class FirecrawlService:
         url_to_entry: dict[str, dict],
         profile,
         checkpoint,
+        auth_cookies: list[dict] | None = None,
     ) -> None:
         """Content scrape for statically-served platforms (``content_engine ==
         "raw_http"``, e.g. frame-based Flare WebHelp).
@@ -1043,7 +1061,7 @@ class FirecrawlService:
 
         async def _fetch(url: str) -> str | None:
             try:
-                return await self.fetch_raw(url)
+                return await self.fetch_raw(url, cookies=auth_cookies)
             except Exception as exc:  # network / HTTP error — skip this page
                 logger.warning("Raw fetch failed for %s: %s", url, exc)
                 return None
@@ -1419,7 +1437,8 @@ class FirecrawlService:
             await self._check_available()
 
             # ── Phase 1: Build ordered TOC via the source's extraction profile ──
-            profile = await self._resolve_profile(source)
+            auth_cookies = (auth_state or {}).get("cookies")
+            profile = await self._resolve_profile(source, auth_cookies=auth_cookies)
             await db.commit()  # persist auto-detected platform name, if any
             content_cfg = profile.content_config()
             self._content_config_by_source[source_id] = content_cfg
@@ -1442,7 +1461,7 @@ class FirecrawlService:
             # transaction.
             checkpoint = TocBuildCheckpoint(async_session, source_id)
             toc_objs = await profile.build_toc(
-                source.base_url, Scraper(self, checkpoint=checkpoint)
+                source.base_url, Scraper(self, checkpoint=checkpoint, auth_cookies=auth_cookies)
             )
             toc_entries = [
                 {
@@ -1518,7 +1537,24 @@ class FirecrawlService:
             # and gives the UI live per-page progress via the counters.
             url_to_entry = {e["url"]: e for e in toc_entries if e.get("url")}
 
-            if auth_state is not None or getattr(profile, "render_engine", None) == "browserless":
+            path = _select_content_path(
+                auth_state is not None,
+                _resolve_content_engine(source, profile),
+                getattr(profile, "render_engine", None),
+            )
+            if path == "raw_http":
+                # Statically-served content: fetch each page verbatim (no JS) and
+                # scope the body ourselves. A JS-rendering scrape would capture
+                # only the dynamic shell. The engine may come from the profile
+                # class (e.g. flare_webhelp) or a per-source profile_config
+                # override (e.g. LLM-derived category_accordion sources).
+                # Cookies are injected when the source is authenticated (raw_http
+                # profiles that sit behind a cookie-gated login).
+                await self._scrape_via_raw_http(
+                    db, source_id, run_pk, url_to_entry, profile, checkpoint,
+                    auth_cookies=auth_cookies,
+                )
+            elif path == "browserless":
                 # Browserless-rendered platforms: Firecrawl can't get the content
                 # (shadow DOM for Salesforce; Akamai block for support manuals), so render
                 # each article in Browserless. A profile may supply a content_spec
@@ -1552,15 +1588,6 @@ class FirecrawlService:
                     source.error_message = str(exc)[:4096]
                     await db.commit()
                     return run
-            elif _resolve_content_engine(source, profile) == "raw_http":
-                # Statically-served content: fetch each page verbatim (no JS) and
-                # scope the body ourselves. A JS-rendering scrape would capture
-                # only the dynamic shell. The engine may come from the profile
-                # class (e.g. flare_webhelp) or a per-source profile_config
-                # override (e.g. LLM-derived category_accordion sources).
-                await self._scrape_via_raw_http(
-                    db, source_id, run_pk, url_to_entry, profile, checkpoint
-                )
             else:
                 # Submit in capped chunks (≤ MAX_BATCH_URLS) processed
                 # sequentially, so a huge doc set doesn't overwhelm Firecrawl
