@@ -61,3 +61,32 @@ def score_segment(segment: RenderedSegment, converted: ConvertedDoc) -> list[str
         issues.append("sparse_text")
 
     return issues
+
+
+from app.services import docling_client
+from app.services.docling_client import DoclingServeError
+from app.services.sanitize import sanitize_markdown
+
+
+async def escalate_segment(pdf_bytes: bytes, segment: RenderedSegment) -> str:
+    """Re-convert one segment via docling-serve's VLM pipeline (OpenRouter).
+    Returns the original markdown on any docling-serve failure."""
+    try:
+        doc = await docling_client.convert(
+            pdf_bytes,
+            pipeline="vlm",
+            page_range=(segment.page_start + 1, segment.page_end + 1),
+            use_vlm_api=True,
+            image_export_mode="placeholder",
+        )
+    except DoclingServeError as exc:
+        logger.warning("VLM escalation failed for %r: %s", segment.title, exc)
+        return segment.markdown
+
+    cleaned = sanitize_markdown((doc.get("md_content") or "").strip())
+    if not cleaned.strip():
+        return segment.markdown
+    if not cleaned.lstrip().startswith("#"):
+        hashes = "#" * max(1, segment.level)
+        cleaned = f"{hashes} {segment.title}\n\n{cleaned}"
+    return cleaned
