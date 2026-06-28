@@ -738,12 +738,22 @@ Expected: FAIL — `cannot import name 'split_into_segments'`.
 
 - [ ] **Step 3: Implement the split**
 
-Append to `backend/app/services/pdf_convert.py`:
+Append to `backend/app/services/pdf_convert.py`. Note: `Segment` (from
+`pdf_import`) is imported ONLY under `TYPE_CHECKING` to avoid a circular import —
+`pdf_import` imports this module at its top (Task 7), and `split_into_segments`
+only reads attributes off the outline items (duck-typed), so `Segment` is never
+needed at runtime here. Add this near the other imports at the top of the file:
 
 ```python
-from app.services.pdf_import import Segment  # outline dataclass
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from app.services.pdf_import import Segment
+```
 
+Then append:
+
+```python
 @dataclass
 class RenderedSegment:
     title: str
@@ -778,7 +788,7 @@ def _find_heading_line(headings: list[tuple[int, str]], title: str, start: int) 
     return None
 
 
-def split_into_segments(converted: ConvertedDoc, outline: list[Segment]) -> list[RenderedSegment]:
+def split_into_segments(converted: ConvertedDoc, outline: "list[Segment]") -> list[RenderedSegment]:
     md = converted.markdown
     lines = md.split("\n")
     heading_lines = _heading_lines(lines)
