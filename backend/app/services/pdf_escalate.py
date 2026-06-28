@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import re
 
+from app.core.config import settings
 from app.services.pdf_convert import ConvertedDoc, RenderedSegment
 
 logger = logging.getLogger(__name__)
@@ -90,3 +91,45 @@ async def escalate_segment(pdf_bytes: bytes, segment: RenderedSegment) -> str:
         hashes = "#" * max(1, segment.level)
         cleaned = f"{hashes} {segment.title}\n\n{cleaned}"
     return cleaned
+
+
+async def escalate_segments(pdf_bytes, segments, converted, on_event=None) -> None:
+    """Re-convert low-confidence segments in place via the VLM, but only those
+    that exclusively own their page range (escalating a shared page would pull in
+    neighbours' content and reintroduce cross-section bleed). Bounded by the
+    per-run page budget."""
+    if not settings.pdf_vlm_escalation_enabled:
+        return
+
+    page_owners: dict[int, int] = {}
+    for s in segments:
+        for p in range(s.page_start, s.page_end + 1):
+            page_owners[p] = page_owners.get(p, 0) + 1
+
+    def _exclusive(s) -> bool:
+        return all(page_owners.get(p, 0) == 1 for p in range(s.page_start, s.page_end + 1))
+
+    flagged = [s for s in segments if _exclusive(s) and score_segment(s, converted)]
+    if flagged:
+        logger.info("pdf_escalate: %d/%d segments flagged; re-converting via VLM",
+                    len(flagged), len(segments))
+    budget = settings.pdf_vlm_max_pages_per_run
+    total = len(flagged)
+    done = 0
+    for seg in flagged:
+        pages = seg.page_end - seg.page_start + 1
+        if pages > budget:
+            continue
+        new_md = await escalate_segment(pdf_bytes, seg)
+        if new_md != seg.markdown:
+            seg.markdown = new_md
+            matched = [img for img in converted.images if img.filename in new_md]
+            seg.images = matched or seg.images
+        budget -= pages
+        done += 1
+        logger.info("pdf_escalate: %d/%d re-converted (%r)", done, total, seg.title)
+        if on_event is not None:
+            try:
+                await on_event(done, total, seg.title)
+            except Exception:  # noqa: BLE001
+                logger.exception("escalate on_event failed")
