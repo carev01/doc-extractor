@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import html
 import logging
 import os
 import re
@@ -237,13 +238,25 @@ def _heading_lines(lines: list[str]) -> list[tuple[int, str]]:
     return out
 
 
+def _norm_core(s: str) -> str:
+    """Match key: unescape entities, casefold, strip all non-alphanumerics.
+    Makes '1Preface' == '1 Preface' and "What's" == 'What's'."""
+    return re.sub(r"[^a-z0-9]+", "", html.unescape(s).lower())
+
+
 def _find_heading_line(headings: list[tuple[int, str]], title: str, start: int) -> "int | None":
-    t = " ".join(title.lower().split())
+    t = _norm_core(title)
+    if not t:
+        return None
+    # exact-core match first (safest), then containment as a secondary.
+    for idx, text in headings:
+        if idx >= start and _norm_core(text) == t:
+            return idx
     for idx, text in headings:
         if idx < start:
             continue
-        h = " ".join(text.lower().split())
-        if h == t or t in h or h in t:
+        h = _norm_core(text)
+        if t in h or h in t:
             return idx
     return None
 
@@ -257,10 +270,17 @@ def split_into_segments(converted: ConvertedDoc, outline: "list[Segment]") -> li
     boundaries: list[tuple[int, str, int, list[str], int, int]] = []
     if outline:
         cursor = 0
+        starts = converted.page_line_starts
         for seg in outline:
             line = _find_heading_line(heading_lines, seg.title, cursor)
             if line is None:
-                continue
+                # Never drop: fall back to the page where the entry begins.
+                if starts and 0 <= seg.page_start < len(starts):
+                    line = max(starts[seg.page_start], cursor)
+                else:
+                    line = cursor
+                logger.info("split: %r not found as heading; page-fallback line %d",
+                            seg.title, line)
             cursor = line + 1
             boundaries.append((line, seg.title, seg.level, seg.path or [seg.title],
                                seg.page_start, seg.page_end))

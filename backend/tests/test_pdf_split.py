@@ -5,6 +5,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.services.pdf_convert import (
     ConvertedDoc, DocHeading, RenderedImage, split_into_segments,
+    _heading_lines, _find_heading_line,
 )
 from app.services.pdf_import import Segment
 
@@ -63,3 +64,26 @@ def test_image_assigned_to_owning_segment():
     b = next(s for s in segs if s.title == "B")
     assert [i.filename for i in a.images] == ["aa.png"]
     assert b.images == []
+
+
+def test_numbered_title_matches_spaced_heading():
+    lines = "# 1 Preface\n\nbody\n".split("\n")
+    hl = _heading_lines(lines)
+    # outline title has the number glued + a curly apostrophe variant elsewhere
+    assert _find_heading_line(hl, "1Preface", 0) == 0
+
+
+def test_unmatched_outline_entry_not_dropped_uses_page_fallback():
+    # 'Hidden' has no heading in the markdown; page_line_starts maps page 1 → line 3
+    md = "# Intro\n\nintro body\n# Real\n\nreal body\n"
+    conv = ConvertedDoc(markdown=md, headings=[], page_texts=[md, "p2"],
+                        table_pages=set(), images=[], engine="docling",
+                        page_line_starts=[0, 3])
+    outline = [
+        Segment(title="Intro", level=1, page_start=0, page_end=0, path=["Intro"]),
+        Segment(title="Hidden", level=1, page_start=1, page_end=1, path=["Hidden"]),
+    ]
+    segs = split_into_segments(conv, outline)
+    titles = [s.title for s in segs]
+    assert "Hidden" in titles            # NOT dropped
+    assert len(segs) == 2
