@@ -67,3 +67,79 @@ def test_content_scopes_doc_and_drops_chrome():
     assert "Edit this page" not in out         # footer dropped
     assert "Home / About" not in out           # in-doc nav dropped
     assert "License and Subscription" not in out  # sidebar outside scope
+
+
+import pytest
+
+from app.services.profiles.scraper import FakeScraper
+from app.services.profiles.detector import detect_platform
+from app.services.firecrawl import _resolve_toc_parents
+
+
+def _scraper():
+    return FakeScraper({}, raw_by_url={ROOT: PAGE})
+
+
+def test_detects_via_registry():
+    # Requires the registration added in this task.
+    assert detect_platform(PAGE, ROOT) == "rspress"
+
+
+@pytest.mark.asyncio
+async def test_builds_nested_tree_in_order():
+    toc = await RspressProfile().build_toc(ROOT, _scraper())
+    shape = [(e.level, e.title, e.is_article) for e in toc]
+    assert shape == [
+        (0, "About Cloud Backup", False),          # h2 section, url=None
+        (1, "Express", True),                      # /m365/about-cloud-backup/express.html
+        (1, "Cloud Backup", False),                # nested h2 section
+        (2, "Multi-Geo Support", True),            # depth-3 path -> level 2
+        (0, "What's New", True),                   # /m365/whats-new.html
+        (0, "FAQs", False),                        # h2 section
+        (1, "License and Subscription", True),
+        (1, "Storage", True),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_logo_and_cross_guide_anchors_excluded():
+    toc = await RspressProfile().build_toc(ROOT, _scraper())
+    assert all(e.url != "https://learn.avepoint.com/index.html" for e in toc)
+    # Every article entry's path is under the guide root /m365/.
+    arts = [e for e in toc if e.is_article]
+    assert arts and all("/m365/" in e.url for e in arts)
+
+
+@pytest.mark.asyncio
+async def test_section_nodes_are_structural():
+    toc = await RspressProfile().build_toc(ROOT, _scraper())
+    faqs = next(e for e in toc if e.title == "FAQs")
+    assert faqs.is_article is False
+    assert faqs.url is None
+    # Articles always carry a URL (so the pipeline scrapes them).
+    assert all(e.url for e in toc if e.is_article)
+
+
+@pytest.mark.asyncio
+async def test_parents_resolve_section_as_parent():
+    toc = await RspressProfile().build_toc(ROOT, _scraper())
+    entries = [
+        {"title": e.title, "url": e.url, "level": e.level,
+         "is_article": e.is_article, "parent_url": e.parent_url}
+        for e in toc
+    ]
+    parents = _resolve_toc_parents(entries)
+    idx = {e["title"]: i for i, e in enumerate(entries)}
+    # FAQs children nest under the FAQs section node.
+    assert parents[idx["License and Subscription"]] == idx["FAQs"]
+    assert parents[idx["Storage"]] == idx["FAQs"]
+    # Multi-Geo nests under the nested "Cloud Backup" section.
+    assert parents[idx["Multi-Geo Support"]] == idx["Cloud Backup"]
+    # Top-level entries have no parent.
+    assert parents[idx["What's New"]] is None
+
+
+@pytest.mark.asyncio
+async def test_missing_sidebar_returns_empty():
+    s = FakeScraper({}, raw_by_url={ROOT: "<html><body><div class='rspress-doc'>x</div></body></html>"})
+    assert await RspressProfile().build_toc(ROOT, s) == []
