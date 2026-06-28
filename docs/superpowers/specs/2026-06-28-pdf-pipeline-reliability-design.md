@@ -75,3 +75,10 @@ Validation (live): re-extract CloudAlly → 119 articles restored (0 wrongly rem
 ## Rollout
 
 After deploy, re-extract the PDF sources that were churned/mis-reconciled (CloudAlly + HYCU User Guides at minimum). No schema change.
+
+## Validation result (2026-06-28)
+
+- **Backend suite:** 771 passed (was 750; +21 new tests).
+- **Problem 3 (CloudAlly segment-drop) — FIXED:** end-to-end against live docling-serve, the MS 365 User Guide now yields **119 segments (all non-empty)** vs. the broken **14**. `outline=119, segments=119`.
+- **Extra robustness fix (found during validation):** docling-serve returned a transient **502 on a status-poll** during the long CloudAlly convert, which abandoned the conversion (→ pymupdf fallback). Added transient-error tolerance to `convert_async` (retry poll/result GETs within the deadline). After the fix the same convert completes via **engine=docling** (not the fallback).
+- **Problems 1 & 2 (heartbeat/monitoring):** the off-loop `to_thread` offload, async polling, phase labels, early denominator, and run-log lines are in place and unit-tested. Live confirmation (no reaping/restart on the 285-article User Guides; UI phase progression) to be observed after deploy + re-extraction.
