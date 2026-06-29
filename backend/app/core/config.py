@@ -116,6 +116,10 @@ class Settings(BaseSettings):
     #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
     secret_key: str = ""
 
+    # Generic outbound webhook for operator alerts (e.g. a realm session expired
+    # mid-run). Blank disables. POSTs JSON {title,message,text,content,...}.
+    notify_webhook_url: str = ""
+
     model_config = {
         "env_prefix": "DOCEXTRACTOR_",
         "case_sensitive": False,
