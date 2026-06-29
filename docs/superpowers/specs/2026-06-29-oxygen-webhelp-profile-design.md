@@ -1,81 +1,92 @@
-# Oxygen XML WebHelp extraction profile
+# Oxygen XML WebHelp extraction profile (Rubrik) — inventory TOC + post-process hierarchy + WAF pacing
 
 **Date:** 2026-06-29
-**Status:** Design — approved; pending spec review
-**Area:** `backend/app/services/profiles/oxygen_webhelp.py` (new), `backend/app/services/profiles/__init__.py`
+**Status:** Design — approved (direction); pending spec review
+**Area:** `backend/app/services/profiles/oxygen_webhelp.py` (new), `backend/app/services/profiles/__init__.py`, `backend/app/services/firecrawl.py` (raw-HTTP path: fragment capture + post-process TOC rebuild + pacing), `backend/app/core/config.py` (pacing knobs)
 
-A new extraction profile for documentation published with **Oxygen XML WebHelp** (Responsive). First consumer: Rubrik docs (`docs.rubrik.com`, login-walled). Runs on the authenticated raw-HTTP path shipped earlier (cookie-injected `fetch_raw` + `_select_content_path`).
+A new `oxygen_webhelp` profile for Oxygen XML WebHelp docs, plus the pipeline support it needs. First/only consumer: Rubrik (`docs.rubrik.com`), which is login-walled **and** WAF-protected. Generic to Oxygen WebHelp where applicable.
 
-## Problem
+## Findings (live investigation, authenticated)
 
-Rubrik's `docs.rubrik.com` is an Oxygen XML WebHelp site (markers: `oxygen-webhelp/app/...` assets, `wh_*` classes, `data-tocid`, `role="treeitem"`). No existing profile detects it (`detect_platform` → None). Investigation (live, authenticated) established:
+- Platform: **Oxygen XML WebHelp Responsive** — `oxygen-webhelp/app/...` assets, `wh_*` classes (`wh_publication_toc`, `wh_topic_body`, `wh_breadcrumb`), `data-tocid`, `role="treeitem"`. Article content is server-rendered in-page in `article` (== `main` == `.wh_topic_content`).
+- The on-page TOC (`#wh_publication_toc`) is **contextual**: it contains the current page's **full ancestor chain → the page → its direct children**, plus collapsed top-level siblings (each `li[role=treeitem]` has `data-tocid`, an `<a href>`, and nests children via `<ul>`). No single page or file holds the whole tree; there is **no** sitemap and **no** standalone TOC file (all 403).
+- Oxygen's search index ships a **complete page inventory**: `<pub_root>/oxygen-webhelp/app/search/index/htmlFileInfoList.js` = `var htmlFileInfoList = ["relpath.html@@@Title@@@Description", …]` — **4,240 unique pages** for Rubrik, strictly alphabetical by path. `pub_root` = the directory containing `oxygen-webhelp/` (for Rubrik RSC: `https://docs.rubrik.com/en-us/saas/`).
+- **WAF:** `docs.rubrik.com` returns **401 under request bursts** — for headless Chrome (Browserless is 401'd even for a single page) **and** for plain authenticated GETs under load. Single, spaced GETs succeed (200). So: browser tree-expansion is not viable; raw-HTTP works but must be **paced**.
+- **Session:** the `SAML_TOKEN` cookie is **~1h-lived and rotating**; a 4,240-page run will outlast it and must resume.
 
-- The on-page TOC (`nav[class*="col-lg-3"]`) is **contextual**: only the current page's branch (~37 nodes) is present; collapsed siblings do not expand to the full tree, so the page-level TOC cannot enumerate the publication.
-- There is **no sitemap** (`/sitemap.xml` → 403) and **no separate TOC fetch** on load.
-- Oxygen's search index ships a complete page inventory: `…/oxygen-webhelp/app/search/index/htmlFileInfoList.js` — `var htmlFileInfoList = ["relpath.html@@@Title@@@Description", …]`. For Rubrik it has **4,240 unique entries** (the whole RSC SaaS publication), no anchors/duplicates.
-- Article content is server-rendered in-page (the DITA topic body, selector `article` == `main` == `.wh_topic_content`), so content scrapes via authenticated raw-HTTP.
+## Design overview
 
-## Solution — `oxygen_webhelp` profile
+Get a complete, reliable page set from the inventory file (raw-HTTP), scrape content via the authenticated raw-HTTP path, capture each page's contextual TOC fragment **during** that scrape (no extra fetches), and **post-process** the fragments into the authored hierarchy, rewriting the persisted TOC. Pace the raw-HTTP path so the WAF doesn't 401 us.
 
-New module `backend/app/services/profiles/oxygen_webhelp.py`, self-registering like the other profiles. `content_engine = "raw_http"`. Generic to Oxygen WebHelp; validated on Rubrik.
+### 1. `oxygen_webhelp` profile (`backend/app/services/profiles/oxygen_webhelp.py`)
 
-### `detect(root_html, root_url) -> bool`
+- `name = "oxygen_webhelp"`, `content_engine = "raw_http"`.
+- `detect(root_html, root_url)` → `"oxygen-webhelp" in root_html and "wh_publication_toc" in root_html`.
+- `build_toc(root_url, scraper)`:
+  1. `get_raw(root_url)`; derive `pub_root` by resolving an `…/oxygen-webhelp/` asset reference against `root_url` (substring up to and including the segment before `oxygen-webhelp/`). None found → `[]`.
+  2. `get_raw(pub_root + "oxygen-webhelp/app/search/index/htmlFileInfoList.js")`; extract the array literal (`htmlFileInfoList\s*=\s*(\[.*\])`, DOTALL) and `json.loads`. Unparseable → `[]`.
+  3. One `TocEntry` per entry: split on `@@@` → `(path, title)`; `url = urljoin(pub_root, path)`, `level` = URL path depth (placeholder — rewritten in step 3 of the pipeline), `is_article=True`. De-dupe by URL; order = file order.
+- `content_config()` → `includeTags=["article"]`, `excludeTags=[".related-links","nav","header","footer",".wh_breadcrumb"]`, `onlyMainContent=False`.
+- **Pacing knobs (class attributes read by the raw-HTTP path):** `raw_http_concurrency = 2`, `raw_http_retry_statuses = (401, 429, 502, 503, 504)`, `raw_http_request_delay = 0.3` (seconds between a worker's requests).
+- **Post-process TOC hooks:**
+  - `toc_fragment_selector = "#wh_publication_toc"` — tells the raw-HTTP path to capture this element's outerHTML from each page before content scoping.
+  - `rebuild_toc(fragments: list[tuple[str, str]], root_url: str) -> list[TocEntry]` — given `(page_url, fragment_html)` pairs, parse each fragment's `li[role=treeitem]` tree (`data-tocid`, nested `<ul>`, `<a href>`, title), union into a global `tocid → {url, title, parent_tocid, order}` map (later fragments fill gaps; the page that "owns" a node — where it is the expanded current node — is authoritative for its children/order), then emit `TocEntry` objects in DFS pre-order with `level` and `parent_url` from the assembled tree. URLs resolved against `pub_root` (re-derived from `root_url` the same way as `build_toc`).
 
-```python
-return "oxygen-webhelp" in root_html and "wh_topic_body" in root_html
-```
+### 2. Raw-HTTP fragment capture (`firecrawl.py::_scrape_via_raw_http`)
 
-Two distinctive hooks together: the framework asset namespace (`oxygen-webhelp`) and the topic-body host (`wh_topic_body`). Reusable across Oxygen WebHelp sites; no collision with other profiles.
+When `getattr(profile, "toc_fragment_selector", None)` is set: for each fetched page's full HTML (before `extract_body` scoping), extract that selector's outer HTML via BeautifulSoup and **persist it on the page's `Article` row** in a new nullable column `articles.toc_fragment` (set alongside `content_markdown`/`content_html` in the same upsert). Persisting (not just in-memory) makes the post-process **run-independent**: the ~1h rotating token means content completes over several resumed runs, and the rebuild must see every page's fragment regardless of which run fetched it. Capture adds parsing + one column write — no extra requests. Pages already complete (skipped by the checkpoint on a resume) keep their previously-stored fragment.
 
-### `content_engine = "raw_http"`
+### 3. Post-process TOC rebuild (`firecrawl.py`, after the raw-HTTP content loop)
 
-Content (and the inventory file) is fetched with the realm session injected — the existing authenticated raw-HTTP path (`fetch_raw(url, cookies=…)`, routed by `_select_content_path`). Detection of an authenticated source already fetches the root via `get_raw` (PR #103), so `detect` runs on the authenticated page.
+After `_scrape_via_raw_http` completes the content set successfully (not cancelled/failed) and the profile defines `rebuild_toc`:
+1. Load `(url, toc_fragment)` for **all** non-removed `Article` rows of the source (run-independent), filtering out null fragments.
+2. Call `profile.rebuild_toc(fragments, source.base_url)` → ordered `TocEntry` list with the authored hierarchy.
+3. Re-persist the TOC: reuse the existing phase-1 persistence (delete `TOCEntry` rows for the source, `_resolve_toc_parents` for parent linkage, re-insert with `level`/`sort_order`/`parent_id`), then **re-link** each stored `Article` to its new `toc_entry_id` by URL (articles already exist; only TOC linkage/order changes).
+4. If `rebuild_toc` returns `[]` (no usable fragments), leave the inventory-derived TOC in place (degrade, don't destroy) and log a warning.
 
-### `build_toc(root_url, scraper) -> list[TocEntry]`
+This runs only for raw-HTTP profiles that opt in (`rebuild_toc` present); all other profiles/paths are unchanged.
 
-1. `html = await scraper.get_raw(root_url)`. Locate the **publication root**: find an `oxygen-webhelp/` reference in the page (regex on a `src`/`href` containing `oxygen-webhelp/`), resolve it against `root_url`, and take the substring up to and including the segment before `oxygen-webhelp/` → `pub_root` (ends with `/`). If none found → `[]`.
-2. `raw = await scraper.get_raw(pub_root + "oxygen-webhelp/app/search/index/htmlFileInfoList.js")`. Extract the array literal: match `htmlFileInfoList\s*=\s*(\[.*\])` (DOTALL) and `json.loads` it. On failure → `[]`.
-3. For each entry string, split on `"@@@"` → `path` (first part), `title` (second part, fallback to `path`). Build `TocEntry(title=title, url=urljoin(pub_root, path), level=<path-depth>, is_article=True)`. `path-depth` = `len(path.strip("/").split("/")) - 1` (e.g. `OLVM/x.html` → 1, `index.html` → 0, `saas/common/x.html` → 2). Order = file order. De-dupe by resolved URL.
+### 4. WAF-aware pacing (`firecrawl.py` raw-HTTP path + `fetch_raw` + `config.py`)
 
-`parent_url` left default `None`; the pipeline's `_resolve_toc_parents` nests by `level`.
-
-### `content_config() -> dict`
-
-```python
-return {
-    "includeTags": ["article"],
-    "excludeTags": [".related-links", "nav", "header", "footer", ".wh_breadcrumb"],
-    "onlyMainContent": False,
-}
-```
-
-`article` is the Oxygen DITA topic body; the excludes drop the contextual TOC nav, breadcrumb, related-links, and page header/footer. Applied by the raw-HTTP path's `scope_content_html`.
+- The raw-HTTP content loop reads `getattr(profile, "raw_http_concurrency", settings.raw_http_concurrency)` for its chunk size, and applies `getattr(profile, "raw_http_request_delay", 0)` as a small sleep between a worker's requests.
+- `fetch_raw(url, cookies=None, retry_statuses=None)` — extend the retry set: statuses in `retry_statuses` (default the existing transient set) are retried with backoff. The raw-HTTP path passes `getattr(profile, "raw_http_retry_statuses", None)` so `oxygen_webhelp` retries **401** (WAF throttle) with backoff. Retries are bounded (existing `TRANSIENT_RETRIES`), so a genuinely dead session still fails out and trips the failure-rate guard rather than looping forever.
+- New settings (defaults preserve current behavior): none required if the profile attributes drive it; `config.py` gains documented defaults only if we want global overrides (`raw_http_concurrency` already exists).
 
 ## Module changes
 
-- **`backend/app/services/profiles/oxygen_webhelp.py`** (new) — the profile.
-- **`backend/app/services/profiles/__init__.py`** — import `oxygen_webhelp` before `generic` so it registers and detection sees it.
+- `backend/app/services/profiles/oxygen_webhelp.py` (new) — profile + `rebuild_toc` + pacing attrs.
+- `backend/app/services/profiles/__init__.py` — register before `generic`.
+- `backend/app/services/firecrawl.py` — `fetch_raw` `retry_statuses` param; `_scrape_via_raw_http` fragment capture (write `toc_fragment`) + per-profile concurrency/delay; post-content `rebuild_toc` + TOC re-persist + article re-link.
+- `backend/app/models/article.py` (or wherever `Article` is defined) — new nullable `toc_fragment: Mapped[str | None]` column.
+- `backend/alembic/versions/<new>.py` — migration adding `articles.toc_fragment` (nullable text).
+- `backend/app/core/config.py` — (optional) documented pacing defaults.
 
-No config, schema, or migration changes. The authenticated raw-HTTP capability and the Cookie-Editor upload / expiry UI already exist.
+One DB schema addition: a nullable `articles.toc_fragment` text column (+ alembic migration). Reuses `toc_entries` otherwise.
 
 ## Error handling
 
-- No `oxygen-webhelp` reference, or `htmlFileInfoList.js` missing/unparseable → `build_toc` returns `[]` (run reports 0 scrapable pages — loud, not a silent partial).
-- Content phase: the existing `raw_http` failure-rate guard fails the run loudly (`RawContentScrapeError`) if too many page GETs fail (e.g. an expired session mid-run returning login pages).
-- **Large corpus vs short token:** 4,240 authenticated GETs against Rubrik's ~1h session token may outlast the token. The run is **checkpoint-resumable** (the raw-HTTP path records completed URLs), so re-uploading a fresh cookie and re-triggering resumes from where it stopped. The new expiry-block trigger guard prevents starting a run on an already-expired session.
+- No `oxygen-webhelp` ref / unparseable inventory → `build_toc` returns `[]` (loud, 0 pages).
+- WAF 401 under load → retried with backoff per `raw_http_retry_statuses`; persistent 401 (dead session) → failure-rate guard fails the run loudly. The expiry-block trigger guard (already shipped) prevents starting on an already-expired session.
+- Session expires mid-run → mass 401 after retries → run fails; **resume**: re-upload a fresh cookie and re-trigger — the raw-HTTP checkpoint skips completed pages, whose `toc_fragment` is already stored. The TOC rebuild on the finishing run reads stored fragments for all pages, so it is independent of run boundaries.
+- `rebuild_toc` yields nothing → keep inventory TOC, warn.
 
 ## Testing
 
-Unit (pytest, hermetic; `FakeScraper` with `raw_by_url`):
-- `detect`: True when both `oxygen-webhelp` and `wh_topic_body` are present; False if either is missing.
-- `build_toc`: a fixture page containing an `oxygen-webhelp/` asset ref, plus a small `htmlFileInfoList.js` (`var htmlFileInfoList = ["a.html@@@A@@@d", "sec/b.html@@@B@@@d", "sec/sub/c.html@@@C@@@d"]`) wired into `raw_by_url` at the derived inventory URL → returns 3 entries with correct titles, absolute URLs (resolved against `pub_root`), and levels (0,1,2); duplicate paths de-duped; order preserved.
-- `build_toc` returns `[]` when the page has no `oxygen-webhelp` ref, and when the inventory file is missing/unparseable.
-- `content_config`: `scope_content_html` over a fixture keeps the `article` body text and drops `.wh_breadcrumb` / `.related-links` / `nav` / `footer` content.
+Unit (pytest, hermetic; `FakeScraper`):
+- `detect` (both hooks / neither).
+- `build_toc`: fixture page with an `oxygen-webhelp/` ref + a small `htmlFileInfoList.js` → correct entries/urls/placeholder-levels; unparseable/missing → `[]`.
+- `rebuild_toc`: a set of fixture fragments (e.g. 3 pages whose contextual TOCs overlap to describe a 3-level tree) → correct DFS-ordered entries with proper `level`/`parent_url`; missing fragments → `[]`.
+- `_select_content_path`/raw-HTTP: a profile with `toc_fragment_selector` triggers fragment capture; concurrency/delay/`retry_statuses` are read from the profile (assert via a mocked fetch recording calls); 401 retried when in `retry_statuses`, not otherwise.
+- `content_config` scoping keeps `article` body, drops `.wh_breadcrumb`/`.related-links`/nav/footer.
 
-Live validation: a `docs.rubrik.com` source with a fresh-cookie realm → auto-detects `oxygen_webhelp`, TOC ≈ 4,240 entries, clean article content; expect a fresh-cookie + resume cycle given the corpus size.
+Live validation (Rubrik, fresh cookie): auto-detect `oxygen_webhelp`; paced raw-HTTP scrape (low concurrency) avoids WAF 401s; content clean; post-process produces a nested TOC matching the on-site hierarchy on spot-checked branches. Expect multiple fresh-cookie/resume cycles for the full 4,240 pages.
+
+## Risks / sequencing
+
+- **WAF thresholds are unknown**; concurrency=2 + 0.3s delay + 401-backoff is a starting point to tune during live validation (the profile attributes make this easy to adjust).
+- **Effort:** this is the largest of the auth features (profile + `toc_fragment` column/migration + raw-HTTP capture/pacing + post-process rebuild). The plan should sequence it so the **profile + pacing + content extraction** land and are proven against the WAF/token first, then the **fragment capture + post-process hierarchy** — each independently testable.
 
 ## Out of scope
 
-- Section/landing-page synthesis (Oxygen directory "sections" rarely have own pages; URL-path levels suffice, consistent with the rspress/fern profiles).
-- The contextual on-page TOC tree (superseded by the inventory file).
-- Any change to the authenticated raw-HTTP capability or the auth UI (already shipped).
+- Browser tree-expansion for Rubrik (WAF-blocked).
+- Changes to the auth UI / authenticated raw-HTTP capability (already shipped).
