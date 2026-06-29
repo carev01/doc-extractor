@@ -27,7 +27,9 @@ from app.models.toc import TOCEntry
 from app.models.auth_realm import AuthRealm, RealmStatus
 from app.services.auth import realm_manager
 from app.services.auth.realm_manager import NeedsLoginError
+from app.services.auth.session import session_expired
 from app.services.blockpage import is_auth_wall, is_block_page
+from app.services.notify import notify
 from app.services.profiles import registry as profile_registry
 from app.services.profiles.content_scope import scope_content_html, strip_selectors
 from app.services.profiles.detector import detect_platform
@@ -159,6 +161,13 @@ def _cookie_header(cookies: list[dict] | None) -> str | None:
         return None
     pairs = [f"{c['name']}={c['value']}" for c in cookies if c.get("name")]
     return "; ".join(pairs) or None
+
+
+def _is_auth_expiry(realm) -> bool:
+    """True when a mass content-scrape failure is attributable to an expired
+    realm session — i.e. the source has a realm whose stored session has expired.
+    Used to pause (not fail) the run so a fresh cookie + Resume can continue."""
+    return realm is not None and session_expired(realm)
 
 
 def _resolve_content_engine(source, profile) -> str | None:
@@ -1209,6 +1218,29 @@ class FirecrawlService:
         # not a healthy partial. The checkpoint is kept so a re-trigger retries
         # only the failed pages.
         if _raw_failure_exceeded(attempted, failed):
+            # If the source has an authenticated realm whose session has expired,
+            # the mass failure is a dead session — pause (keep the checkpoint) +
+            # mark EXPIRED + notify, so a fresh cookie and Resume continue from
+            # here, rather than failing loudly.
+            src = await db.get(DocumentationSource, source_id)
+            realm = (
+                await db.get(AuthRealm, src.auth_realm_id)
+                if src is not None and src.auth_realm_id is not None
+                else None
+            )
+            if _is_auth_expiry(realm):
+                await realm_manager.invalidate(
+                    db, realm, RealmStatus.EXPIRED, "Session expired during extraction"
+                )
+                await notify(
+                    "Session expired",
+                    f"Realm '{realm.name}' expired during extraction of "
+                    f"'{src.name}' — the run is PAUSED. Upload a fresh cookie and "
+                    f"hit Resume to continue.",
+                    realm=realm.name,
+                )
+                await db.commit()
+                raise RunControlSignal("pause")
             raise RawContentScrapeError(
                 f"raw_http content scrape failed {failed}/{attempted} pages "
                 f"(> {settings.raw_http_max_failure_rate:.0%}) for source "
@@ -1727,23 +1759,29 @@ class FirecrawlService:
                         content_spec=content_spec, auth_state=auth_state,
                     )
                 except NeedsLoginError as exc:
-                    # Auth wall hit mid-run — session has expired. Mark the realm
-                    # EXPIRED so the UI surfaces a re-login prompt, then fail the run.
+                    # Auth wall hit mid-run — session expired. Mark the realm
+                    # EXPIRED, notify, and PAUSE (keep the checkpoint) so a fresh
+                    # cookie + Resume continues from where it stopped.
+                    realm = None
                     if source.auth_realm_id is not None:
                         realm = await db.get(AuthRealm, source.auth_realm_id)
                         await realm_manager.invalidate(
                             db, realm, RealmStatus.EXPIRED, str(exc)
                         )
+                    await notify(
+                        "Session expired",
+                        f"Realm '{realm.name if realm else '?'}' expired during "
+                        f"extraction of '{source.name}' — the run is PAUSED. "
+                        f"Upload a fresh cookie and hit Resume to continue.",
+                        realm=(realm.name if realm else None),
+                    )
                     run = (
                         await db.execute(
                             select(ExtractionRun).where(ExtractionRun.id == run_pk)
                         )
                     ).scalar_one()
-                    run.status = RunStatus.FAILED
-                    run.error_message = f"Session expired mid-run: {exc}"
-                    run.completed_at = datetime.now(timezone.utc)
-                    source.status = SourceStatus.FAILED
-                    source.error_message = str(exc)[:4096]
+                    run.status = RunStatus.PAUSED
+                    run.control = None
                     await db.commit()
                     return run
             else:
