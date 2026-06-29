@@ -1357,6 +1357,49 @@ class FirecrawlService:
                 except Exception as exc:
                     logger.warning("Individual retry failed for %s: %s", url, exc)
 
+    async def _persist_toc(
+        self,
+        db: AsyncSession,
+        source_id: uuid.UUID,
+        toc_entries: list[dict],
+    ) -> dict[str, uuid.UUID]:
+        """Delete existing TOCEntry rows for *source_id*, insert *toc_entries*, and
+        return a ``{url: toc_entry_id}`` map for every entry that has a URL.
+
+        ``toc_entries`` dicts must carry: ``title, url, level, is_article,
+        parent_url, sort_order``.  Extra keys (``topic_key``, ``content_selector``,
+        etc.) are silently ignored.
+
+        Used by both the phase-1 TOC persistence and the post-scrape rebuild branch
+        so the delete/insert/parent-link logic lives in exactly one place.
+        """
+        await db.execute(delete(TOCEntry).where(TOCEntry.source_id == source_id))
+        await db.flush()
+
+        toc_db_map: dict[str, uuid.UUID] = {}
+        parent_idxs = _resolve_toc_parents(toc_entries)
+        entry_ids: list[uuid.UUID] = []
+
+        for i, td in enumerate(toc_entries):
+            pidx = parent_idxs[i]
+            parent_id = entry_ids[pidx] if pidx is not None else None
+            toc_entry = TOCEntry(
+                source_id=source_id,
+                title=td["title"],
+                url=td["url"],
+                level=td["level"],
+                sort_order=td["sort_order"],
+                is_article=td["is_article"],
+                parent_id=parent_id,
+            )
+            db.add(toc_entry)
+            await db.flush()
+            entry_ids.append(toc_entry.id)
+            if td.get("url"):
+                toc_db_map[td["url"]] = toc_entry.id
+
+        return toc_db_map
+
     async def _reconcile_removals(
         self, db: AsyncSession, source_id: uuid.UUID, run_id: uuid.UUID
     ) -> None:
@@ -1584,30 +1627,7 @@ class FirecrawlService:
             run.articles_total = scrapable_total
 
             # ── Persist TOC entries ─────────────────────────────────────────
-            await db.execute(delete(TOCEntry).where(TOCEntry.source_id == source_id))
-            await db.flush()
-
-            toc_db_map: dict[str, uuid.UUID] = {}
-            parent_idxs = _resolve_toc_parents(toc_entries)
-            entry_ids: list[uuid.UUID] = []
-
-            for i, td in enumerate(toc_entries):
-                pidx = parent_idxs[i]
-                parent_id = entry_ids[pidx] if pidx is not None else None
-                toc_entry = TOCEntry(
-                    source_id=source_id,
-                    title=td["title"],
-                    url=td["url"],
-                    level=td["level"],
-                    sort_order=td["sort_order"],
-                    is_article=td["is_article"],
-                    parent_id=parent_id,
-                )
-                db.add(toc_entry)
-                await db.flush()
-                entry_ids.append(toc_entry.id)
-                if td.get("url"):
-                    toc_db_map[td["url"]] = toc_entry.id
+            toc_db_map = await self._persist_toc(db, source_id, toc_entries)
 
             # Enrich entries with their persisted TOCEntry IDs for use in Phase 2
             for entry in toc_entries:
@@ -1641,6 +1661,57 @@ class FirecrawlService:
                     db, source_id, run_pk, url_to_entry, profile, checkpoint,
                     auth_cookies=auth_cookies,
                 )
+                # Post-scrape TOC rebuild: profiles that capture a per-page TOC
+                # fragment (toc_fragment_selector) can reconstruct the full
+                # authored hierarchy from those fragments, replacing the flat
+                # inventory TOC produced by phase 1.
+                if getattr(profile, "rebuild_toc", None):
+                    rows = (await db.execute(
+                        select(Article.source_url, Article.toc_fragment)
+                        .where(
+                            Article.source_id == source_id,
+                            Article.removed_at.is_(None),
+                            Article.toc_fragment.is_not(None),
+                        )
+                    )).all()
+                    fragments = [(u, f) for (u, f) in rows if f]
+                    if fragments:
+                        rebuilt = profile.rebuild_toc(fragments, source.base_url)
+                        if rebuilt:
+                            toc_dicts = [
+                                {
+                                    "title": e.title,
+                                    "url": e.url,
+                                    "level": e.level,
+                                    "is_article": e.is_article,
+                                    "parent_url": e.parent_url,
+                                    "sort_order": i,
+                                    "topic_key": derive_topic_key(
+                                        e.url, source.url_template, product_version
+                                    ),
+                                }
+                                for i, e in enumerate(rebuilt)
+                            ]
+                            url_to_id = await self._persist_toc(db, source_id, toc_dicts)
+                            # Re-link each existing article to its rebuilt TOC entry.
+                            for art_url, tid in url_to_id.items():
+                                await db.execute(
+                                    update(Article).where(
+                                        Article.source_id == source_id,
+                                        Article.source_url == art_url,
+                                    ).values(toc_entry_id=tid)
+                                )
+                            await db.commit()
+                            logger.info(
+                                "Rebuilt TOC hierarchy for %s: %d entries",
+                                source_id, len(rebuilt),
+                            )
+                        else:
+                            logger.warning(
+                                "rebuild_toc produced no entries for %s — "
+                                "keeping inventory TOC",
+                                source_id,
+                            )
             elif path == "browserless":
                 # Browserless-rendered platforms: Firecrawl can't get the content
                 # (shadow DOM for Salesforce; Akamai block for support manuals), so render
