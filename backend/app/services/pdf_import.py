@@ -44,23 +44,37 @@ def pdf_path_for(source_id, pdf_dir: str) -> str:
     return os.path.join(pdf_dir, f"{source_id}.pdf")
 
 
-async def _fetch_url_bytes(url: str) -> bytes:
+_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+
+
+async def _fetch_url_bytes(url: str, cookies: list[dict] | None = None) -> bytes:
+    """GET the PDF bytes. ``cookies`` (a realm cookie list) are sent as a Cookie
+    header so login-walled PDFs (e.g. a vendor docs PDF) download authenticated."""
+    headers = {"User-Agent": _BROWSER_UA}
+    if cookies:
+        pairs = [f"{c['name']}={c['value']}" for c in cookies if c.get("name")]
+        if pairs:
+            headers["Cookie"] = "; ".join(pairs)
     timeout = httpx.Timeout(300.0, connect=30.0)
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        resp = await client.get(url)
+        resp = await client.get(url, headers=headers)
         resp.raise_for_status()
         return resp.content
 
 
-async def acquire_pdf(source) -> tuple[bytes, str]:
-    """Return (pdf_bytes, sha256_hex) for a pdf source (upload or URL origin)."""
+async def acquire_pdf(source, auth_cookies: list[dict] | None = None) -> tuple[bytes, str]:
+    """Return (pdf_bytes, sha256_hex) for a pdf source (upload or URL origin).
+    ``auth_cookies`` authenticate a login-walled PDF URL."""
     try:
         if pdf_is_upload(source):
             path = pdf_path_for(source.id, settings.pdf_dir)
             with open(path, "rb") as fh:
                 data = fh.read()
         else:
-            data = await _fetch_url_bytes(source.base_url)
+            data = await _fetch_url_bytes(source.base_url, cookies=auth_cookies)
     except (OSError, httpx.HTTPError) as exc:
         raise PdfAcquireError(f"Could not acquire PDF: {exc}") from exc
     if not data:
@@ -132,15 +146,17 @@ async def _latest_completed_hash(db, source_id) -> str | None:
     ).scalar_one_or_none()
 
 
-async def run_pdf_extraction(service, db, source, run, run_pk) -> ExtractionRun:
+async def run_pdf_extraction(service, db, source, run, run_pk,
+                             auth_state: dict | None = None) -> ExtractionRun:
     """Extract a PDF source into Article rows, reusing the web path's diff/version
     machinery. `service` is a FirecrawlService (for process_article_result /
-    _reconcile_removals)."""
+    _reconcile_removals). ``auth_state`` (resolved by extract_source) authenticates
+    a login-walled PDF URL."""
     run.current_phase = "pdf_acquire"
     source.status = SourceStatus.EXTRACTING
     await db.commit()
 
-    pdf_bytes, pdf_hash = await acquire_pdf(source)
+    pdf_bytes, pdf_hash = await acquire_pdf(source, auth_cookies=(auth_state or {}).get("cookies"))
 
     # Fast path: byte-identical to the last completed run → mark all unchanged.
     prior = await _latest_completed_hash(db, source.id)
