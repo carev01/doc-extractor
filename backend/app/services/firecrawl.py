@@ -27,8 +27,11 @@ from app.models.toc import TOCEntry
 from app.models.auth_realm import AuthRealm, RealmStatus
 from app.services.auth import realm_manager
 from app.services.auth.realm_manager import NeedsLoginError
+from app.services.auth.session import session_expired
 from app.services.blockpage import is_auth_wall, is_block_page
+from app.services.notify import notify
 from app.services.profiles import registry as profile_registry
+from app.services.profiles.base import TocEntry as ProfileTocEntry
 from app.services.profiles.content_scope import scope_content_html, strip_selectors
 from app.services.profiles.detector import detect_platform
 import app.services.profiles.llm as llm_mod
@@ -161,6 +164,13 @@ def _cookie_header(cookies: list[dict] | None) -> str | None:
     return "; ".join(pairs) or None
 
 
+def _is_auth_expiry(realm) -> bool:
+    """A mass raw-HTTP failure on a source that has an auth realm is treated as a
+    likely session/WAF failure → pause+EXPIRED+notify (the user re-auths and
+    resumes); only unauthenticated sources fail loudly via RawContentScrapeError."""
+    return realm is not None
+
+
 def _resolve_content_engine(source, profile) -> str | None:
     """Resolve the content-scraping engine for a source.
 
@@ -206,6 +216,33 @@ def persisted_count(extracted: int, updated: int, unchanged: int, resumed: int) 
     """Total pages accounted for in a run: freshly processed this attempt plus
     pages carried over from a resumed checkpoint."""
     return (extracted or 0) + (updated or 0) + (unchanged or 0) + (resumed or 0)
+
+
+def _extract_fragment(html: str, selector: str) -> str | None:
+    """Return the outer HTML of the first ``selector`` match, or None."""
+    from bs4 import BeautifulSoup
+    el = BeautifulSoup(html or "", "html.parser").select_one(selector)
+    return str(el) if el is not None else None
+
+
+def _toc_superset(
+    rebuilt: list[ProfileTocEntry],
+    scraped_pairs: list[tuple[str, str | None]],
+) -> list[ProfileTocEntry]:
+    """Return rebuilt TOC entries extended with flat entries for scraped articles
+    whose URL is not already in the rebuilt list.
+
+    Guarantees every scraped article has a TOC entry so ``_reconcile_removals``
+    won't mark it removed just because ``rebuild_toc`` didn't include it.
+    Rebuilt entries come first (preserving hierarchy order); extras are appended.
+    """
+    rebuilt_urls = {e.url for e in rebuilt}
+    extras = [
+        ProfileTocEntry(title=title or url, url=url, level=0, is_article=True, parent_url=None)
+        for url, title in scraped_pairs
+        if url not in rebuilt_urls
+    ]
+    return rebuilt + extras
 
 
 class FirecrawlService:
@@ -386,7 +423,8 @@ class FirecrawlService:
             logger.warning("Sitemap fallback also failed for %s: %s", root_url, exc)
             return []
 
-    async def fetch_raw(self, url: str, cookies: list[dict] | None = None) -> str:
+    async def fetch_raw(self, url: str, cookies: list[dict] | None = None,
+                        retry_statuses: "set[int] | tuple[int, ...] | None" = None) -> str:
         """Plain GET of a static asset, bypassing Firecrawl's HTML cleaning.
 
         Used for non-HTML resources a profile needs verbatim — e.g. MadCap Flare's
@@ -414,6 +452,7 @@ class FirecrawlService:
             resp = await self._request_with_retry(
                 lambda: self.client.get(url, headers={"User-Agent": _BROWSER_UA}, follow_redirects=True),
                 what=f"raw GET {url}",
+                retry_statuses=retry_statuses,
             )
             return resp.text
 
@@ -435,6 +474,7 @@ class FirecrawlService:
                 resp = await self._request_with_retry(
                     lambda: self.client.get(hop_url, headers=headers, follow_redirects=False),
                     what=f"raw GET {hop_url}",
+                    retry_statuses=retry_statuses,
                 )
                 # Non-redirect (2xx) final response.
                 return resp.text
@@ -463,12 +503,19 @@ class FirecrawlService:
         return resp.text if resp is not None else ""
 
     async def _request_with_retry(
-        self, send: Callable[[], Awaitable[httpx.Response]], what: str
+        self, send: Callable[[], Awaitable[httpx.Response]], what: str,
+        retry_statuses=None,
     ) -> httpx.Response:
         """Run an httpx request (via the `send` callable), retrying transient
         5xx/429 and transport errors (connect/read/write — e.g. a Firecrawl pod
         restart) with exponential backoff. Non-transient errors (4xx) raise
-        immediately."""
+        immediately.
+
+        ``retry_statuses`` extends the retryable set beyond ``TRANSIENT_STATUS``
+        for callers that need additional codes retried (e.g. 401 on cookie-gated
+        raw_http sources where the session may need a moment to propagate).
+        """
+        retryable = set(self.TRANSIENT_STATUS) | set(retry_statuses or ())
         delay = self.TRANSIENT_BACKOFF
         last_exc: Exception | None = None
         for attempt in range(self.TRANSIENT_RETRIES + 1):
@@ -478,7 +525,7 @@ class FirecrawlService:
                 return resp
             except httpx.HTTPStatusError as exc:
                 code = exc.response.status_code if exc.response is not None else None
-                if code not in self.TRANSIENT_STATUS or attempt >= self.TRANSIENT_RETRIES:
+                if code not in retryable or attempt >= self.TRANSIENT_RETRIES:
                     raise
                 last_exc = exc
             except httpx.TransportError as exc:  # connect/read/write errors
@@ -607,6 +654,7 @@ class FirecrawlService:
         diff_text: str | None = None,
         topic_key: str | None = None,
         pdf_images: list | None = None,
+        toc_fragment: str | None = None,
     ) -> str:
         """Store or skip a single article and atomically increment run counters.
 
@@ -759,6 +807,8 @@ class FirecrawlService:
             article.topic_key = match_key
             article.content_markdown = markdown_content
             article.content_html = doc_html
+            if toc_fragment is not None:
+                article.toc_fragment = toc_fragment
             article.content_hash = content_hash
             # Source's own update time — left NULL when the page exposes none,
             # rather than masking it with the scrape time.
@@ -787,6 +837,7 @@ class FirecrawlService:
                 topic_key=match_key,
                 content_markdown=markdown_content,
                 content_html=doc_html,
+                toc_fragment=toc_fragment,
                 content_hash=content_hash,
                 last_updated_at=last_updated,
                 sort_order=sort_order,
@@ -1094,6 +1145,8 @@ class FirecrawlService:
             def extract_body(raw: str, url: str) -> str | None:
                 return scope_content_html(raw, url, include, exclude)
 
+        frag_selector = getattr(profile, "toc_fragment_selector", None)
+
         items = list(url_to_entry.items())
         total = len(items)
         done = await checkpoint.load_content_done()
@@ -1111,7 +1164,9 @@ class FirecrawlService:
             )
             await db.commit()
 
-        chunk_size = max(1, settings.raw_http_concurrency)
+        chunk_size = max(1, getattr(profile, "raw_http_concurrency", settings.raw_http_concurrency))
+        request_delay = float(getattr(profile, "raw_http_request_delay", 0) or 0)
+        retry_statuses = getattr(profile, "raw_http_retry_statuses", None)
         # Failure tracking is over pages *attempted this run* (not resumed ones),
         # so the guard reflects the source's current behaviour.
         attempted = 0
@@ -1119,7 +1174,9 @@ class FirecrawlService:
 
         async def _fetch(url: str) -> str | None:
             try:
-                return await self.fetch_raw(url, cookies=auth_cookies)
+                if request_delay:
+                    await asyncio.sleep(request_delay)
+                return await self.fetch_raw(url, cookies=auth_cookies, retry_statuses=retry_statuses)
             except Exception as exc:  # network / HTTP error — skip this page
                 logger.warning("Raw fetch failed for %s: %s", url, exc)
                 return None
@@ -1146,6 +1203,7 @@ class FirecrawlService:
                 if not raw:
                     failed += 1
                     continue
+                toc_fragment = _extract_fragment(raw, frag_selector) if frag_selector else None
                 body_html = extract_body(raw, url)
                 if not body_html:
                     logger.warning("No content body found at %s — skipping", url)
@@ -1163,6 +1221,7 @@ class FirecrawlService:
                         toc_entry_id=entry.get("toc_entry_id"),
                         sort_order=entry.get("sort_order", 0),
                         title=entry["title"], change_status=None,
+                        toc_fragment=toc_fragment,
                     )
                     if outcome in ("empty", "blocked"):
                         failed += 1
@@ -1180,6 +1239,29 @@ class FirecrawlService:
         # not a healthy partial. The checkpoint is kept so a re-trigger retries
         # only the failed pages.
         if _raw_failure_exceeded(attempted, failed):
+            # If the source has an authenticated realm whose session has expired,
+            # the mass failure is a dead session — pause (keep the checkpoint) +
+            # mark EXPIRED + notify, so a fresh cookie and Resume continue from
+            # here, rather than failing loudly.
+            src = await db.get(DocumentationSource, source_id)
+            realm = (
+                await db.get(AuthRealm, src.auth_realm_id)
+                if src is not None and src.auth_realm_id is not None
+                else None
+            )
+            if _is_auth_expiry(realm):
+                await realm_manager.invalidate(
+                    db, realm, RealmStatus.EXPIRED, "Session expired during extraction"
+                )
+                await notify(
+                    "Extraction paused",
+                    f"Realm '{realm.name}' — extraction of '{src.name}' stopped after "
+                    f"repeated failures (expired session or rate-limiting). The run is "
+                    f"PAUSED. Upload a fresh cookie and hit Resume to continue.",
+                    realm=realm.name,
+                )
+                await db.commit()
+                raise RunControlSignal("pause")
             raise RawContentScrapeError(
                 f"raw_http content scrape failed {failed}/{attempted} pages "
                 f"(> {settings.raw_http_max_failure_rate:.0%}) for source "
@@ -1327,6 +1409,49 @@ class FirecrawlService:
                     )
                 except Exception as exc:
                     logger.warning("Individual retry failed for %s: %s", url, exc)
+
+    async def _persist_toc(
+        self,
+        db: AsyncSession,
+        source_id: uuid.UUID,
+        toc_entries: list[dict],
+    ) -> dict[str, uuid.UUID]:
+        """Delete existing TOCEntry rows for *source_id*, insert *toc_entries*, and
+        return a ``{url: toc_entry_id}`` map for every entry that has a URL.
+
+        ``toc_entries`` dicts must carry: ``title, url, level, is_article,
+        parent_url, sort_order``.  Extra keys (``topic_key``, ``content_selector``,
+        etc.) are silently ignored.
+
+        Used by both the phase-1 TOC persistence and the post-scrape rebuild branch
+        so the delete/insert/parent-link logic lives in exactly one place.
+        """
+        await db.execute(delete(TOCEntry).where(TOCEntry.source_id == source_id))
+        await db.flush()
+
+        toc_db_map: dict[str, uuid.UUID] = {}
+        parent_idxs = _resolve_toc_parents(toc_entries)
+        entry_ids: list[uuid.UUID] = []
+
+        for i, td in enumerate(toc_entries):
+            pidx = parent_idxs[i]
+            parent_id = entry_ids[pidx] if pidx is not None else None
+            toc_entry = TOCEntry(
+                source_id=source_id,
+                title=td["title"],
+                url=td["url"],
+                level=td["level"],
+                sort_order=td["sort_order"],
+                is_article=td["is_article"],
+                parent_id=parent_id,
+            )
+            db.add(toc_entry)
+            await db.flush()
+            entry_ids.append(toc_entry.id)
+            if td.get("url"):
+                toc_db_map[td["url"]] = toc_entry.id
+
+        return toc_db_map
 
     async def _reconcile_removals(
         self, db: AsyncSession, source_id: uuid.UUID, run_id: uuid.UUID
@@ -1555,30 +1680,7 @@ class FirecrawlService:
             run.articles_total = scrapable_total
 
             # ── Persist TOC entries ─────────────────────────────────────────
-            await db.execute(delete(TOCEntry).where(TOCEntry.source_id == source_id))
-            await db.flush()
-
-            toc_db_map: dict[str, uuid.UUID] = {}
-            parent_idxs = _resolve_toc_parents(toc_entries)
-            entry_ids: list[uuid.UUID] = []
-
-            for i, td in enumerate(toc_entries):
-                pidx = parent_idxs[i]
-                parent_id = entry_ids[pidx] if pidx is not None else None
-                toc_entry = TOCEntry(
-                    source_id=source_id,
-                    title=td["title"],
-                    url=td["url"],
-                    level=td["level"],
-                    sort_order=td["sort_order"],
-                    is_article=td["is_article"],
-                    parent_id=parent_id,
-                )
-                db.add(toc_entry)
-                await db.flush()
-                entry_ids.append(toc_entry.id)
-                if td.get("url"):
-                    toc_db_map[td["url"]] = toc_entry.id
+            toc_db_map = await self._persist_toc(db, source_id, toc_entries)
 
             # Enrich entries with their persisted TOCEntry IDs for use in Phase 2
             for entry in toc_entries:
@@ -1612,6 +1714,71 @@ class FirecrawlService:
                     db, source_id, run_pk, url_to_entry, profile, checkpoint,
                     auth_cookies=auth_cookies,
                 )
+                # Post-scrape TOC rebuild: profiles that capture a per-page TOC
+                # fragment (toc_fragment_selector) can reconstruct the full
+                # authored hierarchy from those fragments, replacing the flat
+                # inventory TOC produced by phase 1.
+                if getattr(profile, "rebuild_toc", None):
+                    rows = (await db.execute(
+                        select(Article.source_url, Article.toc_fragment)
+                        .where(
+                            Article.source_id == source_id,
+                            Article.removed_at.is_(None),
+                            Article.toc_fragment.is_not(None),
+                        )
+                    )).all()
+                    fragments = [(u, f) for (u, f) in rows if f]
+                    if fragments:
+                        try:
+                            rebuilt = profile.rebuild_toc(fragments, source.base_url)
+                            if rebuilt:
+                                # Superset: add flat entries for scraped articles not
+                                # covered by the rebuilt hierarchy so
+                                # _reconcile_removals won't mark them removed.
+                                scraped_pairs = (await db.execute(
+                                    select(Article.source_url, Article.title)
+                                    .where(
+                                        Article.source_id == source_id,
+                                        Article.removed_at.is_(None),
+                                    )
+                                )).all()
+                                all_entries = _toc_superset(rebuilt, list(scraped_pairs))
+                                toc_dicts = [
+                                    {
+                                        "title": e.title,
+                                        "url": e.url,
+                                        "level": e.level,
+                                        "is_article": e.is_article,
+                                        "parent_url": e.parent_url,
+                                        "sort_order": i,
+                                    }
+                                    for i, e in enumerate(all_entries)
+                                ]
+                                url_to_id = await self._persist_toc(db, source_id, toc_dicts)
+                                # Re-link each existing article to its rebuilt TOC entry.
+                                for art_url, tid in url_to_id.items():
+                                    await db.execute(
+                                        update(Article).where(
+                                            Article.source_id == source_id,
+                                            Article.source_url == art_url,
+                                        ).values(toc_entry_id=tid)
+                                    )
+                                await db.commit()
+                                logger.info(
+                                    "Rebuilt TOC hierarchy for %s: %d entries",
+                                    source_id, len(all_entries),
+                                )
+                            else:
+                                logger.warning(
+                                    "rebuild_toc produced no entries for %s — "
+                                    "keeping inventory TOC",
+                                    source_id,
+                                )
+                        except Exception as exc:
+                            logger.warning(
+                                "TOC rebuild failed for %s, keeping inventory TOC: %s",
+                                source_id, exc,
+                            )
             elif path == "browserless":
                 # Browserless-rendered platforms: Firecrawl can't get the content
                 # (shadow DOM for Salesforce; Akamai block for support manuals), so render
@@ -1627,23 +1794,31 @@ class FirecrawlService:
                         content_spec=content_spec, auth_state=auth_state,
                     )
                 except NeedsLoginError as exc:
-                    # Auth wall hit mid-run — session has expired. Mark the realm
-                    # EXPIRED so the UI surfaces a re-login prompt, then fail the run.
+                    # Auth wall hit mid-run — session expired. Mark the realm
+                    # EXPIRED, notify, and PAUSE (keep the checkpoint) so a fresh
+                    # cookie + Resume continues from where it stopped.
+                    realm = None
                     if source.auth_realm_id is not None:
                         realm = await db.get(AuthRealm, source.auth_realm_id)
                         await realm_manager.invalidate(
                             db, realm, RealmStatus.EXPIRED, str(exc)
                         )
+                    await notify(
+                        "Session expired",
+                        f"Realm '{realm.name if realm else '?'}' expired during "
+                        f"extraction of '{source.name}' — the run is PAUSED. "
+                        f"Upload a fresh cookie and hit Resume to continue.",
+                        realm=(realm.name if realm else None),
+                    )
                     run = (
                         await db.execute(
                             select(ExtractionRun).where(ExtractionRun.id == run_pk)
                         )
                     ).scalar_one()
-                    run.status = RunStatus.FAILED
-                    run.error_message = f"Session expired mid-run: {exc}"
-                    run.completed_at = datetime.now(timezone.utc)
-                    source.status = SourceStatus.FAILED
-                    source.error_message = str(exc)[:4096]
+                    run.status = RunStatus.PAUSED
+                    run.control = None
+                    source.status = SourceStatus.PENDING
+                    source.error_message = None
                     await db.commit()
                     return run
             else:

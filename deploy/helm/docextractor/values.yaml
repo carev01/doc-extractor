@@ -77,6 +77,10 @@ pdfVlm:
 #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 secretKey: ""                     # OVERRIDE (never commit a real key)
 
+# -- Generic outbound webhook for operator alerts (e.g. realm session expired
+# mid-run). Blank disables. ntfy/Slack/Discord/generic.
+notifyWebhookUrl: ""              # OVERRIDE (optional)
+
 # -- Ingress (Traefik)
 ingress:
   enabled: true

@@ -62,6 +62,10 @@ class Article(Base):
     topic_key: Mapped[str] = mapped_column(String(2048), nullable=False)
     content_markdown: Mapped[str] = mapped_column(Text, nullable=False)
     content_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Captured TOC-tree fragment (e.g. Oxygen WebHelp #wh_publication_toc outerHTML)
+    # used to post-process the authored hierarchy without re-fetching. Nullable;
+    # populated only by profiles that set ``toc_fragment_selector``.
+    toc_fragment: Mapped[str | None] = mapped_column(Text, nullable=True)
     # SHA-256 hex digest of content_markdown — used to detect changes
     # between extraction runs for incremental extraction.
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
