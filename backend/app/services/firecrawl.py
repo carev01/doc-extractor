@@ -386,7 +386,8 @@ class FirecrawlService:
             logger.warning("Sitemap fallback also failed for %s: %s", root_url, exc)
             return []
 
-    async def fetch_raw(self, url: str, cookies: list[dict] | None = None) -> str:
+    async def fetch_raw(self, url: str, cookies: list[dict] | None = None,
+                        retry_statuses: "set[int] | tuple[int, ...] | None" = None) -> str:
         """Plain GET of a static asset, bypassing Firecrawl's HTML cleaning.
 
         Used for non-HTML resources a profile needs verbatim — e.g. MadCap Flare's
@@ -414,6 +415,7 @@ class FirecrawlService:
             resp = await self._request_with_retry(
                 lambda: self.client.get(url, headers={"User-Agent": _BROWSER_UA}, follow_redirects=True),
                 what=f"raw GET {url}",
+                retry_statuses=retry_statuses,
             )
             return resp.text
 
@@ -435,6 +437,7 @@ class FirecrawlService:
                 resp = await self._request_with_retry(
                     lambda: self.client.get(hop_url, headers=headers, follow_redirects=False),
                     what=f"raw GET {hop_url}",
+                    retry_statuses=retry_statuses,
                 )
                 # Non-redirect (2xx) final response.
                 return resp.text
@@ -463,12 +466,19 @@ class FirecrawlService:
         return resp.text if resp is not None else ""
 
     async def _request_with_retry(
-        self, send: Callable[[], Awaitable[httpx.Response]], what: str
+        self, send: Callable[[], Awaitable[httpx.Response]], what: str,
+        retry_statuses=None,
     ) -> httpx.Response:
         """Run an httpx request (via the `send` callable), retrying transient
         5xx/429 and transport errors (connect/read/write — e.g. a Firecrawl pod
         restart) with exponential backoff. Non-transient errors (4xx) raise
-        immediately."""
+        immediately.
+
+        ``retry_statuses`` extends the retryable set beyond ``TRANSIENT_STATUS``
+        for callers that need additional codes retried (e.g. 401 on cookie-gated
+        raw_http sources where the session may need a moment to propagate).
+        """
+        retryable = set(self.TRANSIENT_STATUS) | set(retry_statuses or ())
         delay = self.TRANSIENT_BACKOFF
         last_exc: Exception | None = None
         for attempt in range(self.TRANSIENT_RETRIES + 1):
@@ -478,7 +488,7 @@ class FirecrawlService:
                 return resp
             except httpx.HTTPStatusError as exc:
                 code = exc.response.status_code if exc.response is not None else None
-                if code not in self.TRANSIENT_STATUS or attempt >= self.TRANSIENT_RETRIES:
+                if code not in retryable or attempt >= self.TRANSIENT_RETRIES:
                     raise
                 last_exc = exc
             except httpx.TransportError as exc:  # connect/read/write errors
@@ -1111,7 +1121,9 @@ class FirecrawlService:
             )
             await db.commit()
 
-        chunk_size = max(1, settings.raw_http_concurrency)
+        chunk_size = max(1, getattr(profile, "raw_http_concurrency", settings.raw_http_concurrency))
+        request_delay = float(getattr(profile, "raw_http_request_delay", 0) or 0)
+        retry_statuses = getattr(profile, "raw_http_retry_statuses", None)
         # Failure tracking is over pages *attempted this run* (not resumed ones),
         # so the guard reflects the source's current behaviour.
         attempted = 0
@@ -1119,7 +1131,9 @@ class FirecrawlService:
 
         async def _fetch(url: str) -> str | None:
             try:
-                return await self.fetch_raw(url, cookies=auth_cookies)
+                if request_delay:
+                    await asyncio.sleep(request_delay)
+                return await self.fetch_raw(url, cookies=auth_cookies, retry_statuses=retry_statuses)
             except Exception as exc:  # network / HTTP error — skip this page
                 logger.warning("Raw fetch failed for %s: %s", url, exc)
                 return None
