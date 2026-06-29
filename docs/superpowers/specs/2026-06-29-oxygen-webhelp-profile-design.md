@@ -1,4 +1,4 @@
-# Oxygen XML WebHelp extraction profile (Rubrik) — inventory TOC + post-process hierarchy + WAF pacing
+# Oxygen XML WebHelp extraction profile (Rubrik) — inventory TOC + post-process hierarchy + WAF pacing + expiry notification
 
 **Date:** 2026-06-29
 **Status:** Design — approved (direction); pending spec review
@@ -52,6 +52,17 @@ This runs only for raw-HTTP profiles that opt in (`rebuild_toc` present); all ot
 - `fetch_raw(url, cookies=None, retry_statuses=None)` — extend the retry set: statuses in `retry_statuses` (default the existing transient set) are retried with backoff. The raw-HTTP path passes `getattr(profile, "raw_http_retry_statuses", None)` so `oxygen_webhelp` retries **401** (WAF throttle) with backoff. Retries are bounded (existing `TRANSIENT_RETRIES`), so a genuinely dead session still fails out and trips the failure-rate guard rather than looping forever.
 - New settings (defaults preserve current behavior): none required if the profile attributes drive it; `config.py` gains documented defaults only if we want global overrides (`raw_http_concurrency` already exists).
 
+### 5. Session-expiry notification (generic webhook)
+
+A long, multi-resume run shouldn't require watching the UI. Add a small, **general** notification (benefits every authenticated source, not just Rubrik): when a run stops because the source's realm session has expired, mark the realm `EXPIRED` and POST to a configured webhook so the user knows to upload a fresh cookie.
+
+- **Setting:** `notify_webhook_url` (`DOCEXTRACTOR_NOTIFY_WEBHOOK_URL`; blank = disabled). Stored in the k8s secret (a URL may embed a token).
+- **Helper:** `app/services/notify.py` — `async def notify(title: str, message: str, **fields) -> None`. If the URL is set, best-effort `httpx.post` of a JSON body `{"title","message","text","content", **fields}` (the `text`/`content` keys make it render in Slack/Discord/ntfy/generic receivers). Swallows and logs any error — **never** affects the run. No-op when unset.
+- **Trigger points** (fire once per failed run):
+  - Raw-HTTP path: when the content scrape fails (`RawContentScrapeError`) and the source has an `auth_realm` whose session is now expired (`session_expired(realm)`) or the failures were predominantly `401`, call `invalidate(db, realm, EXPIRED, …)` and `notify("Session expired", "Realm '<name>' expired during extraction of '<source>'. Upload a fresh cookie and re-trigger to resume.")`.
+  - Browserless path: the existing `NeedsLoginError` handler already marks the realm `EXPIRED`; add the same `notify(...)` call there.
+- The message names the realm + source and states the remedy (re-upload cookie, the run resumes via checkpoint).
+
 ## Module changes
 
 - `backend/app/services/profiles/oxygen_webhelp.py` (new) — profile + `rebuild_toc` + pacing attrs.
@@ -59,7 +70,10 @@ This runs only for raw-HTTP profiles that opt in (`rebuild_toc` present); all ot
 - `backend/app/services/firecrawl.py` — `fetch_raw` `retry_statuses` param; `_scrape_via_raw_http` fragment capture (write `toc_fragment`) + per-profile concurrency/delay; post-content `rebuild_toc` + TOC re-persist + article re-link.
 - `backend/app/models/article.py` (or wherever `Article` is defined) — new nullable `toc_fragment: Mapped[str | None]` column.
 - `backend/alembic/versions/<new>.py` — migration adding `articles.toc_fragment` (nullable text).
-- `backend/app/core/config.py` — (optional) documented pacing defaults.
+- `backend/app/services/notify.py` (new) — best-effort webhook `notify(...)`.
+- `backend/app/core/config.py` — `notify_webhook_url` (+ optional documented pacing defaults).
+- `backend/app/services/firecrawl.py` — fire `invalidate(EXPIRED)` + `notify(...)` on raw-HTTP auth failure; add `notify(...)` to the browserless `NeedsLoginError` handler.
+- `deploy/helm/docextractor/templates/secret.yaml` + `values.yaml` — `DOCEXTRACTOR_NOTIFY_WEBHOOK_URL` wiring (blank default).
 
 One DB schema addition: a nullable `articles.toc_fragment` text column (+ alembic migration). Reuses `toc_entries` otherwise.
 
@@ -78,6 +92,7 @@ Unit (pytest, hermetic; `FakeScraper`):
 - `rebuild_toc`: a set of fixture fragments (e.g. 3 pages whose contextual TOCs overlap to describe a 3-level tree) → correct DFS-ordered entries with proper `level`/`parent_url`; missing fragments → `[]`.
 - `_select_content_path`/raw-HTTP: a profile with `toc_fragment_selector` triggers fragment capture; concurrency/delay/`retry_statuses` are read from the profile (assert via a mocked fetch recording calls); 401 retried when in `retry_statuses`, not otherwise.
 - `content_config` scoping keeps `article` body, drops `.wh_breadcrumb`/`.related-links`/nav/footer.
+- `notify`: posts the JSON payload when `notify_webhook_url` is set (assert via mocked transport), is a no-op when unset, and swallows a POST error without raising; raw-HTTP auth failure with an expired-session realm marks the realm `EXPIRED` and calls `notify` (the generic-failure / no-realm case does not).
 
 Live validation (Rubrik, fresh cookie): auto-detect `oxygen_webhelp`; paced raw-HTTP scrape (low concurrency) avoids WAF 401s; content clean; post-process produces a nested TOC matching the on-site hierarchy on spot-checked branches. Expect multiple fresh-cookie/resume cycles for the full 4,240 pages.
 
