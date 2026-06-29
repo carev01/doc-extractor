@@ -127,6 +127,16 @@ export default async function ({ page, context }) {
 _TOC_EXPAND_CODE = r"""
 export default async function ({ page, context }) {
   const { url, sectionId } = context;
+  const authState = context.authState;
+  if (authState) {
+    if (authState.cookies && authState.cookies.length) await page.setCookie(...authState.cookies);
+    if (authState.origins) {
+      for (const o of authState.origins) {
+        await page.goto(o.origin, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.evaluate((items) => { for (const [k, v] of items) localStorage.setItem(k, v); }, o.localStorage || []);
+      }
+    }
+  }
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
   await page.waitForSelector('div#nav > ul.nav-group-root', { timeout: 30000 });
 
@@ -219,6 +229,8 @@ _GITBOOK_SIDEBARS_CODE = r"""
 export default async function ({ page, context }) {
   const sel = 'aside[data-testid="table-of-contents"]';
   const out = {};
+  const authState = context.authState;
+  if (authState && authState.cookies && authState.cookies.length) await page.setCookie(...authState.cookies);
   for (const url of context.urls) {
     try {
       await page.goto(url, { waitUntil: 'networkidle2', timeout: 45000 });
@@ -247,6 +259,16 @@ export default async function ({ page, context }) {
 _DOCUSAURUS_EXPAND_CODE = r"""
 export default async function ({ page, context }) {
   const { url } = context;
+  const authState = context.authState;
+  if (authState) {
+    if (authState.cookies && authState.cookies.length) await page.setCookie(...authState.cookies);
+    if (authState.origins) {
+      for (const o of authState.origins) {
+        await page.goto(o.origin, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.evaluate((items) => { for (const [k, v] of items) localStorage.setItem(k, v); }, o.localStorage || []);
+      }
+    }
+  }
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
   await page.waitForSelector('.theme-doc-sidebar-menu', { timeout: 30000 });
   let rounds = 0;
@@ -283,6 +305,16 @@ export default async function ({ page, context }) {
 _COLLAPSIBLE_EXPAND_CODE = r"""
 export default async function ({ page, context }) {
   const { url } = context;
+  const authState = context.authState;
+  if (authState) {
+    if (authState.cookies && authState.cookies.length) await page.setCookie(...authState.cookies);
+    if (authState.origins) {
+      for (const o of authState.origins) {
+        await page.goto(o.origin, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.evaluate((items) => { for (const [k, v] of items) localStorage.setItem(k, v); }, o.localStorage || []);
+      }
+    }
+  }
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
   await page.waitForSelector("[data-slot='sidebar-inner']", { timeout: 30000 });
   let rounds = 0;
@@ -470,17 +502,19 @@ class BrowserlessClient:
         return data.get("html", "")
 
     async def expand_toc(self, target_url: str, section_id: str | None = None,
-                         client: httpx.AsyncClient | None = None) -> list[dict]:
+                         client: httpx.AsyncClient | None = None,
+                         auth_state: dict | None = None) -> list[dict]:
         """Depth-first expand a lazy sidebar tree and return ordered nodes.
 
         Each node is {href, title, level, isParent}. ``section_id`` scopes to one
         section's ``<li id>`` (else the whole nav-group-root). Uses a long
         Browserless session timeout since expansion clicks every parent.
+        ``auth_state`` injects cookies/localStorage for authenticated sources.
         """
         timeout_ms = settings.browserless_toc_timeout_ms
         data = await self._post(
             _TOC_EXPAND_CODE,
-            {"url": target_url, "sectionId": section_id},
+            {"url": target_url, "sectionId": section_id, "authState": auth_state},
             target_url, client,
             session_timeout_ms=timeout_ms,
             http_timeout_s=timeout_ms / 1000 + 30,
@@ -489,15 +523,17 @@ class BrowserlessClient:
         return toc if isinstance(toc, list) else []
 
     async def expand_docusaurus_sidebar(self, target_url: str,
-                                        client: httpx.AsyncClient | None = None) -> str:
+                                        client: httpx.AsyncClient | None = None,
+                                        auth_state: dict | None = None) -> str:
         """Fully expand a Docusaurus sidebar (clicking every collapsed category)
         and return the ``.theme-doc-sidebar-menu`` outerHTML with all children
         mounted. Raises BrowserlessError. Uses the long TOC session timeout since
-        a deep tree means many click+mount rounds."""
+        a deep tree means many click+mount rounds. ``auth_state`` injects
+        cookies/localStorage for authenticated sources."""
         timeout_ms = settings.browserless_toc_timeout_ms
         data = await self._post(
             _DOCUSAURUS_EXPAND_CODE,
-            {"url": target_url},
+            {"url": target_url, "authState": auth_state},
             target_url, client,
             session_timeout_ms=timeout_ms,
             http_timeout_s=timeout_ms / 1000 + 30,
@@ -505,16 +541,18 @@ class BrowserlessClient:
         return data.get("html", "")
 
     async def expand_collapsible_sidebar(self, target_url: str,
-                                         client: httpx.AsyncClient | None = None) -> str:
+                                         client: httpx.AsyncClient | None = None,
+                                         auth_state: dict | None = None) -> str:
         """Fully expand a shadcn/ui + radix Collapsible sidebar, clicking every
         collapsed ``collapsible-trigger`` until the whole tree is mounted, and
         return the ``[data-slot='sidebar-inner']`` outerHTML. Raises
         BrowserlessError. Uses the long TOC session timeout (deep tree → many
-        click+mount rounds)."""
+        click+mount rounds). ``auth_state`` injects cookies/localStorage for
+        authenticated sources."""
         timeout_ms = settings.browserless_toc_timeout_ms
         data = await self._post(
             _COLLAPSIBLE_EXPAND_CODE,
-            {"url": target_url},
+            {"url": target_url, "authState": auth_state},
             target_url, client,
             session_timeout_ms=timeout_ms,
             http_timeout_s=timeout_ms / 1000 + 30,
@@ -541,19 +579,21 @@ class BrowserlessClient:
         )
 
     async def gitbook_sidebars(self, urls: list[str],
-                               client: httpx.AsyncClient | None = None) -> dict[str, str]:
+                               client: httpx.AsyncClient | None = None,
+                               auth_state: dict | None = None) -> dict[str, str]:
         """Visit each URL in one session and return {url: table-of-contents HTML}.
 
         Used to reconstruct a GitBook tree: each page reveals its own node's
         direct children in the sidebar. Uses the long TOC session timeout since a
         batch can be dozens of navigations. Raises BrowserlessError.
+        ``auth_state`` injects cookies for authenticated sources.
         """
         if not urls:
             return {}
         timeout_ms = settings.browserless_toc_timeout_ms
         data = await self._post(
             _GITBOOK_SIDEBARS_CODE,
-            {"urls": urls},
+            {"urls": urls, "authState": auth_state},
             urls[0], client,
             session_timeout_ms=timeout_ms,
             http_timeout_s=timeout_ms / 1000 + 30,
