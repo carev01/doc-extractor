@@ -10,6 +10,15 @@ const STATUS_COLORS: Record<string, string> = {
   login_failed: '#e0685f',
 };
 
+function expiryLabel(iso: string | null): { text: string; color: string } | null {
+  if (!iso) return null;
+  const ms = new Date(iso).getTime() - Date.now();
+  if (ms <= 0) return { text: 'EXPIRED', color: '#e0685f' };
+  const mins = Math.round(ms / 60000);
+  const text = mins < 60 ? `expires in ${mins}m` : `expires in ${Math.round(mins / 60)}h`;
+  return { text, color: mins < 120 ? '#eaa53d' : '#6f8087' };
+}
+
 function statusBadge(status: string) {
   return (
     <span
@@ -101,13 +110,17 @@ export function Logins() {
     const raw = sessionInput[id] ?? '';
     let parsed: { cookies: unknown[]; origins: unknown[] };
     try {
-      parsed = JSON.parse(raw);
+      const raw_parsed = JSON.parse(raw);
+      // Cookie-Editor exports a bare array of cookies; wrap it.
+      parsed = Array.isArray(raw_parsed)
+        ? { cookies: raw_parsed, origins: [] }
+        : raw_parsed;
     } catch {
-      setRealmError(id, 'Invalid JSON — paste a valid Playwright storageState object');
+      setRealmError(id, 'Invalid JSON — paste a Cookie-Editor array or a {cookies, origins} object');
       return;
     }
-    if (!Array.isArray(parsed.cookies) || !Array.isArray(parsed.origins)) {
-      setRealmError(id, 'JSON must have "cookies" and "origins" arrays');
+    if (!parsed || !Array.isArray(parsed.cookies) || !Array.isArray(parsed.origins)) {
+      setRealmError(id, 'Expected a Cookie-Editor cookie array, or an object with "cookies" and "origins" arrays');
       return;
     }
     try {
@@ -180,6 +193,10 @@ export function Logins() {
             <div className="item-info">
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em' }}>
                 {statusBadge(r.status)}
+                {(() => {
+                  const e = expiryLabel(r.session_expires_at);
+                  return e ? <span className="sub" style={{ color: e.color }}>{e.text}</span> : null;
+                })()}
                 <strong>{r.name}</strong>
                 <code className="sub">{r.login_domain}</code>
                 <span className="sub">[{r.auth_type}]</span>
@@ -208,8 +225,7 @@ export function Logins() {
               {sessionOpen[r.id] && (
                 <div style={{ marginTop: '0.5em' }}>
                   <p className="sub" style={{ marginBottom: '0.3em' }}>
-                    Log in in your own browser, export storage state (Playwright{' '}
-                    <code>storageState</code>, or a cookie/localStorage export), and paste it here.
+                    Paste the Cookie-Editor export (array) or a Playwright {'{'}cookies, origins{'}'} snapshot.
                   </p>
                   <textarea
                     rows={6}

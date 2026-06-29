@@ -427,6 +427,7 @@ export interface AuthRealm {
   has_password: boolean;
   has_totp: boolean;
   last_login_at: string | null;
+  session_expires_at: string | null;
   error_message: string | null;
 }
 
