@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.article import Article
 from app.models.article_version import ArticleVersion
+from app.models.auth_realm import AuthRealm
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.product import Product
 from app.models.source import DocumentationSource
@@ -19,6 +20,7 @@ from app.models.toc import TOCEntry
 from app.models.toc_checkpoint import TocCheckpoint
 from app.models.vendor import Vendor
 from app.schemas.export import ExtractionTriggerResponse
+from app.services.auth.session import session_expired
 from app.services.diffing import compute_unified_diff
 from app.services.firecrawl import compute_content_hash, firecrawl_service
 from app.services.queue import enqueue_run, ActiveRunExists
@@ -44,6 +46,17 @@ async def trigger_extraction(
     source = result.scalar_one_or_none()
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
+
+    if source.auth_realm_id is not None:
+        realm = await db.get(AuthRealm, source.auth_realm_id)
+        if realm is not None and session_expired(realm):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Auth session for realm '{realm.name}' has expired — run "
+                    "Login (credential realms) or re-upload cookies before extracting."
+                ),
+            )
 
     try:
         run = await enqueue_run(db, source_id, trigger="manual")
