@@ -1034,6 +1034,18 @@ class FirecrawlService:
                 return
             await asyncio.sleep(self.BATCH_POLL_INTERVAL)
 
+    async def _raise_if_controlled(self, db: AsyncSession, run_id: uuid.UUID) -> None:
+        """Cooperative cancel/pause: raise RunControlSignal if a control signal is
+        set on the run. Called at each content chunk boundary so a long scrape
+        honours a cancel/pause promptly instead of running to completion."""
+        ctrl = (
+            await db.execute(
+                select(ExtractionRun.control).where(ExtractionRun.id == run_id)
+            )
+        ).scalar_one_or_none()
+        if ctrl:
+            raise RunControlSignal(ctrl)
+
     async def _scrape_via_browserless(
         self,
         db: AsyncSession,
@@ -1097,6 +1109,7 @@ class FirecrawlService:
 
         try:
             for i in range(0, len(items), chunk_size):
+                await self._raise_if_controlled(db, run_id)
                 chunk = items[i:i + chunk_size]
                 rendered = await asyncio.gather(*(_render(u, e) for u, e in chunk))
                 for (url, entry), data in zip(chunk, rendered):
@@ -1233,13 +1246,7 @@ class FirecrawlService:
 
         for i in range(0, len(pending), chunk_size):
             # Cooperative cancel/pause at each chunk boundary (fresh read).
-            ctrl = (
-                await db.execute(
-                    select(ExtractionRun.control).where(ExtractionRun.id == run_id)
-                )
-            ).scalar_one_or_none()
-            if ctrl:
-                raise RunControlSignal(ctrl)
+            await self._raise_if_controlled(db, run_id)
 
             chunk = pending[i:i + chunk_size]
             # An entry may point its body fetch at a different URL than the
