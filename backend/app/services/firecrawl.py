@@ -13,7 +13,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
-from sqlalchemy import delete, select, update
+from sqlalchemy import bindparam, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -1783,7 +1783,12 @@ class FirecrawlService:
                     fragments = [(u, f) for (u, f) in rows if f]
                     if fragments:
                         try:
-                            rebuilt = profile.rebuild_toc(fragments, source.base_url)
+                            # Stitching ~100s of MB of fragments is CPU-heavy;
+                            # run it off the event loop so it doesn't block the
+                            # worker heartbeat.
+                            rebuilt = await asyncio.to_thread(
+                                profile.rebuild_toc, fragments, source.base_url
+                            )
                             if rebuilt:
                                 # Superset: add flat entries for scraped articles not
                                 # covered by the rebuilt hierarchy so
@@ -1808,13 +1813,21 @@ class FirecrawlService:
                                     for i, e in enumerate(all_entries)
                                 ]
                                 url_to_id = await self._persist_toc(db, source_id, toc_dicts)
-                                # Re-link each existing article to its rebuilt TOC entry.
-                                for art_url, tid in url_to_id.items():
+                                # Re-link articles to their rebuilt TOC entry in a
+                                # single batched (executemany) statement rather than
+                                # one awaited round-trip per URL.
+                                if url_to_id:
                                     await db.execute(
-                                        update(Article).where(
+                                        update(Article)
+                                        .where(
                                             Article.source_id == source_id,
-                                            Article.source_url == art_url,
-                                        ).values(toc_entry_id=tid)
+                                            Article.source_url == bindparam("b_url"),
+                                        )
+                                        .values(toc_entry_id=bindparam("b_tid")),
+                                        [
+                                            {"b_url": u, "b_tid": t}
+                                            for u, t in url_to_id.items()
+                                        ],
                                     )
                                 await db.commit()
                                 logger.info(
