@@ -14,6 +14,8 @@ import json
 import re
 from urllib.parse import urljoin
 
+from bs4 import BeautifulSoup
+
 from app.services.profiles import registry
 from app.services.profiles.base import TocEntry
 
@@ -77,6 +79,73 @@ class OxygenWebhelpProfile:
                 title=title, url=urljoin(pub_root, path),
                 level=path.count("/"), is_article=True,
             ))
+        return out
+
+    def rebuild_toc(self, fragments: "list[tuple[str, str]]", root_url: str) -> list[TocEntry]:
+        node: dict[str, dict] = {}          # tocid -> {url, title}
+        parent_of: dict[str, str] = {}      # tocid -> parent tocid
+        children: dict[str, list[str]] = {} # tocid -> ordered child tocids (longest seen)
+        top_order: list[str] = []           # ordered top-level tocids (longest seen)
+
+        def tocid(li):
+            if li.get("data-tocid"):
+                return li["data-tocid"]
+            d = li.find(attrs={"data-tocid": True})
+            return d["data-tocid"] if d else None
+
+        def direct_child_items(container):
+            # treeitem <li> that are this container's nearest treeitem descendants
+            out = []
+            for ul in container.find_all("ul", recursive=False):
+                out.extend([li for li in ul.find_all("li", recursive=False)
+                            if li.get("role") == "treeitem"])
+            return out
+
+        for page_url, frag in fragments:
+            soup = BeautifulSoup(frag or "", "html.parser")
+            navs = soup.select("#wh_publication_toc") or [soup]
+            nav = navs[0]
+            # top-level
+            tops = [t for li in direct_child_items(nav) for t in [tocid(li)] if t]
+            if len(tops) > len(top_order):
+                top_order = tops
+            for li in nav.find_all("li", attrs={"role": "treeitem"}):
+                tid = tocid(li)
+                if not tid:
+                    continue
+                a = li.find("a", href=True)
+                if a is not None and tid not in node:
+                    node[tid] = {"url": urljoin(page_url, a["href"]),
+                                 "title": a.get_text(strip=True) or a["href"]}
+                pli = li.find_parent("li", attrs={"role": "treeitem"})
+                ptid = tocid(pli) if pli is not None else None
+                if ptid and tid not in parent_of:
+                    parent_of[tid] = ptid
+                kids = [t for c in direct_child_items(li) for t in [tocid(c)] if t]
+                if len(kids) > len(children.get(tid, [])):
+                    children[tid] = kids
+
+        if not node:
+            return []
+        out: list[TocEntry] = []
+        seen: set[str] = set()
+
+        def walk(tid: str, level: int, parent_url):
+            if tid in seen or tid not in node:
+                return
+            seen.add(tid)
+            n = node[tid]
+            out.append(TocEntry(title=n["title"], url=n["url"], level=level,
+                                is_article=True, parent_url=parent_url))
+            for c in children.get(tid, []):
+                walk(c, level + 1, n["url"])
+
+        roots = top_order or [t for t in node if t not in parent_of]
+        for t in roots:
+            walk(t, 0, None)
+        for t in node:               # any unreached nodes → append at top
+            if t not in seen:
+                walk(t, 0, None)
         return out
 
     def content_config(self) -> dict:
