@@ -171,6 +171,32 @@ def _is_auth_expiry(realm) -> bool:
     return realm is not None
 
 
+# A run of this many consecutive page failures on an *authenticated* source means
+# the session has died mid-run (gated pages redirect to the IdP and yield no
+# article). Pause promptly rather than churning the remaining pages.
+_RAW_HTTP_AUTH_FAIL_STREAK = 15
+
+
+async def _pause_for_expiry(db, src, realm) -> None:
+    """Mark the realm EXPIRED, notify, and raise RunControlSignal('pause').
+
+    The checkpoint is kept (and only successfully-scraped pages were recorded in
+    it), so a fresh cookie + Resume retries exactly the pages that were missed.
+    """
+    await realm_manager.invalidate(
+        db, realm, RealmStatus.EXPIRED, "Session expired during extraction"
+    )
+    await notify(
+        "Extraction paused",
+        f"Realm '{realm.name}' — extraction of '{src.name}' paused: the session "
+        f"appears to have expired (authenticated pages are redirecting to login). "
+        f"Upload a fresh cookie and hit Resume to continue.",
+        realm=realm.name,
+    )
+    await db.commit()
+    raise RunControlSignal("pause")
+
+
 def _resolve_content_engine(source, profile) -> str | None:
     """Resolve the content-scraping engine for a source.
 
@@ -1185,6 +1211,16 @@ class FirecrawlService:
         # so the guard reflects the source's current behaviour.
         attempted = 0
         failed = 0
+        # Prompt auth-expiry detection (see _pause_for_expiry): a streak of
+        # failures on an authenticated source means the session died — pause now
+        # instead of churning the rest, and never checkpoint a failed page.
+        src = await db.get(DocumentationSource, source_id)
+        realm = (
+            await db.get(AuthRealm, src.auth_realm_id)
+            if src is not None and src.auth_realm_id is not None
+            else None
+        )
+        consecutive_failures = 0
 
         async def _fetch(url: str) -> str | None:
             try:
@@ -1212,71 +1248,73 @@ class FirecrawlService:
             htmls = await asyncio.gather(
                 *(_fetch(e.get("content_url") or u) for u, e in chunk)
             )
+            done_urls: list[str] = []
             for (url, entry), raw in zip(chunk, htmls):
                 attempted += 1
+                ok = False
                 if not raw:
                     failed += 1
-                    continue
-                toc_fragment = _extract_fragment(raw, frag_selector) if frag_selector else None
-                body_html = extract_body(raw, url)
-                if not body_html:
-                    logger.warning("No content body found at %s — skipping", url)
-                    failed += 1
-                    continue
-                md = html_to_markdown(body_html)
-                if not md:
-                    logger.warning("Empty content from %s — skipping", url)
-                    failed += 1
-                    continue
-                try:
-                    outcome = await self.process_article_result(
-                        db=db, source_id=source_id, run_id=run_id, url=url,
-                        markdown_content=md, doc_html=body_html,
-                        toc_entry_id=entry.get("toc_entry_id"),
-                        sort_order=entry.get("sort_order", 0),
-                        title=entry["title"], change_status=None,
-                        toc_fragment=toc_fragment,
-                        auth_cookies=auth_cookies,
-                    )
-                    if outcome in ("empty", "blocked"):
+                else:
+                    toc_fragment = _extract_fragment(raw, frag_selector) if frag_selector else None
+                    body_html = extract_body(raw, url)
+                    if not body_html:
+                        logger.warning("No content body found at %s — skipping", url)
                         failed += 1
                     else:
-                        completed += 1
-                except Exception as exc:
-                    logger.warning("Failed to process %s — skipping: %s", url, exc)
-                    await db.rollback()
-                    failed += 1
-            # Checkpoint the chunk only after it's fully processed.
-            await checkpoint.add_content_done([u for u, _ in chunk])
+                        md = html_to_markdown(body_html)
+                        if not md:
+                            logger.warning("Empty content from %s — skipping", url)
+                            failed += 1
+                        else:
+                            try:
+                                outcome = await self.process_article_result(
+                                    db=db, source_id=source_id, run_id=run_id, url=url,
+                                    markdown_content=md, doc_html=body_html,
+                                    toc_entry_id=entry.get("toc_entry_id"),
+                                    sort_order=entry.get("sort_order", 0),
+                                    title=entry["title"], change_status=None,
+                                    toc_fragment=toc_fragment,
+                                    auth_cookies=auth_cookies,
+                                )
+                                if outcome in ("empty", "blocked"):
+                                    failed += 1
+                                else:
+                                    completed += 1
+                                    ok = True
+                            except Exception as exc:
+                                logger.warning("Failed to process %s — skipping: %s", url, exc)
+                                await db.rollback()
+                                failed += 1
+                if ok:
+                    consecutive_failures = 0
+                    done_urls.append(url)
+                else:
+                    consecutive_failures += 1
+            # Checkpoint only pages that actually succeeded, so a resume retries
+            # the failed ones (e.g. login-redirect pages after a session expiry)
+            # instead of skipping them forever.
+            if done_urls:
+                await checkpoint.add_content_done(done_urls)
             logger.info("Raw-HTTP content: %d/%d processed", completed, total)
+
+            # Authenticated source failing many pages in a row → session died.
+            # Pause promptly for re-auth rather than churning the remaining pages.
+            if realm is not None and consecutive_failures >= _RAW_HTTP_AUTH_FAIL_STREAK:
+                logger.warning(
+                    "raw_http: %d consecutive failures on authenticated source %s "
+                    "— pausing for re-auth", consecutive_failures, source_id,
+                )
+                await _pause_for_expiry(db, src, realm)
 
         # Abort a run that mostly failed — a structural change or new bot-gating,
         # not a healthy partial. The checkpoint is kept so a re-trigger retries
         # only the failed pages.
+        # Fallback guard: a run that mostly failed but didn't trip the streak
+        # check above — for an authenticated source treat it as an expired
+        # session (pause + notify), otherwise fail loudly.
         if _raw_failure_exceeded(attempted, failed):
-            # If the source has an authenticated realm whose session has expired,
-            # the mass failure is a dead session — pause (keep the checkpoint) +
-            # mark EXPIRED + notify, so a fresh cookie and Resume continue from
-            # here, rather than failing loudly.
-            src = await db.get(DocumentationSource, source_id)
-            realm = (
-                await db.get(AuthRealm, src.auth_realm_id)
-                if src is not None and src.auth_realm_id is not None
-                else None
-            )
             if _is_auth_expiry(realm):
-                await realm_manager.invalidate(
-                    db, realm, RealmStatus.EXPIRED, "Session expired during extraction"
-                )
-                await notify(
-                    "Extraction paused",
-                    f"Realm '{realm.name}' — extraction of '{src.name}' stopped after "
-                    f"repeated failures (expired session or rate-limiting). The run is "
-                    f"PAUSED. Upload a fresh cookie and hit Resume to continue.",
-                    realm=realm.name,
-                )
-                await db.commit()
-                raise RunControlSignal("pause")
+                await _pause_for_expiry(db, src, realm)
             raise RawContentScrapeError(
                 f"raw_http content scrape failed {failed}/{attempted} pages "
                 f"(> {settings.raw_http_max_failure_rate:.0%}) for source "
