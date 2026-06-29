@@ -61,7 +61,7 @@ _BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHT
 # GIFs. They repeat on every page, so downloading them per-article is pure
 # overhead. Matched by URL path; conservative, so non-Flare sites are unaffected.
 _BOILERPLATE_IMG_RE = re.compile(
-    r"/_SystemImages/|/Skins/|/transparent\.gif$", re.IGNORECASE
+    r"/_SystemImages/|/Skins/|/ui-icons/|/transparent\.gif$", re.IGNORECASE
 )
 
 
@@ -612,12 +612,24 @@ class FirecrawlService:
             )
         return markdown, html, change_status, diff_text
 
-    async def _download_image(self, img_url: str, article_dir: str) -> str | None:
+    async def _download_image(self, img_url: str, article_dir: str,
+                              auth_cookies: list[dict] | None = None) -> str | None:
         try:
-            resp = await self.client.get(img_url, follow_redirects=True)
+            headers = {"User-Agent": _BROWSER_UA}
+            ck = _cookie_header(auth_cookies)
+            if ck:
+                headers["Cookie"] = ck
+            resp = await self.client.get(img_url, headers=headers, follow_redirects=True)
             resp.raise_for_status()
 
-            content_type = resp.headers.get("content-type", "")
+            content_type = resp.headers.get("content-type", "").lower()
+            # Authenticated sources redirect un-cookied / gated asset requests to
+            # their IdP (e.g. onepassport.rubrik.com), which answers a 200 HTML
+            # login page. Only persist genuine image responses so we never save a
+            # login page as a bogus image. Sending the realm cookies above means
+            # genuinely-gated images download directly without the IdP bounce.
+            if not content_type.startswith("image/"):
+                return None
             ext = ".png"
             if "jpeg" in content_type or "jpg" in content_type:
                 ext = ".jpg"
@@ -655,6 +667,7 @@ class FirecrawlService:
         topic_key: str | None = None,
         pdf_images: list | None = None,
         toc_fragment: str | None = None,
+        auth_cookies: list[dict] | None = None,
     ) -> str:
         """Store or skip a single article and atomically increment run counters.
 
@@ -878,7 +891,7 @@ class FirecrawlService:
             # Download all of a page's images concurrently rather than one-by-one
             # (the sequential round-trips dominated per-page processing time).
             filenames = await asyncio.gather(
-                *(self._download_image(full_src, article_img_dir)
+                *(self._download_image(full_src, article_img_dir, auth_cookies=auth_cookies)
                   for (_, _, _, full_src) in to_fetch)
             )
 
@@ -1086,6 +1099,7 @@ class FirecrawlService:
                             toc_entry_id=entry.get("toc_entry_id"),
                             sort_order=entry.get("sort_order", 0),
                             title=entry["title"], change_status=None,
+                            auth_cookies=(auth_state or {}).get("cookies"),
                         )
                         completed += 1
                     except Exception as exc:
@@ -1222,6 +1236,7 @@ class FirecrawlService:
                         sort_order=entry.get("sort_order", 0),
                         title=entry["title"], change_status=None,
                         toc_fragment=toc_fragment,
+                        auth_cookies=auth_cookies,
                     )
                     if outcome in ("empty", "blocked"):
                         failed += 1
