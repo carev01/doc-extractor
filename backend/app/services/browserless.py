@@ -393,6 +393,29 @@ export default async function ({ page, context }) {
 """
 
 
+# Browserless /function that downloads a binary asset (e.g. a PDF) in real Chrome:
+# inject the realm cookies, navigate to the asset's origin, then do an in-page
+# same-origin fetch and return the bytes base64-encoded. Uses the browser's TLS +
+# cookies, which defeats CDN bot-fingerprinting that serves a login/HTML shell to
+# plain HTTP clients (e.g. docs.cohesity.com).
+_DOWNLOAD_BYTES_CODE = r"""
+export default async function ({ page, context }) {
+  const { url, authState } = context;
+  if (authState && authState.cookies && authState.cookies.length) await page.setCookie(...authState.cookies);
+  const origin = new URL(url).origin;
+  await page.goto(origin, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  const result = await page.evaluate(async (u) => {
+    const r = await fetch(u, { credentials: 'include' });
+    if (!r.ok) return { ok: false, status: r.status, contentType: r.headers.get('content-type') };
+    const bytes = new Uint8Array(await r.arrayBuffer());
+    let binary = ''; const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    return { ok: true, status: r.status, contentType: r.headers.get('content-type'), b64: btoa(binary) };
+  }, url);
+  return { data: result, type: 'application/json' };
+}
+"""
+
 
 class BrowserlessError(Exception):
     """Raised when Browserless is unreachable or returns an unusable response."""
@@ -600,6 +623,27 @@ class BrowserlessClient:
         )
         sidebars = data.get("sidebars")
         return sidebars if isinstance(sidebars, dict) else {}
+
+    async def download_bytes(self, target_url: str, auth_state: dict | None = None,
+                             client: httpx.AsyncClient | None = None) -> bytes:
+        """Download a binary asset (e.g. a PDF) in real Chrome and return its
+        bytes. Used as a fallback when a plain HTTP fetch is served a CDN
+        bot-shield shell instead of the file. ``auth_state`` injects the realm
+        cookies. Raises BrowserlessError if the in-page fetch is not OK."""
+        import base64
+
+        data = await self._post(
+            _DOWNLOAD_BYTES_CODE,
+            {"url": target_url, "authState": auth_state},
+            target_url, client,
+            session_timeout_ms=120000, http_timeout_s=180,
+        )
+        if not data.get("ok"):
+            raise BrowserlessError(
+                f"browser download of {target_url} failed: "
+                f"status={data.get('status')} type={data.get('contentType')}"
+            )
+        return base64.b64decode(data.get("b64") or "")
 
     async def run_login(self, login_code: str, context: dict) -> dict:
         """Run a login /function that authenticates and captures the session.

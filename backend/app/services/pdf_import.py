@@ -65,18 +65,49 @@ async def _fetch_url_bytes(url: str, cookies: list[dict] | None = None) -> bytes
         return resp.content
 
 
+def _looks_like_pdf(data: bytes | None) -> bool:
+    return bool(data) and data[:5] == b"%PDF-"
+
+
+async def _fetch_url_bytes_via_browser(url: str, cookies: list[dict] | None) -> bytes:
+    """Fallback download in real Chrome (browser TLS + cookies) for hosts whose
+    CDN bot-shield serves a login/HTML shell to plain HTTP clients."""
+    from app.services.browserless import browserless_client
+
+    auth_state = {"cookies": cookies} if cookies else None
+    return await browserless_client.download_bytes(url, auth_state=auth_state)
+
+
 async def acquire_pdf(source, auth_cookies: list[dict] | None = None) -> tuple[bytes, str]:
     """Return (pdf_bytes, sha256_hex) for a pdf source (upload or URL origin).
-    ``auth_cookies`` authenticate a login-walled PDF URL."""
-    try:
-        if pdf_is_upload(source):
+    ``auth_cookies`` authenticate a login-walled PDF URL. For URL sources whose
+    CDN serves a non-PDF shell to the plain HTTP client (bot fingerprinting), fall
+    back to downloading the file in real Chrome via Browserless."""
+    if pdf_is_upload(source):
+        try:
             path = pdf_path_for(source.id, settings.pdf_dir)
             with open(path, "rb") as fh:
                 data = fh.read()
-        else:
+        except OSError as exc:
+            raise PdfAcquireError(f"Could not read uploaded PDF: {exc}") from exc
+    else:
+        data = None
+        try:
             data = await _fetch_url_bytes(source.base_url, cookies=auth_cookies)
-    except (OSError, httpx.HTTPError) as exc:
-        raise PdfAcquireError(f"Could not acquire PDF: {exc}") from exc
+        except (OSError, httpx.HTTPError) as exc:
+            logger.info("PDF direct download failed (%s); retrying via Browserless", exc)
+        if not _looks_like_pdf(data):
+            logger.info(
+                "PDF URL %s did not return a PDF via HTTP; retrying via Browserless",
+                source.base_url,
+            )
+            try:
+                data = await _fetch_url_bytes_via_browser(source.base_url, auth_cookies)
+            except Exception as exc:
+                raise PdfAcquireError(
+                    f"Could not acquire PDF (HTTP + Browserless): {exc}"
+                ) from exc
+
     if not data:
         raise PdfAcquireError("PDF is empty")
     return data, hashlib.sha256(data).hexdigest()
