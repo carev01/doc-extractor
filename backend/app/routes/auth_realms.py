@@ -23,6 +23,7 @@ from app.schemas.auth_realm import (
 )
 from app.services.auth import realm_manager
 from app.services.auth.realm_manager import NeedsLoginError
+from app.services.auth.session import session_expires_at
 from app.services.browserless import browserless_client
 
 router = APIRouter(prefix="/api/auth-realms", tags=["auth-realms"])
@@ -100,6 +101,7 @@ def _response(realm: AuthRealm) -> AuthRealmResponse:
         has_password=bool(realm.password),
         has_totp=bool(realm.totp_secret),
         last_login_at=realm.last_login_at,
+        session_expires_at=session_expires_at(realm),
         error_message=realm.error_message,
     )
 
