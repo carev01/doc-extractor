@@ -208,6 +208,13 @@ def persisted_count(extracted: int, updated: int, unchanged: int, resumed: int) 
     return (extracted or 0) + (updated or 0) + (unchanged or 0) + (resumed or 0)
 
 
+def _extract_fragment(html: str, selector: str) -> str | None:
+    """Return the outer HTML of the first ``selector`` match, or None."""
+    from bs4 import BeautifulSoup
+    el = BeautifulSoup(html or "", "html.parser").select_one(selector)
+    return str(el) if el is not None else None
+
+
 class FirecrawlService:
     """Handles documentation extraction via local Firecrawl instance."""
 
@@ -617,6 +624,7 @@ class FirecrawlService:
         diff_text: str | None = None,
         topic_key: str | None = None,
         pdf_images: list | None = None,
+        toc_fragment: str | None = None,
     ) -> str:
         """Store or skip a single article and atomically increment run counters.
 
@@ -769,6 +777,8 @@ class FirecrawlService:
             article.topic_key = match_key
             article.content_markdown = markdown_content
             article.content_html = doc_html
+            if toc_fragment is not None:
+                article.toc_fragment = toc_fragment
             article.content_hash = content_hash
             # Source's own update time — left NULL when the page exposes none,
             # rather than masking it with the scrape time.
@@ -797,6 +807,7 @@ class FirecrawlService:
                 topic_key=match_key,
                 content_markdown=markdown_content,
                 content_html=doc_html,
+                toc_fragment=toc_fragment,
                 content_hash=content_hash,
                 last_updated_at=last_updated,
                 sort_order=sort_order,
@@ -1104,6 +1115,8 @@ class FirecrawlService:
             def extract_body(raw: str, url: str) -> str | None:
                 return scope_content_html(raw, url, include, exclude)
 
+        frag_selector = getattr(profile, "toc_fragment_selector", None)
+
         items = list(url_to_entry.items())
         total = len(items)
         done = await checkpoint.load_content_done()
@@ -1160,6 +1173,7 @@ class FirecrawlService:
                 if not raw:
                     failed += 1
                     continue
+                toc_fragment = _extract_fragment(raw, frag_selector) if frag_selector else None
                 body_html = extract_body(raw, url)
                 if not body_html:
                     logger.warning("No content body found at %s — skipping", url)
@@ -1177,6 +1191,7 @@ class FirecrawlService:
                         toc_entry_id=entry.get("toc_entry_id"),
                         sort_order=entry.get("sort_order", 0),
                         title=entry["title"], change_status=None,
+                        toc_fragment=toc_fragment,
                     )
                     if outcome in ("empty", "blocked"):
                         failed += 1
