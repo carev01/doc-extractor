@@ -12,9 +12,7 @@ added later). Runs on the authenticated raw-HTTP path, paced for the WAF.
 
 import json
 import re
-from urllib.parse import urljoin, urlparse
-
-from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 
 from app.services.profiles import registry
 from app.services.profiles.base import TocEntry

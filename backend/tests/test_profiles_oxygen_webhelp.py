@@ -66,3 +66,8 @@ def test_content_config_scopes_article():
     assert "Getting Started" in out
     assert "Home" not in out         # breadcrumb dropped
     assert "footer" not in out
+
+@pytest.mark.asyncio
+async def test_build_toc_empty_when_inventory_unparseable():
+    bad = FakeScraper({}, raw_by_url={ROOT: PAGE, INVENTORY_URL: "not a valid htmlFileInfoList file"})
+    assert await OxygenWebhelpProfile().build_toc(ROOT, bad) == []
