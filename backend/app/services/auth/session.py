@@ -10,7 +10,7 @@ def session_expires_at(realm) -> datetime | None:
     expiries = [
         c["expires"]
         for c in snapshot.get("cookies", [])
-        if isinstance(c.get("expires"), (int, float))
+        if isinstance(c.get("expires"), (int, float)) and not isinstance(c.get("expires"), bool) and c["expires"] > 0
     ]
     if not expiries:
         return None

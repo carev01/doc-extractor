@@ -80,7 +80,7 @@ def _normalize_cookies(cookies: list[dict]) -> list[dict]:
         if ss in _SAMESITE_MAP:
             nc["sameSite"] = _SAMESITE_MAP[ss]
         exp = c.get("expires", c.get("expirationDate"))
-        if exp is not None:
+        if isinstance(exp, (int, float)) and not isinstance(exp, bool) and exp > 0:
             nc["expires"] = exp
         out.append(nc)
     return out
