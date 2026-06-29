@@ -127,16 +127,22 @@ async def test_convert_pdf_batches_large_doc(monkeypatch):
     monkeypatch.setattr(pc.settings, "pdf_convert_batch_pages", 2)
     calls = []
 
+    import fitz
+
     async def fake_convert_async(pdf_bytes, **kw):
-        rng = kw["page_range"]
-        calls.append(rng)
-        pages = [f"# Page {p}" for p in range(rng[0], rng[1] + 1)]
+        # Batches now arrive as page-extracted PDFs (no page_range option).
+        assert kw.get("page_range") is None
+        d = fitz.open(stream=pdf_bytes, filetype="pdf")
+        n = d.page_count
+        d.close()
+        calls.append(n)
+        pages = [f"# Page {i + 1}" for i in range(n)]
         return {"md_content": f"\n{dc._PAGE_BREAK}\n".join(pages),
                 "json_content": {"texts": [], "tables": []}}
 
     monkeypatch.setattr(pc.docling_client, "convert_async", fake_convert_async)
     out = await pc.convert_pdf(_npage_pdf(5))
-    assert calls == [(1, 2), (3, 4), (5, 5)]          # batched
+    assert calls == [2, 2, 1]                          # batched: extracts of 2,2,1 pages
     assert out.engine == "docling"
     assert len(out.page_line_starts) == 5             # all 5 pages stitched
     assert dc._PAGE_BREAK not in out.markdown
