@@ -17,6 +17,10 @@ class Scraper:
         self._fc = firecrawl
         self.checkpoint = checkpoint
         self._auth_cookies = auth_cookies
+        # auth_state for Browserless renders (cookie injection) — without this,
+        # authenticated JS-rendered sources (e.g. Cohesity's Next.js SPA) render
+        # logged-out during TOC discovery.
+        self._auth_state = {"cookies": auth_cookies} if auth_cookies else None
 
     async def get_html(self, url: str, wait_ms: int = 1500) -> str:
         data = await self._fc._firecrawl_request(
@@ -40,39 +44,43 @@ class Scraper:
         serialise.
         """
         from app.services.browserless import browserless_client
-        return await browserless_client.render(url)
+        return await browserless_client.render(url, auth_state=self._auth_state)
 
     async def get_rendered_html(self, url: str, wait_for: str | None = None) -> str:
         """Fully-rendered light-DOM HTML via Browserless, after ``wait_for``
         appears — for navs/content built client-side (e.g. a client-built #nav)."""
         from app.services.browserless import browserless_client
-        return await browserless_client.render_html(url, wait_selector=wait_for)
+        return await browserless_client.render_html(
+            url, wait_selector=wait_for, auth_state=self._auth_state
+        )
 
     async def expand_toc(self, url: str, section_id: str | None = None) -> list[dict]:
         """Depth-first expand a lazy sidebar tree via Browserless; returns ordered
         {href, title, level, isParent} nodes (clicks every parent toggle)."""
         from app.services.browserless import browserless_client
-        return await browserless_client.expand_toc(url, section_id=section_id)
+        return await browserless_client.expand_toc(
+            url, section_id=section_id, auth_state=self._auth_state
+        )
 
     async def gitbook_sidebars(self, urls: list[str]) -> dict[str, str]:
         """Visit each URL via Browserless and return {url: table-of-contents HTML}
         — for reconstructing a GitBook tree whose sidebar is contextual."""
         from app.services.browserless import browserless_client
-        return await browserless_client.gitbook_sidebars(urls)
+        return await browserless_client.gitbook_sidebars(urls, auth_state=self._auth_state)
 
     async def expand_docusaurus_sidebar(self, url: str) -> str:
         """Fully expand a Docusaurus sidebar via Browserless and return the
         ``.theme-doc-sidebar-menu`` HTML with every collapsed category mounted —
         Docusaurus doesn't render category children until expanded."""
         from app.services.browserless import browserless_client
-        return await browserless_client.expand_docusaurus_sidebar(url)
+        return await browserless_client.expand_docusaurus_sidebar(url, auth_state=self._auth_state)
 
     async def expand_collapsible_sidebar(self, url: str) -> str:
         """Fully expand a shadcn/ui + radix Collapsible sidebar via Browserless
         and return the ``[data-slot='sidebar-inner']`` HTML with
         every collapsed node mounted — children aren't in the DOM until expanded."""
         from app.services.browserless import browserless_client
-        return await browserless_client.expand_collapsible_sidebar(url)
+        return await browserless_client.expand_collapsible_sidebar(url, auth_state=self._auth_state)
 
     async def warmup_render(self, url: str, selector: str | None = None,
                             warmup_url: str | None = None) -> dict:
@@ -82,7 +90,7 @@ class Scraper:
         article bodies, neither reachable via a cold Firecrawl scrape."""
         from app.services.browserless import browserless_client
         return await browserless_client.warmup_render(
-            url, selector=selector, warmup_url=warmup_url
+            url, selector=selector, warmup_url=warmup_url, auth_state=self._auth_state
         )
 
 
