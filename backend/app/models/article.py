@@ -60,7 +60,9 @@ class Article(Base):
 
     # Content
     title: Mapped[str] = mapped_column(String(1024), nullable=False)
-    source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    # Indexed: the post-scrape TOC rebuild re-links every article by source_url,
+    # and resume/reconcile look articles up by URL.
+    source_url: Mapped[str] = mapped_column(String(2048), nullable=False, index=True)
     # Version-independent topic identity; unique per source. Equals source_url
     # for non-versioned sources.
     topic_key: Mapped[str] = mapped_column(String(2048), nullable=False)
