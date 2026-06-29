@@ -41,6 +41,10 @@ class Article(Base):
         UUID(as_uuid=True),
         ForeignKey("toc_entries.id", ondelete="SET NULL"),
         nullable=True,
+        # Indexed: deleting toc_entries (every TOC rebuild / re-run) fires the
+        # ON DELETE SET NULL back-reference; without this index that is a full
+        # articles scan per deleted row (O(n*m)).
+        index=True,
     )
 
     # Removal tracking — stamped when the page first drops out of the rebuilt
