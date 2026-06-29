@@ -1643,7 +1643,9 @@ class FirecrawlService:
         if source.source_type == "pdf":
             from app.services import pdf_import
             try:
-                return await pdf_import.run_pdf_extraction(self, db, source, run, run_pk)
+                return await pdf_import.run_pdf_extraction(
+                    self, db, source, run, run_pk, auth_state=auth_state
+                )
             except Exception as exc:
                 # Any PDF-pipeline failure (download error, corrupt/unparseable
                 # PDF, conversion error, …) must mark the run FAILED rather than

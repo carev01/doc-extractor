@@ -34,7 +34,7 @@ async def test_url_origin_downloads_and_hashes(monkeypatch):
     src = _src("https://example.com/doc.pdf")
     data = b"%PDF-1.4 url bytes"
 
-    async def fake_fetch(url):
+    async def fake_fetch(url, cookies=None):
         assert url == src.base_url
         return data
 
