@@ -58,10 +58,12 @@ A long, multi-resume run shouldn't require watching the UI. Add a small, **gener
 
 - **Setting:** `notify_webhook_url` (`DOCEXTRACTOR_NOTIFY_WEBHOOK_URL`; blank = disabled). Stored in the k8s secret (a URL may embed a token).
 - **Helper:** `app/services/notify.py` — `async def notify(title: str, message: str, **fields) -> None`. If the URL is set, best-effort `httpx.post` of a JSON body `{"title","message","text","content", **fields}` (the `text`/`content` keys make it render in Slack/Discord/ntfy/generic receivers). Swallows and logs any error — **never** affects the run. No-op when unset.
-- **Trigger points** (fire once per failed run):
-  - Raw-HTTP path: when the content scrape fails (`RawContentScrapeError`) and the source has an `auth_realm` whose session is now expired (`session_expired(realm)`) or the failures were predominantly `401`, call `invalidate(db, realm, EXPIRED, …)` and `notify("Session expired", "Realm '<name>' expired during extraction of '<source>'. Upload a fresh cookie and re-trigger to resume.")`.
-  - Browserless path: the existing `NeedsLoginError` handler already marks the realm `EXPIRED`; add the same `notify(...)` call there.
-- The message names the realm + source and states the remedy (re-upload cookie, the run resumes via checkpoint).
+- **Auto-pause on expiry (not fail):** the pipeline already supports pause/resume — `RunStatus.PAUSED` keeps the resume checkpoint (not a failure), and `POST /runs/{id}/resume` re-queues a paused run so the worker continues from the checkpoint. On mid-run session expiry we **pause** rather than fail, so the user's flow is: *expire → auto-pause + notify → upload fresh cookie → Resume → continue from where it stopped.*
+- **Trigger points** (fire once when a run auto-pauses on expiry):
+  - Raw-HTTP path: when page failures are predominantly `401` **and** the source's `auth_realm` session is expired (`session_expired(realm)`), stop the scrape via a **pause** control (the existing `RunControlSignal(action="pause")` semantics: set `RunStatus.PAUSED`, keep the checkpoint) instead of raising `RawContentScrapeError`; then `invalidate(db, realm, EXPIRED, …)` and `notify("Session expired", "Realm '<name>' expired during extraction of '<source>' — the run is PAUSED. Upload a fresh cookie and hit Resume to continue.")`. Non-auth failures still fail loudly via the existing guard.
+  - Browserless path: the existing `NeedsLoginError` handler currently fails the run; change it to **pause** (keep checkpoint) + `invalidate(EXPIRED)` + `notify(...)`, matching the raw-HTTP behavior.
+- The message names the realm + source and states the remedy (upload a fresh cookie, hit Resume; the run continues from the checkpoint).
+- **Resume:** the user uploads a fresh cookie (Cookie-Editor upload UI) and calls `POST /runs/{id}/resume` (existing). The worker re-claims the paused run; the raw-HTTP checkpoint skips completed pages; the post-process TOC rebuild runs when the content set finally completes.
 
 ## Module changes
 
@@ -80,8 +82,8 @@ One DB schema addition: a nullable `articles.toc_fragment` text column (+ alembi
 ## Error handling
 
 - No `oxygen-webhelp` ref / unparseable inventory → `build_toc` returns `[]` (loud, 0 pages).
-- WAF 401 under load → retried with backoff per `raw_http_retry_statuses`; persistent 401 (dead session) → failure-rate guard fails the run loudly. The expiry-block trigger guard (already shipped) prevents starting on an already-expired session.
-- Session expires mid-run → mass 401 after retries → run fails; **resume**: re-upload a fresh cookie and re-trigger — the raw-HTTP checkpoint skips completed pages, whose `toc_fragment` is already stored. The TOC rebuild on the finishing run reads stored fragments for all pages, so it is independent of run boundaries.
+- WAF 401 under load → retried with backoff per `raw_http_retry_statuses`. Persistent 401 with an **expired** realm session → **auto-pause** (not fail) + EXPIRED + notify (see Component 5). Persistent failures **not** attributable to auth → failure-rate guard fails the run loudly. The expiry-block trigger guard (already shipped) prevents starting on an already-expired session.
+- Session expires mid-run → auto-**pause** (checkpoint kept); **resume**: upload a fresh cookie and hit Resume (`/runs/{id}/resume`) — the raw-HTTP checkpoint skips completed pages, whose `toc_fragment` is already stored. The TOC rebuild on the finishing run reads stored fragments for all pages, so it is independent of run boundaries.
 - `rebuild_toc` yields nothing → keep inventory TOC, warn.
 
 ## Testing
@@ -92,7 +94,8 @@ Unit (pytest, hermetic; `FakeScraper`):
 - `rebuild_toc`: a set of fixture fragments (e.g. 3 pages whose contextual TOCs overlap to describe a 3-level tree) → correct DFS-ordered entries with proper `level`/`parent_url`; missing fragments → `[]`.
 - `_select_content_path`/raw-HTTP: a profile with `toc_fragment_selector` triggers fragment capture; concurrency/delay/`retry_statuses` are read from the profile (assert via a mocked fetch recording calls); 401 retried when in `retry_statuses`, not otherwise.
 - `content_config` scoping keeps `article` body, drops `.wh_breadcrumb`/`.related-links`/nav/footer.
-- `notify`: posts the JSON payload when `notify_webhook_url` is set (assert via mocked transport), is a no-op when unset, and swallows a POST error without raising; raw-HTTP auth failure with an expired-session realm marks the realm `EXPIRED` and calls `notify` (the generic-failure / no-realm case does not).
+- `notify`: posts the JSON payload when `notify_webhook_url` is set (assert via mocked transport), is a no-op when unset, and swallows a POST error without raising.
+- expiry handling: a raw-HTTP scrape whose failures are 401s **and** whose realm session is expired sets the run `PAUSED` (checkpoint kept), marks the realm `EXPIRED`, and calls `notify` — it does NOT fail the run; a non-auth failure (or no realm) still fails loudly via the existing guard and does not notify.
 
 Live validation (Rubrik, fresh cookie): auto-detect `oxygen_webhelp`; paced raw-HTTP scrape (low concurrency) avoids WAF 401s; content clean; post-process produces a nested TOC matching the on-site hierarchy on spot-checked branches. Expect multiple fresh-cookie/resume cycles for the full 4,240 pages.
 
