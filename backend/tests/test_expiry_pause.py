@@ -23,3 +23,37 @@ def test_auth_expiry_true_for_any_realm():
 
 def test_not_auth_expiry_without_realm():
     assert _is_auth_expiry(None) is False
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_pause_for_expiry_invalidates_notifies_and_raises(monkeypatch):
+    import app.services.firecrawl as fc
+
+    calls = {}
+
+    async def fake_invalidate(db, realm, status, msg):
+        calls["invalidate"] = (realm.name, status)
+
+    async def fake_notify(title, message, **fields):
+        calls["notify"] = (title, fields.get("realm"))
+
+    monkeypatch.setattr(fc.realm_manager, "invalidate", fake_invalidate)
+    monkeypatch.setattr(fc, "notify", fake_notify)
+
+    class DB:
+        async def commit(self):
+            calls["commit"] = True
+
+    realm = types.SimpleNamespace(name="Rubrik Docs")
+    src = types.SimpleNamespace(name="RSC SaaS Docs")
+
+    with pytest.raises(fc.RunControlSignal) as ei:
+        await fc._pause_for_expiry(DB(), src, realm)
+
+    assert ei.value.action == "pause"
+    assert calls["invalidate"] == ("Rubrik Docs", fc.RealmStatus.EXPIRED)
+    assert calls["notify"][1] == "Rubrik Docs"
+    assert calls.get("commit") is True
