@@ -28,7 +28,7 @@ def test_opts_into_raw_http_and_attrs():
     assert p.content_engine == "raw_http"
     assert p.raw_http_concurrency == 2
     assert p.raw_http_request_delay == 0.3
-    assert 401 in p.raw_http_retry_statuses
+    assert 401 not in p.raw_http_retry_statuses and 429 in p.raw_http_retry_statuses
     assert p.toc_fragment_selector == "#wh_publication_toc"
 
 def test_detect_needs_both_hooks():

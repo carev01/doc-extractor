@@ -31,6 +31,7 @@ from app.services.auth.session import session_expired
 from app.services.blockpage import is_auth_wall, is_block_page
 from app.services.notify import notify
 from app.services.profiles import registry as profile_registry
+from app.services.profiles.base import TocEntry as ProfileTocEntry
 from app.services.profiles.content_scope import scope_content_html, strip_selectors
 from app.services.profiles.detector import detect_platform
 import app.services.profiles.llm as llm_mod
@@ -164,10 +165,10 @@ def _cookie_header(cookies: list[dict] | None) -> str | None:
 
 
 def _is_auth_expiry(realm) -> bool:
-    """True when a mass content-scrape failure is attributable to an expired
-    realm session — i.e. the source has a realm whose stored session has expired.
-    Used to pause (not fail) the run so a fresh cookie + Resume can continue."""
-    return realm is not None and session_expired(realm)
+    """A mass raw-HTTP failure on a source that has an auth realm is treated as a
+    likely session/WAF failure → pause+EXPIRED+notify (the user re-auths and
+    resumes); only unauthenticated sources fail loudly via RawContentScrapeError."""
+    return realm is not None
 
 
 def _resolve_content_engine(source, profile) -> str | None:
@@ -222,6 +223,26 @@ def _extract_fragment(html: str, selector: str) -> str | None:
     from bs4 import BeautifulSoup
     el = BeautifulSoup(html or "", "html.parser").select_one(selector)
     return str(el) if el is not None else None
+
+
+def _toc_superset(
+    rebuilt: list[ProfileTocEntry],
+    scraped_pairs: list[tuple[str, str | None]],
+) -> list[ProfileTocEntry]:
+    """Return rebuilt TOC entries extended with flat entries for scraped articles
+    whose URL is not already in the rebuilt list.
+
+    Guarantees every scraped article has a TOC entry so ``_reconcile_removals``
+    won't mark it removed just because ``rebuild_toc`` didn't include it.
+    Rebuilt entries come first (preserving hierarchy order); extras are appended.
+    """
+    rebuilt_urls = {e.url for e in rebuilt}
+    extras = [
+        ProfileTocEntry(title=title or url, url=url, level=0, is_article=True, parent_url=None)
+        for url, title in scraped_pairs
+        if url not in rebuilt_urls
+    ]
+    return rebuilt + extras
 
 
 class FirecrawlService:
@@ -1233,10 +1254,10 @@ class FirecrawlService:
                     db, realm, RealmStatus.EXPIRED, "Session expired during extraction"
                 )
                 await notify(
-                    "Session expired",
-                    f"Realm '{realm.name}' expired during extraction of "
-                    f"'{src.name}' — the run is PAUSED. Upload a fresh cookie and "
-                    f"hit Resume to continue.",
+                    "Extraction paused",
+                    f"Realm '{realm.name}' — extraction of '{src.name}' stopped after "
+                    f"repeated failures (expired session or rate-limiting). The run is "
+                    f"PAUSED. Upload a fresh cookie and hit Resume to continue.",
                     realm=realm.name,
                 )
                 await db.commit()
@@ -1708,41 +1729,55 @@ class FirecrawlService:
                     )).all()
                     fragments = [(u, f) for (u, f) in rows if f]
                     if fragments:
-                        rebuilt = profile.rebuild_toc(fragments, source.base_url)
-                        if rebuilt:
-                            toc_dicts = [
-                                {
-                                    "title": e.title,
-                                    "url": e.url,
-                                    "level": e.level,
-                                    "is_article": e.is_article,
-                                    "parent_url": e.parent_url,
-                                    "sort_order": i,
-                                    "topic_key": derive_topic_key(
-                                        e.url, source.url_template, product_version
-                                    ),
-                                }
-                                for i, e in enumerate(rebuilt)
-                            ]
-                            url_to_id = await self._persist_toc(db, source_id, toc_dicts)
-                            # Re-link each existing article to its rebuilt TOC entry.
-                            for art_url, tid in url_to_id.items():
-                                await db.execute(
-                                    update(Article).where(
+                        try:
+                            rebuilt = profile.rebuild_toc(fragments, source.base_url)
+                            if rebuilt:
+                                # Superset: add flat entries for scraped articles not
+                                # covered by the rebuilt hierarchy so
+                                # _reconcile_removals won't mark them removed.
+                                scraped_pairs = (await db.execute(
+                                    select(Article.source_url, Article.title)
+                                    .where(
                                         Article.source_id == source_id,
-                                        Article.source_url == art_url,
-                                    ).values(toc_entry_id=tid)
+                                        Article.removed_at.is_(None),
+                                    )
+                                )).all()
+                                all_entries = _toc_superset(rebuilt, list(scraped_pairs))
+                                toc_dicts = [
+                                    {
+                                        "title": e.title,
+                                        "url": e.url,
+                                        "level": e.level,
+                                        "is_article": e.is_article,
+                                        "parent_url": e.parent_url,
+                                        "sort_order": i,
+                                    }
+                                    for i, e in enumerate(all_entries)
+                                ]
+                                url_to_id = await self._persist_toc(db, source_id, toc_dicts)
+                                # Re-link each existing article to its rebuilt TOC entry.
+                                for art_url, tid in url_to_id.items():
+                                    await db.execute(
+                                        update(Article).where(
+                                            Article.source_id == source_id,
+                                            Article.source_url == art_url,
+                                        ).values(toc_entry_id=tid)
+                                    )
+                                await db.commit()
+                                logger.info(
+                                    "Rebuilt TOC hierarchy for %s: %d entries",
+                                    source_id, len(all_entries),
                                 )
-                            await db.commit()
-                            logger.info(
-                                "Rebuilt TOC hierarchy for %s: %d entries",
-                                source_id, len(rebuilt),
-                            )
-                        else:
+                            else:
+                                logger.warning(
+                                    "rebuild_toc produced no entries for %s — "
+                                    "keeping inventory TOC",
+                                    source_id,
+                                )
+                        except Exception as exc:
                             logger.warning(
-                                "rebuild_toc produced no entries for %s — "
-                                "keeping inventory TOC",
-                                source_id,
+                                "TOC rebuild failed for %s, keeping inventory TOC: %s",
+                                source_id, exc,
                             )
             elif path == "browserless":
                 # Browserless-rendered platforms: Firecrawl can't get the content
@@ -1782,6 +1817,8 @@ class FirecrawlService:
                     ).scalar_one()
                     run.status = RunStatus.PAUSED
                     run.control = None
+                    source.status = SourceStatus.PENDING
+                    source.error_message = None
                     await db.commit()
                     return run
             else:

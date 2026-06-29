@@ -12,7 +12,7 @@ added later). Runs on the authenticated raw-HTTP path, paced for the WAF.
 
 import json
 import re
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urldefrag
 
 from bs4 import BeautifulSoup
 
@@ -40,7 +40,7 @@ class OxygenWebhelpProfile:
     # WAF pacing (read by the raw-HTTP content path).
     raw_http_concurrency = 2
     raw_http_request_delay = 0.3
-    raw_http_retry_statuses = (401, 429, 502, 503, 504)
+    raw_http_retry_statuses = (429, 502, 503, 504)
     # Capture each page's TOC tree fragment for the post-process hierarchy rebuild.
     toc_fragment_selector = "#wh_publication_toc"
 
@@ -115,8 +115,10 @@ class OxygenWebhelpProfile:
                     continue
                 a = li.find("a", href=True)
                 if a is not None and tid not in node:
-                    node[tid] = {"url": urljoin(page_url, a["href"]),
-                                 "title": a.get_text(strip=True) or a["href"]}
+                    node[tid] = {
+                        "url": urldefrag(urljoin(page_url, a["href"]))[0],
+                        "title": a.get_text(strip=True) or a["href"],
+                    }
                 pli = li.find_parent("li", attrs={"role": "treeitem"})
                 ptid = tocid(pli) if pli is not None else None
                 if ptid and tid not in parent_of:

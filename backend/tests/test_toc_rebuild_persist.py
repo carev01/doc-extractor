@@ -22,7 +22,8 @@ from app.core.config import settings
 from app.core.database import Base
 from app.models import Vendor, Product, DocumentationSource
 from app.models.toc import TOCEntry
-from app.services.firecrawl import firecrawl_service
+from app.services.firecrawl import firecrawl_service, _toc_superset
+from app.services.profiles.base import TocEntry as ProfileTocEntry
 
 TEST_DATABASE_URL = settings.database_url.rsplit("/", 1)[0] + "/docextractor_test"
 
@@ -166,3 +167,43 @@ async def test_persist_toc_returns_url_to_id_map(db):
     }
     assert rows["http://x/p1"].id == url_to_id["http://x/p1"]
     assert rows["http://x/p2"].id == url_to_id["http://x/p2"]
+
+
+# ── FIX 1: superset helper unit test ────────────────────────────────────────
+
+def test_toc_superset_adds_uncovered_scraped_urls():
+    """FIX 1 (I-1): a scraped article whose URL is NOT among the rebuilt entries
+    is appended as a flat extra by _toc_superset so _reconcile_removals won't
+    mark it removed.
+
+    This is a unit test of the pure helper (no DB required). Approach: helper.
+    """
+    rebuilt = [
+        ProfileTocEntry(title="Root", url="http://x/root", level=0),
+        ProfileTocEntry(title="Child", url="http://x/child", level=1,
+                        parent_url="http://x/root"),
+    ]
+    # "http://x/orphan" was scraped but the rebuild_toc didn't include it
+    scraped = [
+        ("http://x/root", "Root"),
+        ("http://x/child", "Child"),
+        ("http://x/orphan", "Orphan Page"),
+    ]
+    result = _toc_superset(rebuilt, scraped)
+    urls = [e.url for e in result]
+
+    assert "http://x/orphan" in urls, (
+        "scraped article not covered by rebuilt TOC must appear as a flat extra"
+    )
+    orphan = next(e for e in result if e.url == "http://x/orphan")
+    assert orphan.level == 0, "extra entry must be flat (level 0)"
+    assert orphan.is_article is True
+    assert orphan.parent_url is None
+
+    # Already-covered URLs must not be duplicated
+    assert urls.count("http://x/root") == 1
+    assert urls.count("http://x/child") == 1
+
+    # Rebuilt entries come first; extras are appended after
+    assert urls.index("http://x/root") < urls.index("http://x/orphan")
+    assert urls.index("http://x/child") < urls.index("http://x/orphan")

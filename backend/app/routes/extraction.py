@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.article import Article
 from app.models.article_version import ArticleVersion
-from app.models.auth_realm import AuthRealm
+from app.models.auth_realm import AuthRealm, RealmStatus
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.product import Product
 from app.models.source import DocumentationSource
@@ -49,7 +49,7 @@ async def trigger_extraction(
 
     if source.auth_realm_id is not None:
         realm = await db.get(AuthRealm, source.auth_realm_id)
-        if realm is not None and session_expired(realm):
+        if realm is not None and (session_expired(realm) or realm.status == RealmStatus.EXPIRED):
             raise HTTPException(
                 status_code=409,
                 detail=(

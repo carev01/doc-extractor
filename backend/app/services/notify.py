@@ -24,11 +24,11 @@ async def notify(title: str, message: str, **fields) -> None:
     if not url:
         return
     payload = {
+        **fields,
         "title": title,
         "message": message,
         "text": f"{title}: {message}",
         "content": f"{title}: {message}",
-        **fields,
     }
     try:
         client = _client_factory()
