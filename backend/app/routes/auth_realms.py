@@ -32,6 +32,12 @@ router = APIRouter(prefix="/api/auth-realms", tags=["auth-realms"])
 # Helpers
 # ---------------------------------------------------------------------------
 
+_SAMESITE_MAP = {
+    "no_restriction": "None", "lax": "Lax", "strict": "Strict",
+    "none": "None", "None": "None", "Lax": "Lax", "Strict": "Strict",
+}
+
+
 def _normalize_origins(origins: list[dict]) -> list[dict]:
     """Normalise Playwright storageState localStorage [{name,value}] → [[k,v]].
 
@@ -48,6 +54,35 @@ def _normalize_origins(origins: list[dict]) -> list[dict]:
             ls = [[item["name"], item["value"]] for item in ls]
         result.append({**origin, "localStorage": ls})
     return result
+
+
+def _normalize_cookies(cookies: list[dict]) -> list[dict]:
+    """Normalise cookie dicts (Cookie-Editor export or Playwright) to the stored
+    shape used for auth injection and expiry. Cookie-Editor uses ``expirationDate``
+    (epoch float) and lowercase ``sameSite`` (incl. ``no_restriction``); session
+    cookies have no expiry. Entries without a ``name`` are dropped.
+    """
+    out: list[dict] = []
+    for c in cookies:
+        name = c.get("name")
+        if not name:
+            continue
+        nc = {
+            "name": name,
+            "value": c.get("value", ""),
+            "domain": c.get("domain", ""),
+            "path": c.get("path", "/"),
+            "secure": bool(c.get("secure", False)),
+            "httpOnly": bool(c.get("httpOnly", False)),
+        }
+        ss = c.get("sameSite")
+        if ss in _SAMESITE_MAP:
+            nc["sameSite"] = _SAMESITE_MAP[ss]
+        exp = c.get("expires", c.get("expirationDate"))
+        if exp is not None:
+            nc["expires"] = exp
+        out.append(nc)
+    return out
 
 
 def _response(realm: AuthRealm) -> AuthRealmResponse:
@@ -190,7 +225,10 @@ async def upload_session(
         )
     realm = await _get_realm(db, realm_id)
     normalized_origins = _normalize_origins(payload.origins)
-    realm.state_snapshot = {"cookies": payload.cookies, "origins": normalized_origins}
+    realm.state_snapshot = {
+        "cookies": _normalize_cookies(payload.cookies),
+        "origins": normalized_origins,
+    }
     realm.status = RealmStatus.ACTIVE
     realm.error_message = None
     await db.commit()
