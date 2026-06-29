@@ -42,6 +42,7 @@ class AuthRealmResponse(BaseModel):
     has_password: bool
     has_totp: bool
     last_login_at: datetime | None
+    session_expires_at: datetime | None = None
     error_message: str | None
 
 

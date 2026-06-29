@@ -249,6 +249,7 @@ export default function SourceList({
             key={s.id}
             source={s}
             jobs={jobs}
+            authRealms={authRealms}
             selected={s.id === selectedSourceId}
             onSelect={onSelectSource}
             onDelete={handleDelete}
@@ -270,6 +271,7 @@ export default function SourceList({
 interface SourceItemProps {
   source: DocumentationSource;
   jobs: Job[];
+  authRealms: AuthRealm[];
   selected: boolean;
   onSelect: (source: DocumentationSource) => void;
   onDelete: (id: string) => void;
@@ -281,6 +283,7 @@ interface SourceItemProps {
 function SourceItem({
   source,
   jobs,
+  authRealms,
   selected,
   onSelect,
   onDelete,
@@ -381,6 +384,20 @@ function SourceItem({
       setItemError("Failed to change job assignment");
     }
   };
+
+  const handleRealmChange = async (value: string) => {
+    try {
+      await updateSource(source.id, { auth_realm_id: value || null });
+      onSourceChanged();
+    } catch {
+      /* surface via existing error UI if present; otherwise no-op */
+    }
+  };
+
+  const currentRealm = authRealms.find((r) => r.id === source.auth_realm_id) || null;
+  const realmExpired = !!(currentRealm?.session_expires_at
+    // eslint-disable-next-line react-hooks/purity
+    && new Date(currentRealm.session_expires_at).getTime() <= Date.now());
 
   const handleResanitize = async () => {
     setItemError("");
@@ -562,6 +579,26 @@ function SourceItem({
               ))}
             </select>
           </label>
+        </div>
+
+        <div className="item-meta">
+          {authRealms.length > 0 && (
+            <select
+              value={source.auth_realm_id ?? ''}
+              onChange={(e) => handleRealmChange(e.target.value)}
+              title="Auth realm"
+            >
+              <option value="">(public — no auth)</option>
+              {authRealms.map((r) => (
+                <option key={r.id} value={r.id}>{r.name} [{r.login_domain}]</option>
+              ))}
+            </select>
+          )}
+          {realmExpired && (
+            <span className="status-badge" style={{ backgroundColor: '#e0685f' }} title="Realm session expired">
+              auth expired
+            </span>
+          )}
         </div>
 
         {productVersion && (

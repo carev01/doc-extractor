@@ -167,7 +167,7 @@ export async function getSource(id: string): Promise<DocumentationSource> {
 
 export async function updateSource(
   id: string,
-  data: { name?: string; base_url?: string; platform?: string | null; refresh_profile?: boolean; url_template?: string | null }
+  data: { name?: string; base_url?: string; platform?: string | null; refresh_profile?: boolean; url_template?: string | null; auth_realm_id?: string | null }
 ): Promise<DocumentationSource> {
   const res = await api.patch(`/sources/${id}`, data);
   return res.data;
