@@ -8,6 +8,7 @@ import {
   cancelRun,
   pauseRun,
   resumeRun,
+  retryEscalation,
   listAllJobRuns,
 } from "../api/client";
 import JobsManager from "./JobsManager";
@@ -21,6 +22,7 @@ const STATUS_COLORS: Record<string, string> = {
   failed: "#e0685f",
   cancelled: "#6f8087",
   paused: "#5a7fa3",
+  warning: "#c8923d",
 };
 
 function statusBadge(status: string) {
@@ -32,6 +34,15 @@ function statusBadge(status: string) {
       {status}
     </span>
   );
+}
+
+/** A completed run whose escalation failed shows an amber "warning" badge
+ *  instead of the green "completed". */
+function runStatusBadge(run: ExtractionRun) {
+  if (run.status === "completed" && run.escalation_warning) {
+    return statusBadge("warning");
+  }
+  return statusBadge(run.status);
 }
 
 function fmtDuration(fromIso: string | null, toIso: string | null): string {
@@ -155,7 +166,7 @@ export default function JobsView() {
                 <div className="item-info">
                   <strong>{path(run)}</strong>
                   <div className="item-meta">
-                    {statusBadge(run.status)}
+                    {runStatusBadge(run)}
                     {run.control && (
                       <span className="sub" style={{ color: "var(--amber)" }}>
                         {run.control === "cancel" ? "cancelling…" : "pausing…"}
@@ -269,7 +280,7 @@ export default function JobsView() {
               <div className="item-info">
                 <strong>{path(run)}</strong>
                 <div className="item-meta">
-                  {statusBadge(run.status)}
+                  {runStatusBadge(run)}
                   <span className="sub">{run.trigger}</span>
                   <span className="sub">
                     {run.started_at ? new Date(run.started_at).toLocaleString() : "—"}
@@ -296,8 +307,22 @@ function RunDetail({ run, onBack }: { run: ExtractionRun; onBack: () => void }) 
   const [tab, setTab] = useState<"overview" | "logs">("overview");
   const [logs, setLogs] = useState<string>("");
   const [loadingLogs, setLoadingLogs] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState("");
   const logBoxRef = useRef<HTMLPreElement | null>(null);
   const isActive = ACTIVE.has(run.status);
+
+  const handleRetryEscalation = async () => {
+    setRetrying(true);
+    setRetryError("");
+    try {
+      await retryEscalation(run.id);
+      onBack(); // a new "escalate" run is now queued; the list will show it
+    } catch (e) {
+      setRetryError(apiError(e, "Failed to queue escalation retry"));
+      setRetrying(false);
+    }
+  };
 
   const fetchLogs = useCallback(async () => {
     setLoadingLogs(true);
@@ -335,7 +360,7 @@ function RunDetail({ run, onBack }: { run: ExtractionRun; onBack: () => void }) 
       <button className="link-btn" onClick={onBack}>← Back to Jobs</button>
       <h2>{path(run)}</h2>
       <div className="item-meta">
-        {statusBadge(run.status)}
+        {runStatusBadge(run)}
         <span className="sub">{run.trigger}</span>
         {run.attempts ? <span className="sub">attempt {run.attempts}</span> : null}
       </div>
@@ -371,6 +396,25 @@ function RunDetail({ run, onBack }: { run: ExtractionRun; onBack: () => void }) 
             <div><dt>Completed</dt><dd>{run.completed_at ? new Date(run.completed_at).toLocaleString() : "—"}</dd></div>
           </dl>
           {run.error_message && <div className="error">{run.error_message}</div>}
+          {run.status === "completed" && run.escalation_warning && (
+            <div className="warning-box" style={{ marginTop: "0.8rem" }}>
+              <strong>⚠ VLM escalation incomplete.</strong> Some low-confidence
+              sections couldn't be refined (docling-serve VLM failed). The articles
+              keep their standard-pipeline content. You can retry just the
+              escalation — this re-converts only the affected pages, not the whole
+              document.
+              <div style={{ marginTop: "0.5rem" }}>
+                <button
+                  className="btn-primary-sm"
+                  disabled={retrying}
+                  onClick={handleRetryEscalation}
+                >
+                  {retrying ? "Queuing…" : "Retry escalation"}
+                </button>
+              </div>
+              {retryError && <div className="error" style={{ marginTop: "0.5rem" }}>{retryError}</div>}
+            </div>
+          )}
         </div>
       )}
 

@@ -95,13 +95,20 @@ async def escalate_segment(pdf_bytes: bytes, segment: RenderedSegment) -> "str |
     return cleaned
 
 
-async def escalate_segments(pdf_bytes, segments, converted, on_event=None) -> None:
+async def escalate_segments(pdf_bytes, segments, converted, on_event=None) -> list[int]:
     """Re-convert low-confidence segments in place via the VLM, but only those
     that exclusively own their page range (escalating a shared page would pull in
     neighbours' content and reintroduce cross-section bleed). Bounded by the
-    per-run page budget."""
+    per-run page budget.
+
+    Returns the indices (into ``segments``) of flagged segments that genuinely
+    FAILED to escalate — a docling-serve error, or skipped because the circuit
+    breaker tripped. Budget-deferred segments are NOT failures and are excluded,
+    so a healthy big document doesn't get flagged just for hitting the page cap.
+    The caller can persist these so the escalation can be retried later without
+    redoing the whole conversion."""
     if not settings.pdf_vlm_escalation_enabled:
-        return
+        return []
 
     page_owners: dict[int, int] = {}
     for s in segments:
@@ -111,7 +118,12 @@ async def escalate_segments(pdf_bytes, segments, converted, on_event=None) -> No
     def _exclusive(s) -> bool:
         return all(page_owners.get(p, 0) == 1 for p in range(s.page_start, s.page_end + 1))
 
-    flagged = [s for s in segments if _exclusive(s) and score_segment(s, converted)]
+    # Keep each flagged segment's index into the original list so the caller can
+    # map a failure back to its persisted article.
+    flagged = [
+        (i, s) for i, s in enumerate(segments)
+        if _exclusive(s) and score_segment(s, converted)
+    ]
     if flagged:
         logger.info("pdf_escalate: %d/%d segments flagged; re-converting via VLM",
                     len(flagged), len(segments))
@@ -119,7 +131,8 @@ async def escalate_segments(pdf_bytes, segments, converted, on_event=None) -> No
     total = len(flagged)
     done = 0
     consecutive_failures = 0
-    for seg in flagged:
+    failed: list[int] = []
+    for pos, (idx, seg) in enumerate(flagged):
         pages = seg.page_end - seg.page_start + 1
         if pages > budget:
             continue
@@ -131,12 +144,16 @@ async def escalate_segments(pdf_bytes, segments, converted, on_event=None) -> No
             # markdown. A failed attempt converts no pages, so the budget is not
             # consumed.
             consecutive_failures += 1
+            failed.append(idx)
             if consecutive_failures >= settings.pdf_vlm_max_consecutive_failures:
                 logger.warning(
                     "pdf_escalate: %d consecutive VLM failures — skipping the "
                     "remaining %d flagged segments", consecutive_failures,
-                    total - done,
+                    total - done - consecutive_failures,
                 )
+                # The remaining flagged segments weren't attempted because the
+                # service is clearly down — treat them as pending too.
+                failed.extend(j for j, _ in flagged[pos + 1:])
                 break
             continue
         consecutive_failures = 0
@@ -152,3 +169,4 @@ async def escalate_segments(pdf_bytes, segments, converted, on_event=None) -> No
                 await on_event(done, total, seg.title)
             except Exception:  # noqa: BLE001
                 logger.exception("escalate on_event failed")
+    return failed

@@ -139,6 +139,7 @@ async def run_one(claim_session_factory=None, work_session_factory=None) -> bool
         run = await claim_next_run(db, WORKER_ID)
         run_id = run.id if run else None
         source_id = run.source_id if run else None
+        run_kind = run.kind if run else None
     # claim session is now closed.
 
     if run_id is not None:
@@ -150,7 +151,10 @@ async def run_one(claim_session_factory=None, work_session_factory=None) -> bool
         flush = asyncio.create_task(_flush_logs(run_id, log_handler, work_session_factory))
         try:
             async with work_session_factory() as db:
-                await firecrawl_service.extract_source(db, source_id, run_id=run_id)
+                if run_kind == "escalate":
+                    await firecrawl_service.retry_escalation_run(db, source_id, run_id)
+                else:
+                    await firecrawl_service.extract_source(db, source_id, run_id=run_id)
                 await db.commit()
         except Exception as exc:
             logger.exception("Run %s failed", run_id)

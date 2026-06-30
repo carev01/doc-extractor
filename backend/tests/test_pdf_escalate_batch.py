@@ -28,9 +28,10 @@ async def test_escalate_segments_only_exclusive_flagged(monkeypatch):
         return "## Bad\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n"
     monkeypatch.setattr(esc, "escalate_segment", fake_one)
 
-    await esc.escalate_segments(b"%PDF", segs, conv)
+    failed = await esc.escalate_segments(b"%PDF", segs, conv)
     assert calls == ["Bad"]
     assert "| 1 | 2 | 3 |" not in bad.markdown
+    assert failed == []  # the escalation succeeded → nothing pending
 
 
 @pytest.mark.asyncio
@@ -53,11 +54,14 @@ async def test_escalate_segments_circuit_breaks_on_consecutive_failures(monkeypa
         return None
     monkeypatch.setattr(esc, "escalate_segment", fail_one)
 
-    await esc.escalate_segments(b"%PDF", segs, conv)
+    failed = await esc.escalate_segments(b"%PDF", segs, conv)
     # Stopped after the 3rd consecutive failure — not all 10 attempted.
     assert len(calls) == 3
     # Segments keep their original markdown (no successful re-conversion).
     assert all("| 1 | 2 | 3 |" in s.markdown for s in segs)
+    # All 10 are reported pending: the 3 attempted-and-failed plus the 7 the
+    # breaker skipped (the service is clearly down).
+    assert failed == list(range(10))
 
 
 @pytest.mark.asyncio
@@ -78,9 +82,10 @@ async def test_escalate_segments_failure_does_not_consume_budget(monkeypatch):
         return seq.pop(0)
     monkeypatch.setattr(esc, "escalate_segment", one)
 
-    await esc.escalate_segments(b"%PDF", segs, conv)
+    failed = await esc.escalate_segments(b"%PDF", segs, conv)
     # A failed (None) → budget untouched; B succeeded within the 1-page budget.
     assert segs[1].markdown == "## B\n\nfixed\n"
+    assert failed == [0]  # only the first segment is pending
 
 
 @pytest.mark.asyncio

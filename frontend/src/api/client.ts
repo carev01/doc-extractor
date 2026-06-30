@@ -219,6 +219,12 @@ export async function resumeRun(runId: string): Promise<void> {
   await api.post(`/extraction/runs/${runId}/resume`);
 }
 
+/** Retry the VLM escalation that failed on a PDF run (no Layer-A re-conversion). */
+export async function retryEscalation(runId: string): Promise<ExtractionTrigger> {
+  const res = await api.post(`/extraction/runs/${runId}/retry-escalation`);
+  return res.data;
+}
+
 /** Re-apply the current sanitizer to a source's already-stored articles. */
 export async function resanitizeSource(
   sourceId: string

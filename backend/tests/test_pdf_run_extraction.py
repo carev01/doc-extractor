@@ -289,3 +289,123 @@ async def test_relocated_url_preserves_history_and_records_version_origin(factor
         )).scalars().all()
         assert vers
         assert all(v.source_url.startswith("file://x.pdf") for v in vers)
+
+
+async def test_escalation_failure_records_pending(factory, tmp_path, monkeypatch):
+    """When escalation reports failed segments, the run completes but records them
+    in escalation_pending (→ warning + retry-eligible), mapped to their article."""
+    sid = await _make_pdf_source(factory, tmp_path)
+
+    async def fake_escalate(pdf_bytes, segments, converted, on_event=None):
+        return [0]  # the first segment (Chapter 1) failed escalation
+
+    monkeypatch.setattr(_pdf_import_mod, "escalate_segments", fake_escalate)
+    run_pk = await _run(factory, sid)
+
+    async with factory() as s:
+        run = await s.get(ExtractionRun, run_pk)
+        assert run.status == RunStatus.COMPLETED        # still completes
+        assert run.escalation_pending and len(run.escalation_pending) == 1
+        entry = run.escalation_pending[0]
+        assert entry["page_start"] == 0 and entry["title"] == "Chapter 1"
+        art = await s.get(Article, uuid.UUID(entry["article_id"]))
+        assert art.title == "Chapter 1"
+
+
+async def test_retry_escalation_updates_articles_and_clears_pending(factory, tmp_path, monkeypatch):
+    """A kind='escalate' retry re-converts only the pending pages, updates the
+    affected article (snapshotting the prior content), and clears the warning."""
+    settings.pdf_dir = str(tmp_path)
+    async with factory() as s:
+        v = Vendor(name="V"); s.add(v); await s.flush()
+        p = Product(vendor_id=v.id, name="P"); s.add(p); await s.flush()
+        src = DocumentationSource(product_id=p.id, name="M",
+                                  base_url="file://x.pdf", source_type="pdf")
+        s.add(src); await s.flush()
+        art = Article(
+            source_id=src.id, title="Chapter 1", source_url="file://x.pdf#page=1",
+            topic_key="chapter-1", content_markdown="OLD", content_hash="h0", sort_order=0,
+        )
+        s.add(art); await s.flush()
+        run = ExtractionRun(
+            source_id=src.id, kind="escalate", status=RunStatus.RUNNING,
+            escalation_pending=[{
+                "article_id": str(art.id), "page_start": 0, "page_end": 0,
+                "level": 1, "title": "Chapter 1",
+            }],
+        )
+        s.add(run); await s.commit()
+        sid, aid, rid = src.id, art.id, run.id
+    with open(pdf_path_for(sid, str(tmp_path)), "wb") as fh:
+        fh.write(_pdf())
+
+    async def good(pdf_bytes, segment):
+        return "## Chapter 1\n\nIMPROVED TABLE"
+
+    monkeypatch.setattr(_pdf_import_mod, "escalate_segment", good)
+    svc = FirecrawlService()
+    async with factory() as s:
+        src = await s.get(DocumentationSource, sid)
+        run = await s.get(ExtractionRun, rid)
+        await _pdf_import_mod.retry_escalation(svc, s, src, run, rid)
+        await s.commit()
+
+    async with factory() as s:
+        art = await s.get(Article, aid)
+        assert "IMPROVED TABLE" in art.content_markdown
+        run = await s.get(ExtractionRun, rid)
+        assert run.status == RunStatus.COMPLETED
+        assert run.escalation_pending is None        # warning cleared
+        assert run.articles_updated == 1
+        ver = (await s.execute(
+            select(ArticleVersion).where(ArticleVersion.article_id == aid)
+        )).scalar_one()
+        assert ver.content_markdown == "OLD"          # prior content snapshotted
+        assert ver.source_url == "file://x.pdf#page=1"
+
+
+async def test_retry_escalation_keeps_pending_when_still_failing(factory, tmp_path, monkeypatch):
+    """If the VLM is still down, the retry leaves the segment pending so the run
+    keeps its warning and can be retried again."""
+    settings.pdf_dir = str(tmp_path)
+    async with factory() as s:
+        v = Vendor(name="V"); s.add(v); await s.flush()
+        p = Product(vendor_id=v.id, name="P"); s.add(p); await s.flush()
+        src = DocumentationSource(product_id=p.id, name="M",
+                                  base_url="file://x.pdf", source_type="pdf")
+        s.add(src); await s.flush()
+        art = Article(
+            source_id=src.id, title="Chapter 1", source_url="file://x.pdf#page=1",
+            topic_key="chapter-1", content_markdown="OLD", content_hash="h0", sort_order=0,
+        )
+        s.add(art); await s.flush()
+        run = ExtractionRun(
+            source_id=src.id, kind="escalate", status=RunStatus.RUNNING,
+            escalation_pending=[{
+                "article_id": str(art.id), "page_start": 0, "page_end": 0,
+                "level": 1, "title": "Chapter 1",
+            }],
+        )
+        s.add(run); await s.commit()
+        sid, aid, rid = src.id, art.id, run.id
+    with open(pdf_path_for(sid, str(tmp_path)), "wb") as fh:
+        fh.write(_pdf())
+
+    async def still_down(pdf_bytes, segment):
+        return None
+
+    monkeypatch.setattr(_pdf_import_mod, "escalate_segment", still_down)
+    svc = FirecrawlService()
+    async with factory() as s:
+        src = await s.get(DocumentationSource, sid)
+        run = await s.get(ExtractionRun, rid)
+        await _pdf_import_mod.retry_escalation(svc, s, src, run, rid)
+        await s.commit()
+
+    async with factory() as s:
+        run = await s.get(ExtractionRun, rid)
+        assert run.status == RunStatus.COMPLETED
+        assert run.escalation_pending and len(run.escalation_pending) == 1  # still pending
+        assert run.articles_updated == 0
+        art = await s.get(Article, aid)
+        assert art.content_markdown == "OLD"          # unchanged

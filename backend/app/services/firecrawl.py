@@ -1586,6 +1586,61 @@ class FirecrawlService:
         )
         await db.commit()
 
+    async def retry_escalation_run(
+        self, db: AsyncSession, source_id: uuid.UUID, run_id: uuid.UUID,
+    ) -> ExtractionRun:
+        """Worker entrypoint for a kind="escalate" run: re-attempt the VLM
+        escalation that failed on a prior run, re-converting only the recorded
+        page ranges (no Layer-A re-conversion). Mirrors extract_source's
+        source-load + auth-resolution, then delegates to pdf_import."""
+        source = (await db.execute(
+            select(DocumentationSource).where(DocumentationSource.id == source_id)
+        )).scalar_one_or_none()
+        if not source:
+            raise ValueError(f"Source {source_id} not found")
+        run = (await db.execute(
+            select(ExtractionRun).where(ExtractionRun.id == run_id)
+        )).scalar_one_or_none()
+        if run is None:
+            raise ValueError(f"ExtractionRun {run_id} not found")
+        run.status = RunStatus.RUNNING
+        await db.commit()
+        run_pk = run.id
+
+        auth_state: dict | None = None
+        if source.auth_realm_id is not None:
+            realm = await db.get(AuthRealm, source.auth_realm_id)
+            try:
+                if realm is None:
+                    raise NeedsLoginError("Auth realm not found for source")
+                auth_state = await realm_manager.ensure_session(db, realm)
+            except NeedsLoginError as exc:
+                run.status = RunStatus.FAILED
+                run.error_message = f"Authenticated source needs login: {exc}"
+                run.completed_at = datetime.now(timezone.utc)
+                source.status = SourceStatus.FAILED
+                source.error_message = str(exc)[:4096]
+                await db.commit()
+                return run
+
+        from app.services import pdf_import
+        try:
+            return await pdf_import.retry_escalation(
+                self, db, source, run, run_pk, auth_state=auth_state
+            )
+        except RunControlSignal:
+            await db.rollback()
+            run = (await db.execute(
+                select(ExtractionRun).where(ExtractionRun.id == run_pk)
+            )).scalar_one()
+            run.status = RunStatus.CANCELLED
+            run.completed_at = datetime.now(timezone.utc)
+            src = await db.get(DocumentationSource, source_id)
+            if src is not None:
+                src.status = SourceStatus.COMPLETED
+            await db.commit()
+            return run
+
     async def extract_source(
         self,
         db: AsyncSession,
