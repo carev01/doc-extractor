@@ -1653,6 +1653,28 @@ class FirecrawlService:
                 return await pdf_import.run_pdf_extraction(
                     self, db, source, run, run_pk, auth_state=auth_state
                 )
+            except RunControlSignal as sig:
+                # Cooperative cancel/pause during PDF extraction — terminalize
+                # cleanly (not FAILED). Reload by PK in case the session detached.
+                await db.rollback()
+                now = datetime.now(timezone.utc)
+                run = (await db.execute(
+                    select(ExtractionRun).where(ExtractionRun.id == run_pk)
+                )).scalar_one()
+                source = (await db.execute(
+                    select(DocumentationSource).where(DocumentationSource.id == source_id)
+                )).scalar_one()
+                run.control = None
+                if sig.action == "pause":
+                    run.status = RunStatus.PAUSED
+                    run.completed_at = None
+                else:
+                    run.status = RunStatus.CANCELLED
+                    run.completed_at = now
+                source.status = SourceStatus.PENDING
+                source.error_message = None
+                await db.commit()
+                return run
             except Exception as exc:
                 # Any PDF-pipeline failure (download error, corrupt/unparseable
                 # PDF, conversion error, …) must mark the run FAILED rather than
