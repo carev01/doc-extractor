@@ -73,9 +73,8 @@ async def escalate_segment(pdf_bytes: bytes, segment: RenderedSegment) -> str:
     """Re-convert one segment via docling-serve's VLM pipeline (OpenRouter).
     Returns the original markdown on any docling-serve failure."""
     try:
-        doc = await docling_client.convert(
+        doc = await docling_client.convert_async(
             pdf_bytes,
-            pipeline="vlm",
             page_range=(segment.page_start + 1, segment.page_end + 1),
             use_vlm_api=True,
             image_export_mode="placeholder",
