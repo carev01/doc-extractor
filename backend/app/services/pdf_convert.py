@@ -186,6 +186,8 @@ def _offset_page_nos(doc: dict, offset: int) -> dict:
 
 async def _convert_docling_batched(pdf_bytes: bytes, page_count: int, on_poll=None) -> dict:
     batch_docs: list[dict] = []
+    images: list[RenderedImage] = []
+    seen_images: set[str] = set()
     for start, end in _page_batches(page_count, settings.pdf_convert_batch_pages):
         # Send only this batch's pages (not the whole PDF + a page_range) so the
         # docling-serve payload stays small; re-base its page numbers to absolute.
@@ -195,8 +197,20 @@ async def _convert_docling_batched(pdf_bytes: bytes, page_count: int, on_poll=No
             page_break_placeholder=_PAGE_BREAK, on_poll=on_poll,
         )
         _offset_page_nos(doc, start - 1)
+        # Content-address this batch's images now and drop the base64 from the
+        # markdown — otherwise every batch's embedded base64 is held across the
+        # whole loop + the merge + a second decode in _build_converted_doc, which
+        # is the peak-memory driver that OOMs the worker on image-heavy PDFs.
+        clean_md, batch_imgs = _content_address_data_uris(doc.get("md_content") or "")
+        doc["md_content"] = clean_md
+        for im in batch_imgs:
+            if im.filename not in seen_images:
+                seen_images.add(im.filename)
+                images.append(im)
         batch_docs.append(doc)
-    return _merge_docling_docs(batch_docs)
+    merged = _merge_docling_docs(batch_docs)
+    merged["images"] = images
+    return merged
 
 
 def _parse_headings(json_content: dict) -> list[DocHeading]:
@@ -240,7 +254,12 @@ def _build_converted_doc(doc: dict, pdf_bytes: bytes) -> ConvertedDoc:
     md = doc.get("md_content") or ""
     json_content = doc.get("json_content") or {}
     md, page_line_starts = _split_page_breaks(md)
-    md, images = _content_address_data_uris(md)
+    if "images" in doc:
+        # Batched path already content-addressed images per batch (and stripped
+        # the base64 from the markdown), to avoid holding every image twice.
+        images = doc["images"]
+    else:
+        md, images = _content_address_data_uris(md)
     return ConvertedDoc(
         markdown=sanitize_markdown(md),
         headings=_parse_headings(json_content),
