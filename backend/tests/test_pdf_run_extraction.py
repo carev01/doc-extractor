@@ -261,9 +261,12 @@ async def test_relocated_url_preserves_history_and_records_version_origin(factor
     await _run(factory, sid)
 
     # Relocate the source URL AND change the content so a version is snapshotted.
+    # Use another file:// URL so acquire_pdf reads the locally-stored blob (by
+    # source id, not base_url) — keeping the test offline. The http(s)://
+    # relocation path (and its guards) is covered in test_pdf_source_api.
     async with factory() as s:
         src = await s.get(DocumentationSource, sid)
-        src.base_url = "https://new-cdn/relocated.pdf"
+        src.base_url = "file://relocated.pdf"
         await s.commit()
     with open(pdf_path_for(sid, str(tmp_path)), "wb") as fh:
         fh.write(_pdf(extra="CHANGED"))
@@ -277,7 +280,7 @@ async def test_relocated_url_preserves_history_and_records_version_origin(factor
         assert [a.title for a in arts] == ["Chapter 1", "Chapter 2"]
         assert all(a.removed_at is None for a in arts)
         # Live articles now point at the relocated URL.
-        assert all(a.source_url.startswith("https://new-cdn/relocated.pdf") for a in arts)
+        assert all(a.source_url.startswith("file://relocated.pdf") for a in arts)
         # Each prior version kept its ORIGINAL (pre-relocation) source URL.
         vers = (await s.execute(
             select(ArticleVersion)
