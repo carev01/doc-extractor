@@ -98,6 +98,11 @@ class Settings(BaseSettings):
     docling_serve_api_key: str = ""          # X-Api-Key (env only — .env is tracked)
     docling_serve_timeout: float = 600.0     # per-request read timeout (s)
     docling_serve_poll_interval: float = 3.0  # async convert: status poll cadence (s)
+    # How long to keep retrying a transient docling-serve error (e.g. an ingress
+    # 502 while the pod restarts) before giving up on the request. Sized to ride
+    # out a worker restart so a brief blip doesn't dump a whole document to the
+    # pymupdf fallback. Capped by docling_serve_timeout.
+    docling_serve_transient_window: float = 120.0
     # Large PDFs are converted through docling in page-range batches of this many
     # pages, so docling-serve doesn't load a whole 150+ page doc at once (OOM).
     # A doc with <= this many pages is converted in a single call.
@@ -110,6 +115,11 @@ class Settings(BaseSettings):
     pdf_vlm_api_key: str = ""                 # Bearer key (env only)
     pdf_vlm_model: str = "qwen/qwen3-vl-32b-instruct"
     pdf_vlm_max_pages_per_run: int = 30
+    # Circuit breaker: if this many escalation segments fail consecutively (e.g.
+    # docling-serve's VLM pipeline is misconfigured or its upstream model is
+    # down), stop escalating for the rest of the run instead of hammering the
+    # shared service with dozens of doomed conversions.
+    pdf_vlm_max_consecutive_failures: int = 5
 
     # Master key for encrypting credentials/sessions at rest (Fernet, urlsafe
     # base64, 32 bytes). Required only when auth_realm rows exist. Generate with:
