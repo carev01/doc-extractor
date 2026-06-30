@@ -140,10 +140,10 @@ export default function SourceList({
         setBaseUrl("");
         setTemplatize(true);
       } else if (addKind === "pdf_url") {
-        await createPdfSourceFromUrl(product.id, name.trim(), pdfUrl.trim());
+        await createPdfSourceFromUrl(product.id, name.trim(), pdfUrl.trim(), authRealmId || null);
       } else {
         if (!pdfFile) return;
-        await uploadPdfSource(product.id, name.trim(), pdfFile);
+        await uploadPdfSource(product.id, name.trim(), pdfFile, authRealmId || null);
       }
       setName("");
       setPdfUrl("");
@@ -585,7 +585,11 @@ function SourceItem({
           {authRealms.length > 0 && (
             <select
               value={source.auth_realm_id ?? ''}
-              onChange={(e) => handleRealmChange(e.target.value)}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => {
+                e.stopPropagation();
+                handleRealmChange(e.target.value);
+              }}
               title="Auth realm"
             >
               <option value="">(public — no auth)</option>
