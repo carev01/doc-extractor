@@ -69,9 +69,12 @@ from app.services.docling_client import DoclingServeError
 from app.services.sanitize import sanitize_markdown
 
 
-async def escalate_segment(pdf_bytes: bytes, segment: RenderedSegment) -> str:
+async def escalate_segment(pdf_bytes: bytes, segment: RenderedSegment) -> "str | None":
     """Re-convert one segment via docling-serve's VLM pipeline (OpenRouter).
-    Returns the original markdown on any docling-serve failure."""
+    Returns the re-converted markdown (which may equal the original when the VLM
+    adds nothing), or ``None`` when docling-serve itself failed — so the caller
+    can tell a genuine service failure apart from a no-op improvement and trip
+    its circuit breaker."""
     try:
         doc = await docling_client.convert_async(
             pdf_bytes,
@@ -81,7 +84,7 @@ async def escalate_segment(pdf_bytes: bytes, segment: RenderedSegment) -> str:
         )
     except DoclingServeError as exc:
         logger.warning("VLM escalation failed for %r: %s", segment.title, exc)
-        return segment.markdown
+        return None
 
     cleaned = sanitize_markdown((doc.get("md_content") or "").strip())
     if not cleaned.strip():
@@ -115,11 +118,28 @@ async def escalate_segments(pdf_bytes, segments, converted, on_event=None) -> No
     budget = settings.pdf_vlm_max_pages_per_run
     total = len(flagged)
     done = 0
+    consecutive_failures = 0
     for seg in flagged:
         pages = seg.page_end - seg.page_start + 1
         if pages > budget:
             continue
         new_md = await escalate_segment(pdf_bytes, seg)
+        if new_md is None:
+            # docling-serve failed this conversion. A run of these means the VLM
+            # pipeline is down — stop rather than hammer the shared service with
+            # dozens of doomed calls. The segment keeps its standard-pipeline
+            # markdown. A failed attempt converts no pages, so the budget is not
+            # consumed.
+            consecutive_failures += 1
+            if consecutive_failures >= settings.pdf_vlm_max_consecutive_failures:
+                logger.warning(
+                    "pdf_escalate: %d consecutive VLM failures — skipping the "
+                    "remaining %d flagged segments", consecutive_failures,
+                    total - done,
+                )
+                break
+            continue
+        consecutive_failures = 0
         if new_md != seg.markdown:
             seg.markdown = new_md
             matched = [img for img in converted.images if img.filename in new_md]

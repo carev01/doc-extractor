@@ -50,10 +50,12 @@ async def test_escalate_prepends_missing_heading(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_escalate_falls_back_on_error(monkeypatch):
+async def test_escalate_returns_none_on_docling_failure(monkeypatch):
+    # A docling-serve failure is signalled as None (not the original markdown) so
+    # the caller can distinguish a service failure from a no-op improvement.
     async def boom(pdf_bytes, **kw):
         raise dc.DoclingServeError("vlm down")
 
     monkeypatch.setattr(esc.docling_client, "convert_async", boom)
     out = await esc.escalate_segment(b"%PDF", _seg(md="original body"))
-    assert out == "original body"
+    assert out is None

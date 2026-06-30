@@ -41,28 +41,39 @@ def _vlm_model_api() -> dict:
     }
 
 
-_POLL_MAX_TRANSIENT = 5  # consecutive transient GET failures tolerated per call
+async def _send_with_retry(do_request, label, deadline) -> dict:
+    """Run ``do_request`` (an async callable returning an httpx response), raise
+    for status, and parse JSON — tolerating transient HTTP errors (e.g. a 502
+    from the ingress while docling-serve restarts) for up to
+    ``docling_serve_transient_window`` seconds before giving up.
 
-
-async def _get_json_with_retry(client, url, headers, deadline) -> dict:
-    """GET + parse JSON, tolerating transient HTTP errors (e.g. a 502 from the
-    ingress while docling-serve is busy on a large doc) until the deadline. A
-    single transient blip must not abandon an in-progress conversion."""
-    transient = 0
+    A worker restart can take longer than a couple of poll ticks; abandoning an
+    otherwise-fine conversion after a brief blip dumps the whole document to the
+    pymupdf fallback. Applied to the submit POST and every poll/result GET so any
+    leg can ride out a restart (bounded by the overall deadline)."""
+    transient_deadline = None
     while True:
         try:
-            r = await client.get(url, headers=headers)
+            r = await do_request()
             r.raise_for_status()
             return await asyncio.to_thread(r.json)
         except (httpx.HTTPError, ValueError) as exc:
-            transient += 1
-            if transient > _POLL_MAX_TRANSIENT or time.monotonic() > deadline:
+            now = time.monotonic()
+            if transient_deadline is None:
+                transient_deadline = now + settings.docling_serve_transient_window
+            if now >= min(transient_deadline, deadline):
                 raise
             logger.warning(
-                "docling-serve transient error on %s (%d/%d): %s; retrying",
-                url.rsplit("/", 2)[-2:], transient, _POLL_MAX_TRANSIENT, exc,
+                "docling-serve transient error on %s: %s; retrying (up to %.0fs)",
+                label, exc, min(transient_deadline, deadline) - now,
             )
             await asyncio.sleep(settings.docling_serve_poll_interval)
+
+
+async def _get_json_with_retry(client, url, headers, deadline) -> dict:
+    """GET + parse JSON with the windowed transient-error tolerance."""
+    return await _send_with_retry(
+        lambda: client.get(url, headers=headers), url.rsplit("/", 2)[-2:], deadline)
 
 
 def _build_options(*, page_range, use_vlm_api, do_ocr, image_export_mode,
@@ -114,10 +125,10 @@ async def convert_async(
     deadline = time.monotonic() + settings.docling_serve_timeout
     try:
         async with httpx.AsyncClient(timeout=settings.docling_serve_timeout) as client:
-            resp = await client.post(base + "/v1/convert/source/async",
-                                     headers=headers, json=body)
-            resp.raise_for_status()
-            status = await asyncio.to_thread(resp.json)
+            status = await _send_with_retry(
+                lambda: client.post(base + "/v1/convert/source/async",
+                                    headers=headers, json=body),
+                "convert/source/async", deadline)
             task_id = status.get("task_id")
             if not task_id:
                 raise DoclingServeError("async submit returned no task_id")
