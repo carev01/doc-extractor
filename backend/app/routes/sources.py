@@ -257,10 +257,13 @@ async def create_pdf_source(
     product_id: uuid.UUID = Form(...),
     name: str = Form(...),
     pdf_url: str | None = Form(None),
+    auth_realm_id: uuid.UUID | None = Form(None),
     file: UploadFile | None = File(None),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a PDF source from either a URL (re-fetchable) or an uploaded file."""
+    """Create a PDF source from either a URL (re-fetchable) or an uploaded file.
+    ``auth_realm_id`` attaches an auth realm so a login-walled PDF URL downloads
+    authenticated (same as web sources)."""
     product = (
         await db.execute(select(Product).where(Product.id == product_id))
     ).scalar_one_or_none()
@@ -275,6 +278,7 @@ async def create_pdf_source(
     if pdf_url:
         source = DocumentationSource(
             product_id=product_id, name=name, base_url=pdf_url, source_type="pdf",
+            auth_realm_id=auth_realm_id,
         )
         db.add(source)
         await db.commit()
@@ -290,6 +294,7 @@ async def create_pdf_source(
 
     source = DocumentationSource(
         product_id=product_id, name=name, base_url="pending", source_type="pdf",
+        auth_realm_id=auth_realm_id,
     )
     db.add(source)
     await db.flush()

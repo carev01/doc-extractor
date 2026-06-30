@@ -63,6 +63,27 @@ async def test_create_pdf_source_from_url(client):
     assert body["base_url"] == "https://x/doc.pdf"
 
 
+async def _realm(factory) -> uuid.UUID:
+    from app.models.auth_realm import AuthRealm
+    async with factory() as s:
+        r = AuthRealm(name="R", login_domain="x.com", auth_type="form",
+                      browserless_profile_name="")
+        s.add(r); await s.commit()
+        return r.id
+
+
+async def test_create_pdf_source_from_url_persists_auth_realm(client):
+    c, factory = client
+    pid = await _product(factory)
+    rid = await _realm(factory)
+    resp = await c.post("/api/sources/pdf", data={
+        "product_id": str(pid), "name": "Spec", "pdf_url": "https://x/doc.pdf",
+        "auth_realm_id": str(rid),
+    })
+    assert resp.status_code == 201
+    assert resp.json()["auth_realm_id"] == str(rid)
+
+
 async def test_upload_pdf_stores_file_and_sets_marker(client, tmp_path):
     c, factory = client
     pid = await _product(factory)

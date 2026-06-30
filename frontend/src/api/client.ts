@@ -463,11 +463,13 @@ export async function createPdfSourceFromUrl(
   productId: string,
   name: string,
   pdfUrl: string,
+  authRealmId?: string | null,
 ): Promise<DocumentationSource> {
   const form = new FormData();
   form.append("product_id", productId);
   form.append("name", name);
   form.append("pdf_url", pdfUrl);
+  if (authRealmId) form.append("auth_realm_id", authRealmId);
   const res = await api.post<DocumentationSource>("/sources/pdf", form);
   return res.data;
 }
@@ -476,11 +478,13 @@ export async function uploadPdfSource(
   productId: string,
   name: string,
   file: File,
+  authRealmId?: string | null,
 ): Promise<DocumentationSource> {
   const form = new FormData();
   form.append("product_id", productId);
   form.append("name", name);
   form.append("file", file);
+  if (authRealmId) form.append("auth_realm_id", authRealmId);
   const res = await api.post<DocumentationSource>("/sources/pdf", form);
   return res.data;
 }
