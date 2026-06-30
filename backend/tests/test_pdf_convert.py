@@ -158,7 +158,13 @@ async def test_convert_pdf_single_call_for_small_doc(monkeypatch):
         calls.append(kw.get("page_range"))
         return {"md_content": "# Only", "json_content": {"texts": [], "tables": []}}
 
+    progressed = []
+
+    async def on_progress(done, total):
+        progressed.append((done, total))
+
     monkeypatch.setattr(pc.docling_client, "convert_async", fake_convert_async)
-    out = await pc.convert_pdf(_npage_pdf(3))
+    out = await pc.convert_pdf(_npage_pdf(3), on_progress=on_progress)
     assert calls == [None]                             # single call, no page_range
     assert out.engine == "docling"
+    assert progressed == []                            # single-shot → no determinate progress

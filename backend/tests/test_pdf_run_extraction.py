@@ -48,7 +48,7 @@ async def patch_convert_pdf(monkeypatch):
     from the PDF's actual outline so split_into_segments can find section
     boundaries — the same logic the real pipeline uses, just without the network
     call."""
-    async def fake_convert(pdf_bytes, on_poll=None):
+    async def fake_convert(pdf_bytes, on_poll=None, on_progress=None):
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         try:
             toc = doc.get_toc(simple=True)

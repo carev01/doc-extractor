@@ -63,6 +63,30 @@ async def test_batched_sends_small_extracts_and_offsets_pages(monkeypatch):
     assert table_pages == [1, 4, 7]
 
 
+@pytest.mark.asyncio
+async def test_batched_reports_cumulative_page_progress(monkeypatch):
+    """on_progress fires once per batch with (pages_done, page_total), where
+    pages_done is the absolute last page of the batch — so the bar advances
+    instead of staying at 0% for the whole conversion, and ends at 100%."""
+    monkeypatch.setattr(pc.settings, "pdf_convert_batch_pages", 3)
+
+    async def fake_convert(pdf_bytes, **kw):
+        return {"md_content": "H", "json_content": {"texts": [], "tables": []}}
+
+    monkeypatch.setattr(pc.docling_client, "convert_async", fake_convert)
+
+    progress = []
+
+    async def on_progress(done, total):
+        progress.append((done, total))
+
+    pdf = _pdf(7)  # batch size 3 → batches ending at pages 3, 6, 7
+    await pc._convert_docling_batched(pdf, 7, on_progress=on_progress)
+
+    assert progress == [(3, 7), (6, 7), (7, 7)]
+    assert progress[-1][0] == progress[-1][1]   # final tick is 100%
+
+
 def test_extract_page_range_yields_only_those_pages():
     pdf = _pdf(10)
     out = pc._extract_page_range(pdf, 4, 6)  # 1-based inclusive → 3 pages

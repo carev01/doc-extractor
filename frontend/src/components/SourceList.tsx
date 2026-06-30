@@ -445,6 +445,28 @@ function SourceItem({
         );
       }
 
+      // Batched conversion of a large PDF reports pages as each batch finalizes,
+      // so once the first batch lands we can show a determinate bar instead of a
+      // spinner that sits at 0% for the whole (often >1h) conversion. A small,
+      // single-shot conversion never advances articles_extracted here → it falls
+      // through to the indeterminate "Converting document…" below.
+      if (
+        run.current_phase === "pdf_convert" &&
+        (run.articles_extracted ?? 0) > 0 &&
+        total > 0
+      ) {
+        return (
+          <div className="run-progress">
+            <span className="run-phase">
+              Converting document — {run.articles_extracted} / {total} pages ({pct}%)
+            </span>
+            <div className="progress-bar">
+              <div className="progress-fill" style={{ width: `${pct}%` }} />
+            </div>
+          </div>
+        );
+      }
+
       const indeterminatePdf: Record<string, string> = {
         pdf_acquire: "Downloading PDF…",
         pdf_convert: "Converting document…",

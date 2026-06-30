@@ -45,7 +45,7 @@ async def patch_convert_pdf(monkeypatch):
     docling-serve availability. The fake generates ATX-heading markdown from the
     PDF's actual outline so split_into_segments can find section boundaries.
     For corrupt PDFs, fitz.open raises naturally and the run is marked failed."""
-    async def fake_convert(pdf_bytes, on_poll=None):
+    async def fake_convert(pdf_bytes, on_poll=None, on_progress=None):
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         try:
             toc = doc.get_toc(simple=True)
