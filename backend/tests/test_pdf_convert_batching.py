@@ -1,6 +1,7 @@
 """Batched docling conversion sends each batch as a small page-extracted PDF
 (not the whole document + a page_range) and re-bases page numbers to absolute."""
 
+import base64
 import os
 import sys
 
@@ -67,3 +68,29 @@ def test_extract_page_range_yields_only_those_pages():
     out = pc._extract_page_range(pdf, 4, 6)  # 1-based inclusive → 3 pages
     assert _page_count(out) == 3
     assert len(out) < len(pdf)
+
+
+@pytest.mark.asyncio
+async def test_batched_content_addresses_images_per_batch(monkeypatch):
+    """Images are extracted per batch (base64 dropped from the merged markdown and
+    deduped across batches) so the worker doesn't hold every image multiple times."""
+    monkeypatch.setattr(pc.settings, "pdf_convert_batch_pages", 1)
+    png = b"\x89PNG\r\n\x1a\n" + b"Z" * 24
+    uri = "data:image/png;base64," + base64.b64encode(png).decode()
+
+    async def fake_convert(pdf_bytes, **kw):
+        # Same image embedded in every batch → must dedupe to one.
+        return {"md_content": f"# H\n\n![pic]({uri})\n",
+                "json_content": {"texts": [], "tables": []}}
+
+    monkeypatch.setattr(pc.docling_client, "convert_async", fake_convert)
+
+    pdf = _pdf(3)  # 3 pages, batch size 1 → 3 batches, same image each
+    merged = await pc._convert_docling_batched(pdf, 3)
+    assert "data:image" not in merged["md_content"]      # base64 stripped from md
+    assert len(merged["images"]) == 1                    # deduped across batches
+    assert merged["images"][0].data == png
+
+    cd = pc._build_converted_doc(merged, pdf)             # uses pre-extracted images
+    assert len(cd.images) == 1
+    assert "data:image" not in cd.markdown
