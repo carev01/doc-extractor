@@ -123,7 +123,14 @@ export interface ExtractionRun {
   status: "pending" | "running" | "completed" | "failed" | "cancelled" | "paused";
   control?: "cancel" | "pause" | null;
   trigger?: "manual" | "scheduled";
-  current_phase: "toc_discovery" | "content_scraping" | null;
+  current_phase:
+    | "toc_discovery"
+    | "content_scraping"
+    | "pdf_acquire"
+    | "pdf_convert"
+    | "pdf_split"
+    | "pdf_escalate"
+    | null;
   firecrawl_job_id: string | null;
   articles_extracted: number;
   articles_total: number;

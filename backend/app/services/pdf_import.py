@@ -230,8 +230,21 @@ async def run_pdf_extraction(service, db, source, run, run_pk,
                     status.get("task_status"), status.get("task_position"),
                     time.monotonic() - _t0)
 
+    async def _on_convert_progress(pages_done: int, pages_total: int) -> None:
+        # Drive a determinate progress bar during a batched conversion: report
+        # pages converted so far against the page total. The frontend renders
+        # this (phase pdf_convert + articles_extracted > 0) as a real bar; a
+        # single-shot conversion never calls this, so it stays indeterminate.
+        run.articles_extracted = pages_done
+        run.articles_total = pages_total
+        await db.commit()
+        # Honour a pending cancel/pause at batch boundaries so a multi-hour
+        # conversion can be stopped without waiting for the whole document.
+        await service._raise_if_controlled(db, run_pk)
+
     await service._raise_if_controlled(db, run_pk)
-    converted = await convert_pdf(pdf_bytes, on_poll=_on_poll)
+    converted = await convert_pdf(
+        pdf_bytes, on_poll=_on_poll, on_progress=_on_convert_progress)
     run.current_phase = "pdf_split"
     await db.commit()
     await service._raise_if_controlled(db, run_pk)

@@ -184,7 +184,9 @@ def _offset_page_nos(doc: dict, offset: int) -> dict:
     return doc
 
 
-async def _convert_docling_batched(pdf_bytes: bytes, page_count: int, on_poll=None) -> dict:
+async def _convert_docling_batched(
+    pdf_bytes: bytes, page_count: int, on_poll=None, on_progress=None
+) -> dict:
     batch_docs: list[dict] = []
     images: list[RenderedImage] = []
     seen_images: set[str] = set()
@@ -208,6 +210,12 @@ async def _convert_docling_batched(pdf_bytes: bytes, page_count: int, on_poll=No
                 seen_images.add(im.filename)
                 images.append(im)
         batch_docs.append(doc)
+        # Report determinate progress as each batch finalizes: docling gives no
+        # per-page progress for a single conversion, but a batched run has a
+        # known page total, so the bar can advance instead of sitting at 0% for
+        # the whole (often >1h) conversion.
+        if on_progress is not None:
+            await on_progress(end, page_count)
     merged = _merge_docling_docs(batch_docs)
     merged["images"] = images
     return merged
@@ -288,17 +296,21 @@ def _convert_pymupdf(pdf_bytes: bytes) -> ConvertedDoc:
     )
 
 
-async def convert_pdf(pdf_bytes: bytes, on_poll=None) -> ConvertedDoc:
+async def convert_pdf(pdf_bytes: bytes, on_poll=None, on_progress=None) -> ConvertedDoc:
     """Convert a whole PDF to markdown via docling-serve (async); pymupdf on failure.
     Large PDFs are converted in page-range batches so docling-serve doesn't OOM.
     All heavy synchronous work runs off the event loop so the worker heartbeat
-    keeps ticking on large documents."""
+    keeps ticking on large documents.
+
+    ``on_progress(pages_done, pages_total)`` is awaited after each batch finalizes
+    (batched path only); a single-shot conversion has no intermediate progress."""
     if settings.pdf_converter == "pymupdf":
         return await asyncio.to_thread(_convert_pymupdf, pdf_bytes)
     try:
         page_count = await asyncio.to_thread(_page_count, pdf_bytes)
         if page_count > settings.pdf_convert_batch_pages:
-            doc = await _convert_docling_batched(pdf_bytes, page_count, on_poll)
+            doc = await _convert_docling_batched(
+                pdf_bytes, page_count, on_poll, on_progress)
         else:
             doc = await docling_client.convert_async(
                 pdf_bytes, image_export_mode="embedded",
