@@ -154,13 +154,47 @@ def _merge_docling_docs(batch_docs: list[dict]) -> dict:
     }
 
 
+def _extract_page_range(pdf_bytes: bytes, start1: int, end1: int) -> bytes:
+    """Extract a 1-based inclusive page range into a standalone PDF.
+
+    docling-serve receives the document as a base64 payload; sending the WHOLE
+    PDF on every batch (with only a page_range option) means a large document is
+    uploaded in full each time and docling rejects it ("Input document is not
+    valid"). Extracting just the batch's pages keeps each payload small.
+    """
+    src = fitz.open(stream=pdf_bytes, filetype="pdf")
+    out = fitz.open()
+    try:
+        out.insert_pdf(src, from_page=start1 - 1, to_page=end1 - 1)
+        return out.tobytes(deflate=True, garbage=3)
+    finally:
+        out.close()
+        src.close()
+
+
+def _offset_page_nos(doc: dict, offset: int) -> dict:
+    """Shift docling json page numbers by ``offset`` so per-batch (page-extracted)
+    results carry absolute page numbers for heading/table → page mapping."""
+    if offset:
+        jc = doc.get("json_content") or {}
+        for item in list(jc.get("texts") or []) + list(jc.get("tables") or []):
+            for p in (item.get("prov") or []):
+                if isinstance(p.get("page_no"), int):
+                    p["page_no"] += offset
+    return doc
+
+
 async def _convert_docling_batched(pdf_bytes: bytes, page_count: int, on_poll=None) -> dict:
     batch_docs: list[dict] = []
     for start, end in _page_batches(page_count, settings.pdf_convert_batch_pages):
+        # Send only this batch's pages (not the whole PDF + a page_range) so the
+        # docling-serve payload stays small; re-base its page numbers to absolute.
+        batch_bytes = await asyncio.to_thread(_extract_page_range, pdf_bytes, start, end)
         doc = await docling_client.convert_async(
-            pdf_bytes, page_range=(start, end), image_export_mode="embedded",
+            batch_bytes, image_export_mode="embedded",
             page_break_placeholder=_PAGE_BREAK, on_poll=on_poll,
         )
+        _offset_page_nos(doc, start - 1)
         batch_docs.append(doc)
     return _merge_docling_docs(batch_docs)
 
