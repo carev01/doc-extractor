@@ -752,6 +752,25 @@ function SourceItem({
             />
           </label>
         )}
+        {source.source_type === "pdf" && !source.base_url.startsWith("file://") && (
+          <button
+            className="btn-secondary-sm"
+            title="Change the PDF download URL (e.g. the file moved). Article history is kept."
+            onClick={async (e) => {
+              e.stopPropagation();
+              const next = prompt("Update PDF URL", source.base_url);
+              if (next === null || !next.trim() || next.trim() === source.base_url) return;
+              try {
+                await updateSource(source.id, { base_url: next.trim() });
+                onSourceChanged();
+              } catch {
+                setItemError("Failed to update URL");
+              }
+            }}
+          >
+            Edit URL
+          </button>
+        )}
         <button
           className="btn-danger-sm"
           onClick={(e) => {

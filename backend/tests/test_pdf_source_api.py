@@ -115,6 +115,49 @@ async def test_non_pdf_upload_is_415(client):
     assert resp.status_code == 415
 
 
+async def test_edit_from_url_pdf_relocates_and_clears_template(client):
+    c, factory = client
+    pid = await _product(factory)
+    created = (await c.post("/api/sources/pdf", data={
+        "product_id": str(pid), "name": "Spec", "pdf_url": "https://old/7_4/74_UserGuide.pdf",
+    })).json()
+    sid = created["id"]
+    # Give it a (now mismatched) version template, as a versioned source would have.
+    await c.patch(f"/api/sources/{sid}", json={"url_template": "https://old/7_4/74_UserGuide.pdf"})
+
+    # Relocate to a wholly different host/filename — the kind a {version} template
+    # can't represent.
+    resp = await c.patch(f"/api/sources/{sid}", json={
+        "base_url": "https://new-cdn/guides/cohesity-user-guide-7-5.pdf",
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["base_url"] == "https://new-cdn/guides/cohesity-user-guide-7-5.pdf"
+    # The stale template is cleared so a later version bump can't resurrect the old URL.
+    assert body["url_template"] is None
+
+
+async def test_edit_url_rejects_non_http(client):
+    c, factory = client
+    pid = await _product(factory)
+    sid = (await c.post("/api/sources/pdf", data={
+        "product_id": str(pid), "name": "Spec", "pdf_url": "https://x/doc.pdf",
+    })).json()["id"]
+    resp = await c.patch(f"/api/sources/{sid}", json={"base_url": "file://evil.pdf"})
+    assert resp.status_code == 422
+
+
+async def test_edit_url_rejected_on_upload_origin_pdf(client):
+    c, factory = client
+    pid = await _product(factory)
+    files = {"file": ("d.pdf", io.BytesIO(b"%PDF-1.4 hi"), "application/pdf")}
+    sid = (await c.post("/api/sources/pdf",
+                        data={"product_id": str(pid), "name": "Up"}, files=files)).json()["id"]
+    # An upload-origin (file://) PDF must use Replace file, not a URL edit.
+    resp = await c.patch(f"/api/sources/{sid}", json={"base_url": "https://x/doc.pdf"})
+    assert resp.status_code == 409
+
+
 async def test_oversize_upload_is_413(client):
     c, factory = client
     settings.pdf_max_upload_bytes = 10

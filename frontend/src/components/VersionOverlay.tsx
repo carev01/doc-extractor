@@ -136,6 +136,19 @@ export default function VersionOverlay({
                   <div className="version-col-label">
                     Previous ·{" "}
                     {new Date(versionDetail.extracted_at).toLocaleString()}
+                    {versionDetail.source_url && (
+                      <>
+                        {" · "}
+                        <a
+                          href={versionDetail.source_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          title={versionDetail.source_url}
+                        >
+                          source
+                        </a>
+                      </>
+                    )}
                   </div>
                   <MarkdownView content={versionDetail.content_markdown} />
                 </div>

@@ -280,6 +280,7 @@ export interface ArticleVersion {
   version: string | null;
   content_size_bytes: number;
   extracted_at: string;
+  source_url: string | null;
 }
 
 export interface ArticleVersionList {

@@ -250,3 +250,39 @@ async def test_articles_total_excludes_empty_segments(factory, tmp_path, monkeyp
         assert len(arts) == 1                       # empty segment not persisted
         processed = r.articles_extracted + r.articles_updated + r.articles_unchanged
         assert r.articles_total == processed == 1   # denominator matches reality
+
+
+async def test_relocated_url_preserves_history_and_records_version_origin(factory, tmp_path):
+    """Changing a from-URL PDF's URL (relocation) must keep tracking the same
+    articles — identity is the heading-path topic_key, not the URL — and each
+    superseded version must retain the URL it was captured at, so links to
+    previous versions survive the move."""
+    sid = await _make_pdf_source(factory, tmp_path)  # base_url file://x.pdf
+    await _run(factory, sid)
+
+    # Relocate the source URL AND change the content so a version is snapshotted.
+    async with factory() as s:
+        src = await s.get(DocumentationSource, sid)
+        src.base_url = "https://new-cdn/relocated.pdf"
+        await s.commit()
+    with open(pdf_path_for(sid, str(tmp_path)), "wb") as fh:
+        fh.write(_pdf(extra="CHANGED"))
+    await _run(factory, sid)
+
+    async with factory() as s:
+        arts = (await s.execute(
+            select(Article).where(Article.source_id == sid).order_by(Article.sort_order)
+        )).scalars().all()
+        # Same two articles (matched by topic_key), not duplicated or removed.
+        assert [a.title for a in arts] == ["Chapter 1", "Chapter 2"]
+        assert all(a.removed_at is None for a in arts)
+        # Live articles now point at the relocated URL.
+        assert all(a.source_url.startswith("https://new-cdn/relocated.pdf") for a in arts)
+        # Each prior version kept its ORIGINAL (pre-relocation) source URL.
+        vers = (await s.execute(
+            select(ArticleVersion)
+            .join(Article, Article.id == ArticleVersion.article_id)
+            .where(Article.source_id == sid)
+        )).scalars().all()
+        assert vers
+        assert all(v.source_url.startswith("file://x.pdf") for v in vers)

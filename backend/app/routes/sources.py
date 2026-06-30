@@ -361,7 +361,30 @@ async def update_source(
     if body.name is not None:
         source.name = body.name
     if body.base_url is not None:
-        source.base_url = body.base_url
+        new_url = body.base_url.strip()
+        if source.source_type == "pdf":
+            # Relocating a from-URL PDF (e.g. the vendor moved the file, or the
+            # version is encoded in the filename in a format a {version} template
+            # can't capture). Article identity is the heading-path topic_key, not
+            # the URL, so re-extraction keeps tracking the same articles and their
+            # version history across the move. Guard the upload/URL boundary so a
+            # stored-file source isn't silently detached from its file:// blob.
+            if source.base_url.startswith("file://"):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Upload-origin PDF: replace the file instead of editing the URL",
+                )
+            if not new_url.lower().startswith(("http://", "https://")):
+                raise HTTPException(
+                    status_code=422, detail="PDF URL must be an http(s) URL"
+                )
+            # A relocation invalidates any version template (the new host/path
+            # won't match it). Clear it unless the caller is setting one in the
+            # same request, so a later product-version bump can't re-resolve
+            # base_url back to the old, dead location.
+            if body.url_template is None:
+                source.url_template = None
+        source.base_url = new_url
     if body.product_id is not None and body.product_id != source.product_id:
         # Move the source to another product (must exist).
         target = (

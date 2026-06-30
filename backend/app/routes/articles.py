@@ -239,6 +239,7 @@ async def list_article_versions(
                 func.octet_length(ArticleVersion.content_markdown), 0
             ).label("content_size_bytes"),
             ArticleVersion.extracted_at,
+            ArticleVersion.source_url,
             ExtractionRun.version.label("run_version"),
         )
         .outerjoin(ExtractionRun, ExtractionRun.id == ArticleVersion.extraction_run_id)
@@ -258,6 +259,7 @@ async def list_article_versions(
             content_size_bytes=r.content_size_bytes,
             extracted_at=r.extracted_at,
             version=r.run_version,
+            source_url=r.source_url,
         )
         for r in rows
     ]
@@ -304,6 +306,7 @@ async def get_article_version(
         has_diff=version.diff_text is not None,
         content_size_bytes=len(version.content_markdown.encode("utf-8")),
         extracted_at=version.extracted_at,
+        source_url=version.source_url,
         content_markdown=version.content_markdown,
     )
 
