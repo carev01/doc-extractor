@@ -19,6 +19,7 @@ from app.models import (
     Vendor, Product, DocumentationSource, ExtractionRun, Article,
 )
 from app.models.article_version import ArticleVersion
+from app.models.extraction_run import RunStatus
 from app.services.firecrawl import FirecrawlService
 from app.services.pdf_convert import ConvertedDoc
 from app.services.pdf_import import run_pdf_extraction, pdf_path_for
