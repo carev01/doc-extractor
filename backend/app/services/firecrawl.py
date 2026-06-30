@@ -835,6 +835,10 @@ class FirecrawlService:
                 content_markdown=existing_article.content_markdown,
                 content_hash=existing_article.content_hash,
                 diff_text=diff_text,
+                # Capture the URL this snapshot lived at BEFORE the live article's
+                # source_url is advanced to this run's URL below — so a previous
+                # version keeps its origin link after a relocation/version bump.
+                source_url=existing_article.source_url,
             )
             db.add(version)
 

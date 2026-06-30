@@ -414,6 +414,7 @@ async def resanitize_source(source_id: uuid.UUID, db: AsyncSession = Depends(get
                 extraction_run_id=None,
                 content_markdown=article.content_markdown,
                 content_hash=article.content_hash,
+                source_url=article.source_url,
                 diff_text=compute_unified_diff(
                     article.content_markdown, cleaned,
                     from_label="pre-sanitize", to_label="sanitized",

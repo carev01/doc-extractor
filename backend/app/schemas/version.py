@@ -17,6 +17,7 @@ class ArticleVersionResponse(BaseModel):
     content_size_bytes: int
     extracted_at: datetime  # when this content was superseded
     version: str | None = None  # product version of the run that superseded this snapshot
+    source_url: str | None = None  # URL this snapshot was captured at (pre-relocation)
 
 
 class ArticleVersionDetailResponse(ArticleVersionResponse):
