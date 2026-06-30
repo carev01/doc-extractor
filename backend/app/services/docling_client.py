@@ -41,60 +41,6 @@ def _vlm_model_api() -> dict:
     }
 
 
-async def convert(
-    pdf_bytes: bytes,
-    *,
-    filename: str = "source.pdf",
-    pipeline: str = "standard",
-    page_range: "tuple[int, int] | None" = None,
-    use_vlm_api: bool = False,
-    do_ocr: bool = False,
-    image_export_mode: str = "embedded",
-) -> dict:
-    """POST a PDF to docling-serve /v1/convert/source; return the `document` dict
-    (`md_content`, `json_content`). Raise DoclingServeError on any failure."""
-    options: dict = {
-        "to_formats": ["md", "json"],
-        "do_ocr": do_ocr,
-        "image_export_mode": image_export_mode,
-        "table_mode": "accurate",
-        "pipeline": pipeline,
-    }
-    if page_range is not None:
-        options["page_range"] = [page_range[0], page_range[1]]
-    if use_vlm_api:
-        options["vlm_pipeline_model_api"] = _vlm_model_api()
-
-    body = {
-        "sources": [{
-            "kind": "file",
-            "base64_string": base64.b64encode(pdf_bytes).decode("ascii"),
-            "filename": filename,
-        }],
-        "options": options,
-    }
-    url = settings.docling_serve_url.rstrip("/") + "/v1/convert/source"
-    headers = {"X-Api-Key": settings.docling_serve_api_key,
-               "content-type": "application/json"}
-    try:
-        async with httpx.AsyncClient(timeout=settings.docling_serve_timeout) as client:
-            resp = await client.post(url, headers=headers, json=body)
-            resp.raise_for_status()
-            payload = resp.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        raise DoclingServeError(f"docling-serve request failed: {exc}") from exc
-
-    if payload.get("status") not in ("success", "partial_success"):
-        raise DoclingServeError(
-            f"docling-serve status={payload.get('status')!r} "
-            f"errors={payload.get('errors')}"
-        )
-    doc = payload.get("document")
-    if not doc:
-        raise DoclingServeError("docling-serve returned no document")
-    return doc
-
-
 _POLL_MAX_TRANSIENT = 5  # consecutive transient GET failures tolerated per call
 
 
