@@ -25,11 +25,12 @@ def _is_active_run_violation(exc: IntegrityError) -> bool:
 
 
 async def enqueue_run(
-    db: AsyncSession, source_id: uuid.UUID, trigger: str = "manual"
+    db: AsyncSession, source_id: uuid.UUID, trigger: str = "manual",
+    kind: str = "extract",
 ) -> ExtractionRun:
     """Insert a pending run. Raises ActiveRunExists if one is already active."""
     run = ExtractionRun(
-        source_id=source_id, status=RunStatus.PENDING, trigger=trigger
+        source_id=source_id, status=RunStatus.PENDING, trigger=trigger, kind=kind,
     )
     db.add(run)
     try:

@@ -74,6 +74,50 @@ async def trigger_extraction(
     )
 
 
+@router.post("/runs/{run_id}/retry-escalation", response_model=ExtractionTriggerResponse)
+async def retry_escalation(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Re-attempt the VLM escalation that failed on a PDF run, without redoing the
+    Layer-A conversion. Enqueues a lightweight kind="escalate" run that re-converts
+    only the recorded page ranges. 409 if there is nothing pending or a run is
+    already active for the source."""
+    run = await db.get(ExtractionRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if not run.escalation_pending:
+        raise HTTPException(
+            status_code=409, detail="This run has no failed escalation to retry"
+        )
+    source = await db.get(DocumentationSource, run.source_id)
+    if source is None or source.source_type != "pdf":
+        raise HTTPException(status_code=409, detail="Not a PDF source")
+
+    if source.auth_realm_id is not None:
+        realm = await db.get(AuthRealm, source.auth_realm_id)
+        if realm is not None and (session_expired(realm) or realm.status == RealmStatus.EXPIRED):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Auth session for realm '{realm.name}' has expired — log in first.",
+            )
+
+    try:
+        new_run = await enqueue_run(db, run.source_id, trigger="manual", kind="escalate")
+    except ActiveRunExists:
+        raise HTTPException(
+            status_code=409,
+            detail="Extraction already queued or running for this source",
+        )
+    # Carry the failed segments onto the retry run for the worker to act on.
+    new_run.escalation_pending = run.escalation_pending
+    await db.commit()
+
+    return ExtractionTriggerResponse(
+        run_id=new_run.id,
+        source_id=run.source_id,
+        status="pending",
+        message="Escalation retry queued. Poll /api/extraction/runs/{run_id} for progress.",
+    )
+
+
 @router.post("/webhook/{run_id}", include_in_schema=False)
 async def firecrawl_webhook(
     run_id: uuid.UUID,
@@ -234,6 +278,10 @@ async def list_runs(
                 "status": r.status,
                 "control": r.control,
                 "trigger": r.trigger,
+                "kind": r.kind,
+                # Completed runs whose VLM escalation failed carry a pending list;
+                # the UI shows a "warning" badge and a Retry-escalation action.
+                "escalation_warning": bool(r.escalation_pending),
                 "current_phase": r.current_phase,
                 "firecrawl_job_id": r.firecrawl_job_id,
                 "articles_extracted": r.articles_extracted,

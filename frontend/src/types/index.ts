@@ -123,6 +123,9 @@ export interface ExtractionRun {
   status: "pending" | "running" | "completed" | "failed" | "cancelled" | "paused";
   control?: "cancel" | "pause" | null;
   trigger?: "manual" | "scheduled";
+  kind?: string;
+  /** Completed PDF run whose VLM escalation failed — eligible for retry. */
+  escalation_warning?: boolean;
   current_phase:
     | "toc_discovery"
     | "content_scraping"

@@ -7,7 +7,7 @@ from enum import Enum
 from sqlalchemy import (
     DateTime, Enum as SAEnum, ForeignKey, Index, Integer, String, Text, func, text,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -57,6 +57,10 @@ class ExtractionRun(Base):
     )
     # Queue / worker-coordination columns.
     trigger: Mapped[str] = mapped_column(String(16), default="manual", server_default="manual", nullable=False)
+    # Run kind: "extract" (full pipeline) | "escalate" (PDF VLM-escalation-only
+    # retry — re-converts just the page ranges that failed escalation, skipping
+    # the expensive Layer-A conversion). The worker dispatches on this.
+    kind: Mapped[str] = mapped_column(String(16), default="extract", server_default="extract", nullable=False)
     claimed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     claimed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -86,6 +90,11 @@ class ExtractionRun(Base):
     error_message: Mapped[str | None] = mapped_column(String(4096), nullable=True)
     firecrawl_job_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     current_phase: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # PDF VLM escalation that failed this run and can be retried without redoing
+    # the conversion: a list of {article_id, page_start, page_end, level, title}.
+    # Non-empty ⇒ the run completed with an escalation *warning* (not a clean
+    # green) and is eligible for a kind="escalate" retry. NULL/empty ⇒ no warning.
+    escalation_pending: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     # Cooperative control signal set by the API ("cancel" | "pause"); the worker
     # observes it at batch boundaries and transitions the run accordingly, then
     # clears it. NULL = no pending control request.
