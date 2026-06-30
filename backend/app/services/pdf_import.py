@@ -230,10 +230,15 @@ async def run_pdf_extraction(service, db, source, run, run_pk,
                     status.get("task_status"), status.get("task_position"),
                     time.monotonic() - _t0)
 
+    await service._raise_if_controlled(db, run_pk)
     converted = await convert_pdf(pdf_bytes, on_poll=_on_poll)
     run.current_phase = "pdf_split"
     await db.commit()
-    rendered_segments = split_into_segments(converted, outline)
+    await service._raise_if_controlled(db, run_pk)
+    # split_into_segments is CPU-heavy on a large document; run it off the event
+    # loop so the worker heartbeat keeps ticking (otherwise the run is reaped as
+    # "worker lost").
+    rendered_segments = await asyncio.to_thread(split_into_segments, converted, outline)
     logger.info("pdf_split: %d article segments (%s engine)",
                 len(rendered_segments), converted.engine)
 
@@ -284,7 +289,9 @@ async def run_pdf_extraction(service, db, source, run, run_pk,
     run.articles_total = sum(1 for inp in article_inputs if inp[5].strip())
     await db.commit()
 
-    for toc_id, sort_order, title, topic_key, url, md, images in article_inputs:
+    for idx, (toc_id, sort_order, title, topic_key, url, md, images) in enumerate(article_inputs):
+        if idx % 10 == 0:
+            await service._raise_if_controlled(db, run_pk)
         await service.process_article_result(
             db, source.id, run_pk, url=url, markdown_content=md, doc_html="",
             toc_entry_id=toc_id, sort_order=sort_order, title=title,
