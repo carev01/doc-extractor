@@ -147,3 +147,15 @@ async def test_non_transient_404_raises_without_retry(fast_client):
     with pytest.raises(BrowserlessError):
         await fast_client.expand_toc("https://docs/x", section_id="nav__a", client=seq)
     assert seq.calls == 1  # 404 not in TRANSIENT_STATUS → no retry
+
+
+def test_download_and_warmup_snippets_spoof_a_real_ua():
+    # Browserless's default Chrome UA contains "HeadlessChrome", which Akamai's
+    # bot manager hard-403s (verified on www.rubrik.com). Both the binary-download
+    # and warm-up-render functions must set a real Chrome UA before navigating.
+    from app.services.browserless import _DOWNLOAD_BYTES_CODE, _WARMUP_RENDER_CODE
+
+    for code in (_DOWNLOAD_BYTES_CODE, _WARMUP_RENDER_CODE):
+        assert "page.setUserAgent(" in code
+        assert "HeadlessChrome" not in code
+        assert "Chrome/" in code  # a normal desktop Chrome token
