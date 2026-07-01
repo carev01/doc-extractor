@@ -394,13 +394,19 @@ export default async function ({ page, context }) {
 
 
 # Browserless /function that downloads a binary asset (e.g. a PDF) in real Chrome:
-# inject the realm cookies, navigate to the asset's origin, then do an in-page
-# same-origin fetch and return the bytes base64-encoded. Uses the browser's TLS +
-# cookies, which defeats CDN bot-fingerprinting that serves a login/HTML shell to
-# plain HTTP clients (e.g. docs.cohesity.com).
+# spoof a real Chrome UA (Browserless's default UA contains "HeadlessChrome",
+# which Akamai's bot manager hard-403s — verified on www.rubrik.com, where both
+# the origin warm-up and the asset return 403 with the headless UA but 200 with a
+# normal one), inject the realm cookies, navigate to the asset's origin, then do
+# an in-page same-origin fetch and return the bytes base64-encoded. Uses the
+# browser's TLS + cookies, which defeats CDN bot-fingerprinting that serves a
+# login/HTML shell to plain HTTP clients (e.g. docs.cohesity.com).
 _DOWNLOAD_BYTES_CODE = r"""
 export default async function ({ page, context }) {
   const { url, authState } = context;
+  const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  await page.setUserAgent(ua);
+  await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
   if (authState && authState.cookies && authState.cookies.length) await page.setCookie(...authState.cookies);
   const origin = new URL(url).origin;
   await page.goto(origin, { waitUntil: 'domcontentloaded', timeout: 60000 });
