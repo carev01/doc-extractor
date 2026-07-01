@@ -1,0 +1,12 @@
+{
+  "taskId": "5e445e63-3d8f-437a-867a-0b9a89e94bac",
+  "productId": "8eb285ba-9606-44dc-bec0-42793c50fcfd",
+  "createdAt": "2026-07-01T17:01:04.016Z",
+  "strategy": "worktree",
+  "branch": "autopilot/enhanced-api-filtering-and-search",
+  "baseBranch": "main",
+  "baseCommit": "8caa250164ed52734ad607e87c985591c114dc70",
+  "status": "active",
+  "agentId": "f84f4812-90aa-4c0e-8f7b-26cf437538ec",
+  "isolatedPort": 4200
+}
