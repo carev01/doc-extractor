@@ -118,7 +118,10 @@ class Settings(BaseSettings):
     pdf_vlm_base_url: str = "https://openrouter.ai/api/v1/chat/completions"
     pdf_vlm_api_key: str = ""                 # Bearer key (env only)
     pdf_vlm_model: str = "qwen/qwen3-vl-32b-instruct"
-    pdf_vlm_max_pages_per_run: int = 30
+    # Per-run VLM escalation page budget, as a percentage of the document's total
+    # page count (scales with document size instead of a fixed cap). e.g. 10.0 =>
+    # up to ~10% of pages may be VLM-re-converted per run; rounded up, min 1 page.
+    pdf_vlm_max_pages_pct: float = 10.0
     # Circuit breaker: if this many escalation segments fail consecutively (e.g.
     # docling-serve's VLM pipeline is misconfigured or its upstream model is
     # down), stop escalating for the rest of the run instead of hammering the
