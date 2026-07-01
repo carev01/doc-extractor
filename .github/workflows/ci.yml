@@ -30,6 +30,11 @@ jobs:
       DOCEXTRACTOR_DATABASE_URL: postgresql+asyncpg://docextractor:docextractor_dev@localhost:5432/docextractor
       DOCEXTRACTOR_DATABASE_URL_SYNC: postgresql+psycopg2://docextractor:docextractor_dev@localhost:5432/docextractor
       DOCEXTRACTOR_FIRECRAWL_API_URL: http://firecrawl.invalid
+      # No docling-serve in CI. Collapse its transient-retry window to 0 so a test
+      # that accidentally hits the real convert path fails over immediately
+      # instead of hanging out the default 120s window per call. The resilience
+      # tests set this window explicitly, so they're unaffected.
+      DOCEXTRACTOR_DOCLING_SERVE_TRANSIENT_WINDOW: "0"
       PGPASSWORD: docextractor_dev
     steps:
       - uses: actions/checkout@v7

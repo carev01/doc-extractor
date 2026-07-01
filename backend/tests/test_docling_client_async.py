@@ -89,6 +89,9 @@ async def test_convert_async_tolerates_transient_poll_error(monkeypatch):
     monkeypatch.setattr(dc.settings, "docling_serve_url", "http://d.test")
     monkeypatch.setattr(dc.settings, "docling_serve_api_key", "k")
     monkeypatch.setattr(dc.settings, "docling_serve_poll_interval", 0.0)
+    # Exercise the retry window explicitly rather than depending on the ambient
+    # default (CI pins it to 0 so accidental real-docling calls fail fast).
+    monkeypatch.setattr(dc.settings, "docling_serve_transient_window", 120.0)
     monkeypatch.setattr(dc.httpx, "AsyncClient", _FlakyClient)
     doc = await dc.convert_async(b"%PDF")
     assert doc["md_content"] == "# OK"   # recovered despite the transient 502

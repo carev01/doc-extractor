@@ -37,6 +37,18 @@ async def factory():
     await engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+def _force_pymupdf(monkeypatch):
+    # These tests exercise image persistence through the real run_pdf_extraction
+    # pipeline (convert_pdf is NOT mocked). There is no docling-serve in CI, so
+    # convert_pdf would attempt docling, ride out the full transient-retry window
+    # (docling_serve_transient_window, 120s) against the unreachable host, and
+    # only THEN fall back to pymupdf — adding ~2 min per run. Force the pymupdf
+    # engine directly: it's the same engine the fallback used (these assertions
+    # have always run on pymupdf output), just without the docling detour.
+    monkeypatch.setattr(settings, "pdf_converter", "pymupdf")
+
+
 def _pix(rgb):
     p = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 64, 64)); p.set_rect(p.irect, rgb)
     return p
