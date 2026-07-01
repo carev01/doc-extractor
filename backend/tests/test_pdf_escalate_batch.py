@@ -21,7 +21,7 @@ async def test_escalate_segments_only_exclusive_flagged(monkeypatch):
     conv = ConvertedDoc(markdown="", headings=[], page_texts=["x"*50, "y"*50],
                         table_pages=set(), images=[], engine="docling")
     monkeypatch.setattr(esc.settings, "pdf_vlm_escalation_enabled", True)
-    monkeypatch.setattr(esc.settings, "pdf_vlm_max_pages_per_run", 30)
+    monkeypatch.setattr(esc.settings, "pdf_vlm_max_pages_pct", 100.0)  # budget ≥ all pages
     calls = []
     async def fake_one(pdf_bytes, segment):
         calls.append(segment.title)
@@ -46,7 +46,7 @@ async def test_escalate_segments_circuit_breaks_on_consecutive_failures(monkeypa
     conv = ConvertedDoc(markdown="", headings=[], page_texts=["x" * 50] * 10,
                         table_pages=set(), images=[], engine="docling")
     monkeypatch.setattr(esc.settings, "pdf_vlm_escalation_enabled", True)
-    monkeypatch.setattr(esc.settings, "pdf_vlm_max_pages_per_run", 30)
+    monkeypatch.setattr(esc.settings, "pdf_vlm_max_pages_pct", 100.0)  # budget ≥ all pages
     monkeypatch.setattr(esc.settings, "pdf_vlm_max_consecutive_failures", 3)
     calls = []
     async def fail_one(pdf_bytes, segment):
@@ -75,7 +75,7 @@ async def test_escalate_segments_failure_does_not_consume_budget(monkeypatch):
     conv = ConvertedDoc(markdown="", headings=[], page_texts=["x" * 50] * 2,
                         table_pages=set(), images=[], engine="docling")
     monkeypatch.setattr(esc.settings, "pdf_vlm_escalation_enabled", True)
-    monkeypatch.setattr(esc.settings, "pdf_vlm_max_pages_per_run", 1)  # budget = 1 page
+    monkeypatch.setattr(esc.settings, "pdf_vlm_max_pages_pct", 50.0)  # 50% of 2 pages = 1
     monkeypatch.setattr(esc.settings, "pdf_vlm_max_consecutive_failures", 5)
     seq = [None, "## B\n\nfixed\n"]
     async def one(pdf_bytes, segment):
@@ -86,6 +86,49 @@ async def test_escalate_segments_failure_does_not_consume_budget(monkeypatch):
     # A failed (None) → budget untouched; B succeeded within the 1-page budget.
     assert segs[1].markdown == "## B\n\nfixed\n"
     assert failed == [0]  # only the first segment is pending
+
+
+@pytest.mark.asyncio
+async def test_escalate_budget_is_percentage_of_total_pages(monkeypatch):
+    # 100-page doc, 10% budget → 10 pages. 12 single-page flagged segments all
+    # succeed, so exactly 10 are escalated and the last 2 are budget-DEFERRED —
+    # deferrals are not failures, so nothing is reported pending.
+    segs = [
+        _seg(f"S{i}", i, i, "## x\n\n| a | b |\n| --- | --- |\n| 1 | 2 | 3 |\n")
+        for i in range(12)
+    ]
+    conv = ConvertedDoc(markdown="", headings=[], page_texts=["x" * 50] * 100,
+                        table_pages=set(), images=[], engine="docling")
+    monkeypatch.setattr(esc.settings, "pdf_vlm_escalation_enabled", True)
+    monkeypatch.setattr(esc.settings, "pdf_vlm_max_pages_pct", 10.0)  # 10% of 100 = 10
+    calls = []
+    async def ok_one(pdf_bytes, segment):
+        calls.append(segment.title)
+        return "## x\n\nfixed\n"
+    monkeypatch.setattr(esc, "escalate_segment", ok_one)
+
+    failed = await esc.escalate_segments(b"%PDF", segs, conv)
+    assert len(calls) == 10           # budget = 10% of 100 pages
+    assert failed == []               # budget-deferred segments are not failures
+
+
+@pytest.mark.asyncio
+async def test_escalate_budget_rounds_up_min_one(monkeypatch):
+    # A tiny doc (3 pages) at 10% rounds up to a 1-page budget, so a flagged
+    # single-page segment still gets one escalation attempt.
+    seg = _seg("Only", 0, 0, "## Only\n\n| a | b |\n| --- | --- |\n| 1 | 2 | 3 |\n")
+    conv = ConvertedDoc(markdown="", headings=[], page_texts=["x" * 50] * 3,
+                        table_pages=set(), images=[], engine="docling")
+    monkeypatch.setattr(esc.settings, "pdf_vlm_escalation_enabled", True)
+    monkeypatch.setattr(esc.settings, "pdf_vlm_max_pages_pct", 10.0)  # ceil(0.3) = 1
+    calls = []
+    async def ok_one(pdf_bytes, segment):
+        calls.append(segment.title)
+        return "## Only\n\nfixed\n"
+    monkeypatch.setattr(esc, "escalate_segment", ok_one)
+
+    await esc.escalate_segments(b"%PDF", [seg], conv)
+    assert calls == ["Only"]
 
 
 @pytest.mark.asyncio

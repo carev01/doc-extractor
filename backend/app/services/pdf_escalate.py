@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 
 from app.core.config import settings
@@ -104,8 +105,9 @@ async def escalate_segment(pdf_bytes: bytes, segment: RenderedSegment) -> "str |
 async def escalate_segments(pdf_bytes, segments, converted, on_event=None) -> list[int]:
     """Re-convert low-confidence segments in place via the VLM, but only those
     that exclusively own their page range (escalating a shared page would pull in
-    neighbours' content and reintroduce cross-section bleed). Bounded by the
-    per-run page budget.
+    neighbours' content and reintroduce cross-section bleed). Bounded by a per-run
+    page budget sized as a percentage of the document's total pages
+    (``pdf_vlm_max_pages_pct``), so the allowance scales with document size.
 
     Returns the indices (into ``segments``) of flagged segments that genuinely
     FAILED to escalate — a docling-serve error, or skipped because the circuit
@@ -130,10 +132,18 @@ async def escalate_segments(pdf_bytes, segments, converted, on_event=None) -> li
         (i, s) for i, s in enumerate(segments)
         if _exclusive(s) and score_segment(s, converted)
     ]
+    # Budget = a percentage of the document's total pages (rounded up, min 1), so
+    # a large guide gets a proportionally larger allowance than a fixed cap.
+    total_pages = len(converted.page_texts) or (
+        max((s.page_end for s in segments), default=-1) + 1)
+    budget = max(1, math.ceil(total_pages * settings.pdf_vlm_max_pages_pct / 100.0))
     if flagged:
-        logger.info("pdf_escalate: %d/%d segments flagged; re-converting via VLM",
-                    len(flagged), len(segments))
-    budget = settings.pdf_vlm_max_pages_per_run
+        logger.info(
+            "pdf_escalate: %d/%d segments flagged; re-converting via VLM "
+            "(budget %d/%d pages, %.0f%%)",
+            len(flagged), len(segments), budget, total_pages,
+            settings.pdf_vlm_max_pages_pct,
+        )
     total = len(flagged)
     done = 0
     consecutive_failures = 0

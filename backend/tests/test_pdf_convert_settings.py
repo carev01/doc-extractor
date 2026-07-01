@@ -28,15 +28,15 @@ def test_pdf_converter_defaults():
     assert s.pdf_vlm_base_url == "https://openrouter.ai/api/v1/chat/completions"
     assert s.pdf_vlm_api_key == ""
     assert s.pdf_vlm_model == "qwen/qwen3-vl-32b-instruct"
-    assert s.pdf_vlm_max_pages_per_run == 30
+    assert s.pdf_vlm_max_pages_pct == 10.0
 
 
 def test_pdf_settings_override_from_env_kwargs():
     s = _settings(pdf_converter="pymupdf", docling_serve_url="http://x.local",
-                  pdf_vlm_max_pages_per_run=5)
+                  pdf_vlm_max_pages_pct=25)
     assert s.pdf_converter == "pymupdf"
     assert s.docling_serve_url == "http://x.local"
-    assert s.pdf_vlm_max_pages_per_run == 5
+    assert s.pdf_vlm_max_pages_pct == 25
 
 
 def test_pdf_vlm_dpi_removed():
