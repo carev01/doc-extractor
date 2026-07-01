@@ -1,16 +1,18 @@
 """Article query routes."""
 
+import base64
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func
+from sqlalchemy import select, func, and_, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.models.article import Article
 from app.models.article_version import ArticleVersion
-from app.models.extraction_run import ExtractionRun
+from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.product import Product
 from app.models.source import DocumentationSource
 from app.models.toc import TOCEntry
@@ -23,6 +25,15 @@ from app.schemas.article import (
     ChapterRef,
     TOCEntryResponse,
     TOCResponse,
+)
+from app.schemas.search import (
+    ArticleSearchResponse,
+    ArticleSearchResultItem,
+    ChangeStatus,
+    FacetCount,
+    Facets,
+    encode_cursor,
+    decode_cursor,
 )
 from app.schemas.version import (
     ArticleVersionResponse,
@@ -43,38 +54,389 @@ async def _get_article_or_404(db: AsyncSession, article_id: uuid.UUID) -> Articl
     return article
 
 
-@router.get("", response_model=ArticleListResponse)
+@router.get("", response_model=ArticleSearchResponse)
 async def list_articles(
     source_id: uuid.UUID | None = Query(None),
     toc_entry_id: uuid.UUID | None = Query(None),
     search: str | None = Query(None),
+    # ── New enhanced filtering params (all optional, backward compatible) ──
+    q: str | None = Query(None, description="Full-text search via PostgreSQL FTS5"),
+    date_from: datetime | None = Query(None, alias="from", description="Filter articles extracted on or after this ISO datetime"),
+    date_to: datetime | None = Query(None, alias="to", description="Filter articles extracted on or before this ISO datetime"),
+    status: str | None = Query(None, description="Filter by change status: new, updated, or unchanged"),
+    cursor: str | None = Query(None, description="Base64-encoded cursor for cursor-based pagination"),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ):
-    """List articles with optional filtering."""
+    """List articles with optional filtering, full-text search, and cursor pagination.
+
+    Supports both the legacy offset-based pagination (``skip`` + ``limit``) and
+    cursor-based pagination (``cursor`` + ``limit``).  When ``cursor`` is provided
+    it takes precedence over ``skip``.
+
+    New parameters ``q``, ``from``, ``to``, ``status`` add FTS5 search, date-range
+    filtering, and change-status filtering respectively.  All are optional — when
+    omitted, the endpoint behaves identically to the original implementation.
+
+    The response includes ``facets`` with counts per status and per date bucket,
+    scoped to the current filter set.
+    """
+    # ── Validate status param ──
+    if status is not None and status not in ("new", "updated", "unchanged"):
+        raise HTTPException(
+            status_code=422,
+            detail="status must be one of: new, updated, unchanged",
+        )
+
+    # ── Decode cursor if provided ──
+    cursor_sort_value = None
+    is_cursor_mode = cursor is not None
+    if is_cursor_mode:
+        try:
+            cursor_key, cursor_val = decode_cursor(cursor)
+            cursor_sort_value = int(cursor_val)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    # ── Determine if any new-params are active ──
+    using_enhanced = any([q, date_from, date_to, status, is_cursor_mode])
+
+    # ── Build base query ──
     base_query = select(Article)
     count_query = select(func.count(Article.id))
 
+    # Existing filters (backward compat)
     if source_id:
         base_query = base_query.where(Article.source_id == source_id)
         count_query = count_query.where(Article.source_id == source_id)
     if toc_entry_id:
         base_query = base_query.where(Article.toc_entry_id == toc_entry_id)
         count_query = count_query.where(Article.toc_entry_id == toc_entry_id)
-    if search:
+
+    # Legacy ILIKE search on title — still supported for backward compat.
+    # When ``q`` is also provided, ``q`` takes precedence (FTS5).
+    if search and not q:
         base_query = base_query.where(Article.title.ilike(f"%{search}%"))
         count_query = count_query.where(Article.title.ilike(f"%{search}%"))
 
-    total_result = await db.execute(count_query)
-    total = total_result.scalar()
+    # ── FTS5 full-text search ──
+    # search_vector is a GENERATED ALWAYS tsvector column — not a SQLAlchemy
+    # mapped column — so we reference it via ``text()`` / ``func.ts_rank`` with
+    # ``literal_column`` to keep it outside the ORM's insert/update path.
+    fts_rank_col = None
+    if q:
+        # plainto_tsquery handles user input safely (no special operators).
+        ts_query = func.plainto_tsquery("english", q)
+        from sqlalchemy import literal_column
+        sv = literal_column("articles.search_vector")
+        base_query = base_query.where(sv.op("@@")(ts_query))
+        count_query = count_query.where(sv.op("@@")(ts_query))
+        # ts_rank for relevance ordering
+        fts_rank_col = func.ts_rank(sv, ts_query).label("search_rank")
+        base_query = base_query.add_columns(fts_rank_col)
 
-    result = await db.execute(
-        base_query.order_by(Article.sort_order).offset(skip).limit(limit)
+    # ── Date range filtering (on extracted_at) ──
+    if date_from:
+        base_query = base_query.where(Article.extracted_at >= date_from)
+        count_query = count_query.where(Article.extracted_at >= date_from)
+    if date_to:
+        base_query = base_query.where(Article.extracted_at <= date_to)
+        count_query = count_query.where(Article.extracted_at <= date_to)
+
+    # ── Change-status filtering ──
+    # Build on existing tracking: "new" = created_run_id is the latest run,
+    # "updated" = has an ArticleVersion in the latest run,
+    # "unchanged" = everything else.
+    if status:
+        # Determine the latest completed run (per source or global).
+        latest_run_subq = (
+            select(ExtractionRun.id, ExtractionRun.started_at)
+            .where(ExtractionRun.status == RunStatus.COMPLETED)
+        )
+        if source_id:
+            latest_run_subq = latest_run_subq.where(
+                ExtractionRun.source_id == source_id
+            )
+        latest_run_subq = latest_run_subq.order_by(
+            ExtractionRun.started_at.desc()
+        ).limit(1).subquery()
+
+        if status == "new":
+            # Articles whose created_run_id matches the latest run.
+            base_query = base_query.where(
+                Article.created_run_id == select(latest_run_subq.c.id)
+            )
+            count_query = count_query.where(
+                Article.created_run_id == select(latest_run_subq.c.id)
+            )
+        elif status == "updated":
+            # Articles that have an ArticleVersion in the latest run.
+            latest_run_id_subq = select(latest_run_subq.c.id)
+            updated_article_ids = (
+                select(ArticleVersion.article_id)
+                .where(ArticleVersion.extraction_run_id == latest_run_id_subq)
+                .distinct()
+            ).subquery()
+            base_query = base_query.where(Article.id.in_(select(updated_article_ids)))
+            count_query = count_query.where(Article.id.in_(select(updated_article_ids)))
+        elif status == "unchanged":
+            # Articles NOT new and NOT updated in the latest run.
+            latest_run_id_subq = select(latest_run_subq.c.id)
+            new_or_updated_ids = (
+                select(Article.id)
+                .outerjoin(ArticleVersion, ArticleVersion.article_id == Article.id)
+                .where(
+                    or_(
+                        Article.created_run_id == latest_run_id_subq,
+                        ArticleVersion.extraction_run_id == latest_run_id_subq,
+                    )
+                )
+                .distinct()
+            ).subquery()
+            base_query = base_query.where(~Article.id.in_(select(new_or_updated_ids)))
+            count_query = count_query.where(~Article.id.in_(select(new_or_updated_ids)))
+
+    # ── Total count ──
+    total = (await db.execute(count_query)).scalar()
+
+    # ── Ordering ──
+    if q and fts_rank_col is not None:
+        # FTS5 relevance ranking when searching
+        base_query = base_query.order_by(text("search_rank DESC"), Article.sort_order)
+    else:
+        base_query = base_query.order_by(Article.sort_order)
+
+    # ── Pagination ──
+    if is_cursor_mode:
+        # Cursor-based: filter by sort_order > cursor_sort_value
+        base_query = base_query.where(Article.sort_order > cursor_sort_value)
+        base_query = base_query.limit(limit + 1)  # fetch one extra to check has_more
+    else:
+        base_query = base_query.offset(skip).limit(limit)
+
+    # ── Execute query ──
+    result = await db.execute(base_query)
+    rows = result.all()
+
+    # ── Determine has_more and next_cursor ──
+    has_more = False
+    next_cursor = None
+    if is_cursor_mode and len(rows) > limit:
+        has_more = True
+        rows = rows[:limit]  # drop the extra row
+        last_row = rows[-1]
+        # rows are Article objects (with extra columns if FTS)
+        last_sort_order = last_row.sort_order if hasattr(last_row, 'sort_order') else last_row[0].sort_order
+        next_cursor = encode_cursor("sort_order", str(last_sort_order))
+
+    # ── Extract Article objects from rows (handle both plain and add_columns) ──
+    articles = []
+    search_ranks = []
+    for row in rows:
+        if isinstance(row, Article):
+            articles.append(row)
+            search_ranks.append(None)
+        else:
+            # Row is a tuple (Article, search_rank) when FTS is active
+            articles.append(row[0])
+            search_ranks.append(row[1] if len(row) > 1 else None)
+
+    # ── Compute change_status for each article (if status filter or enhanced) ──
+    article_statuses = {}
+    if using_enhanced or status:
+        article_statuses = await _compute_change_statuses(db, [a.id for a in articles], source_id)
+
+    # ── Build result items ──
+    result_items = []
+    for i, article in enumerate(articles):
+        result_items.append(ArticleSearchResultItem(
+            id=article.id,
+            source_id=article.source_id,
+            toc_entry_id=article.toc_entry_id,
+            title=article.title,
+            source_url=article.source_url,
+            last_updated_at=article.last_updated_at,
+            sort_order=article.sort_order,
+            estimated_tokens=article.estimated_tokens,
+            content_size_bytes=article.content_size_bytes,
+            created_at=article.created_at,
+            extracted_at=article.extracted_at,
+            search_rank=search_ranks[i],
+            change_status=article_statuses.get(article.id),
+        ))
+
+    # ── Compute facets (only in enhanced mode to avoid overhead) ──
+    facets = None
+    if using_enhanced:
+        facets = await _compute_facets(db, source_id, toc_entry_id, q, date_from, date_to, search)
+
+    return ArticleSearchResponse(
+        articles=result_items,
+        total=total,
+        next_cursor=next_cursor,
+        has_more=has_more,
+        limit=limit,
+        facets=facets,
     )
-    articles = result.scalars().all()
 
-    return ArticleListResponse(articles=articles, total=total)
+
+async def _compute_change_statuses(
+    db: AsyncSession,
+    article_ids: list[uuid.UUID],
+    source_id: uuid.UUID | None,
+) -> dict[uuid.UUID, str]:
+    """Compute change_status for a batch of articles using existing tracking.
+
+    "new": created_run_id matches the latest completed run.
+    "updated": has an ArticleVersion in the latest completed run.
+    "unchanged": everything else.
+    """
+    if not article_ids:
+        return {}
+
+    # Latest completed run
+    latest_run_q = (
+        select(ExtractionRun.id, ExtractionRun.started_at)
+        .where(ExtractionRun.status == RunStatus.COMPLETED)
+    )
+    if source_id:
+        latest_run_q = latest_run_q.where(ExtractionRun.source_id == source_id)
+    latest_run_q = latest_run_q.order_by(ExtractionRun.started_at.desc()).limit(1)
+    latest_run = (await db.execute(latest_run_q)).first()
+
+    if not latest_run:
+        return {aid: "unchanged" for aid in article_ids}
+
+    latest_run_id = latest_run.id
+
+    # Articles created in the latest run = "new"
+    new_ids = set()
+    for (aid,) in await db.execute(
+        select(Article.id)
+        .where(
+            Article.id.in_(article_ids),
+            Article.created_run_id == latest_run_id,
+        )
+    ):
+        new_ids.add(aid)
+
+    # Articles with versions in the latest run = "updated"
+    updated_ids = set()
+    for (aid,) in await db.execute(
+        select(ArticleVersion.article_id)
+        .where(
+            ArticleVersion.article_id.in_(article_ids),
+            ArticleVersion.extraction_run_id == latest_run_id,
+        )
+    ):
+        updated_ids.add(aid)
+
+    statuses = {}
+    for aid in article_ids:
+        if aid in new_ids:
+            statuses[aid] = "new"
+        elif aid in updated_ids:
+            statuses[aid] = "updated"
+        else:
+            statuses[aid] = "unchanged"
+    return statuses
+
+
+async def _compute_facets(
+    db: AsyncSession,
+    source_id: uuid.UUID | None,
+    toc_entry_id: uuid.UUID | None,
+    q: str | None,
+    date_from: datetime | None,
+    date_to: datetime | None,
+    search: str | None,
+) -> Facets:
+    """Compute facet counts per status and per date bucket, scoped to the
+    current filter set (excluding the dimension being faceted)."""
+    # Status facets: counts of new/updated/unchanged
+    status_facets = []
+
+    # Build the base filter (all filters EXCEPT status, since status facets
+    # should show what the counts would be if the user removed the status filter)
+    def _base_filter(query):
+        if source_id:
+            query = query.where(Article.source_id == source_id)
+        if toc_entry_id:
+            query = query.where(Article.toc_entry_id == toc_entry_id)
+        if q:
+            from sqlalchemy import literal_column
+            sv = literal_column("articles.search_vector")
+            ts_q = func.plainto_tsquery("english", q)
+            query = query.where(sv.op("@@")(ts_q))
+        if date_from:
+            query = query.where(Article.extracted_at >= date_from)
+        if date_to:
+            query = query.where(Article.extracted_at <= date_to)
+        if search and not q:
+            query = query.where(Article.title.ilike(f"%{search}%"))
+        return query
+
+    # Latest run for status classification
+    latest_run_q = (
+        select(ExtractionRun.id)
+        .where(ExtractionRun.status == RunStatus.COMPLETED)
+    )
+    if source_id:
+        latest_run_q = latest_run_q.where(ExtractionRun.source_id == source_id)
+    latest_run_q = latest_run_q.order_by(ExtractionRun.started_at.desc()).limit(1)
+    latest_run_id = (await db.execute(latest_run_q)).scalar()
+
+    if latest_run_id:
+        for st in ("new", "updated", "unchanged"):
+            count_q = _base_filter(select(func.count(Article.id)))
+            if st == "new":
+                count_q = count_q.where(Article.created_run_id == latest_run_id)
+            elif st == "updated":
+                updated_ids = (
+                    select(ArticleVersion.article_id)
+                    .where(ArticleVersion.extraction_run_id == latest_run_id)
+                    .distinct()
+                ).subquery()
+                count_q = count_q.where(Article.id.in_(select(updated_ids)))
+            else:  # unchanged
+                new_or_updated = (
+                    select(Article.id)
+                    .outerjoin(
+                        ArticleVersion, ArticleVersion.article_id == Article.id
+                    )
+                    .where(
+                        or_(
+                            Article.created_run_id == latest_run_id,
+                            ArticleVersion.extraction_run_id == latest_run_id,
+                        )
+                    )
+                    .distinct()
+                ).subquery()
+                count_q = count_q.where(~Article.id.in_(select(new_or_updated)))
+            count = (await db.execute(count_q)).scalar()
+            status_facets.append(FacetCount(label=st, count=count or 0))
+    else:
+        # No completed runs — all articles are "unchanged"
+        total_q = _base_filter(select(func.count(Article.id)))
+        total = (await db.execute(total_q)).scalar() or 0
+        status_facets = [
+            FacetCount(label="new", count=0),
+            FacetCount(label="updated", count=0),
+            FacetCount(label="unchanged", count=total),
+        ]
+
+    # Date bucket facets: counts per month (truncated from extracted_at)
+    date_bucket_q = _base_filter(
+        select(
+            func.to_char(Article.extracted_at, "YYYY-MM").label("bucket"),
+            func.count(Article.id).label("cnt"),
+        ).group_by(text("bucket")).order_by(text("bucket"))
+    )
+    date_rows = (await db.execute(date_bucket_q)).all()
+    date_facets = [FacetCount(label=r.bucket, count=r.cnt) for r in date_rows]
+
+    return Facets(status=status_facets, date_bucket=date_facets)
 
 
 @router.get("/{article_id}", response_model=ArticleDetailResponse)
