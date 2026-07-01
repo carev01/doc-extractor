@@ -5,11 +5,12 @@ tables. score_segment flags segments worth re-doing; escalate_segment re-convert
 them via docling-serve's VLM pipeline (pointed at OpenRouter)."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
 from app.core.config import settings
-from app.services.pdf_convert import ConvertedDoc, RenderedSegment
+from app.services.pdf_convert import ConvertedDoc, RenderedSegment, _extract_page_range
 
 logger = logging.getLogger(__name__)
 
@@ -76,9 +77,14 @@ async def escalate_segment(pdf_bytes: bytes, segment: RenderedSegment) -> "str |
     can tell a genuine service failure apart from a no-op improvement and trip
     its circuit breaker."""
     try:
+        # Extract the segment's pages into a standalone PDF and send THAT, rather
+        # than the whole document + a page_range option: docling-serve rejects a
+        # large full-doc upload as "Input document is not valid" (the same reason
+        # the batched conversion extracts each batch — see _extract_page_range).
+        page_bytes = await asyncio.to_thread(
+            _extract_page_range, pdf_bytes, segment.page_start + 1, segment.page_end + 1)
         doc = await docling_client.convert_async(
-            pdf_bytes,
-            page_range=(segment.page_start + 1, segment.page_end + 1),
+            page_bytes,
             use_vlm_api=True,
             image_export_mode="placeholder",
         )

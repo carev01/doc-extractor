@@ -179,3 +179,71 @@ async def test_convert_async_gives_up_after_transient_window(monkeypatch):
     monkeypatch.setattr(dc.httpx, "AsyncClient", _FlakyClient)  # poll GET 502s first
     with pytest.raises(dc.DoclingServeError):
         await dc.convert_async(b"%PDF")
+
+
+class _Resp404:
+    """A response whose raise_for_status raises a 404 HTTPStatusError (task lost)."""
+    def __init__(self):
+        import httpx
+        self._req = httpx.Request("GET", "http://d.test/x")
+        self._response = httpx.Response(404, request=self._req)
+    def raise_for_status(self):
+        import httpx
+        raise httpx.HTTPStatusError("404 Not Found", request=self._req, response=self._response)
+    def json(self):
+        return {}
+
+
+class _RestartClient:
+    """submit→T1; poll T1 → 404 (docling restarted, task lost); resubmit→T2;
+    poll T2 success; result."""
+    def __init__(self, *a, **k):
+        self.submits = 0
+    async def __aenter__(self): return self
+    async def __aexit__(self, *a): return False
+    async def post(self, url, headers=None, json=None):
+        self.submits += 1
+        return _Resp({"task_id": f"T{self.submits}", "task_status": "pending"})
+    async def get(self, url, headers=None):
+        if "/T1" in url:
+            return _Resp404()                              # first task is gone
+        if "poll" in url:
+            return _Resp({"task_id": "T2", "task_status": "success"})
+        return _Resp({"status": "success", "document": {"md_content": "# RESUB", "json_content": {}}})
+
+
+@pytest.mark.asyncio
+async def test_convert_async_resubmits_on_task_lost_404(monkeypatch):
+    # A restart drops the task id → poll 404 → resubmit a fresh job rather than
+    # abandoning the document (which would fall back to pymupdf).
+    monkeypatch.setattr(dc.settings, "docling_serve_url", "http://d.test")
+    monkeypatch.setattr(dc.settings, "docling_serve_api_key", "k")
+    monkeypatch.setattr(dc.settings, "docling_serve_poll_interval", 0.0)
+    monkeypatch.setattr(dc.settings, "docling_serve_max_resubmits", 2)
+    monkeypatch.setattr(dc.httpx, "AsyncClient", _RestartClient)
+    doc = await dc.convert_async(b"%PDF")
+    assert doc["md_content"] == "# RESUB"       # recovered on the resubmitted job
+
+
+class _AlwaysLostClient:
+    """Every task 404s on poll — docling keeps dropping it."""
+    def __init__(self, *a, **k):
+        self.submits = 0
+    async def __aenter__(self): return self
+    async def __aexit__(self, *a): return False
+    async def post(self, url, headers=None, json=None):
+        self.submits += 1
+        return _Resp({"task_id": f"T{self.submits}", "task_status": "pending"})
+    async def get(self, url, headers=None):
+        return _Resp404()
+
+
+@pytest.mark.asyncio
+async def test_convert_async_gives_up_after_max_resubmits(monkeypatch):
+    monkeypatch.setattr(dc.settings, "docling_serve_url", "http://d.test")
+    monkeypatch.setattr(dc.settings, "docling_serve_api_key", "k")
+    monkeypatch.setattr(dc.settings, "docling_serve_poll_interval", 0.0)
+    monkeypatch.setattr(dc.settings, "docling_serve_max_resubmits", 1)
+    monkeypatch.setattr(dc.httpx, "AsyncClient", _AlwaysLostClient)
+    with pytest.raises(dc.DoclingServeError):     # → convert_pdf falls back to pymupdf
+        await dc.convert_async(b"%PDF")
