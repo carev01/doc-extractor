@@ -18,6 +18,7 @@ data:
   DOCEXTRACTOR_PDF_VLM_ESCALATION_ENABLED: {{ (.Values.pdfVlm | default dict).escalationEnabled | default true | quote }}
   DOCEXTRACTOR_PDF_VLM_BASE_URL: {{ (.Values.pdfVlm | default dict).baseUrl | default "https://openrouter.ai/api/v1/chat/completions" | quote }}
   DOCEXTRACTOR_PDF_VLM_MODEL: {{ (.Values.pdfVlm | default dict).model | default "qwen/qwen3-vl-32b-instruct" | quote }}
+  DOCEXTRACTOR_PDF_VLM_MAX_PAGES_PCT: {{ (.Values.pdfVlm | default dict).maxPagesPct | default 10.0 | quote }}
   DOCEXTRACTOR_EXPORT_RETENTION_DAYS: {{ .Values.export.retentionDays | quote }}
   DOCEXTRACTOR_EXPORT_MAX_TOTAL_BYTES: {{ .Values.export.maxTotalBytes | quote }}
   DOCEXTRACTOR_BROWSERLESS_URL: {{ (.Values.browserless | default dict).url | default "http://browserless.browserless.svc.cluster.local:3000" | quote }}

@@ -70,6 +70,9 @@ pdfVlm:
   baseUrl: https://openrouter.ai/api/v1/chat/completions
   model: qwen/qwen3-vl-32b-instruct
   apiKey: ""                      # OpenRouter bearer key (OVERRIDE)
+  # Per-run escalation page budget as a percentage of the document's total pages
+  # (rounded up, min 1 page). Scales the VLM allowance with document size.
+  maxPagesPct: 10.0
 
 # -- Master key for encrypting authenticated-source credentials/sessions at rest
 # (Fernet, urlsafe base64). REQUIRED to enable authenticated sources; the auth
