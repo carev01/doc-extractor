@@ -16,36 +16,44 @@ def _seg(md="broken", title="Fixed", level=1, p0=0, p1=0):
 
 
 @pytest.mark.asyncio
-async def test_escalate_uses_async_vlm_endpoint_and_page_range(monkeypatch):
-    # Regression: escalation must go through the async convert API
-    # (POST /v1/convert/source/async), not the legacy synchronous endpoint
-    # (/v1/convert/source) which this docling-serve deployment 404s on. The
-    # 404 was silently swallowed, making VLM escalation a no-op on every run.
+async def test_escalate_extracts_page_range_and_uses_vlm_endpoint(monkeypatch):
+    # escalate_segment must extract the segment's pages into a standalone PDF and
+    # send THAT (no whole-doc + page_range, which docling rejects as invalid).
     captured = {}
 
+    def fake_extract(pdf_bytes, start1, end1):
+        captured["extract"] = (pdf_bytes, start1, end1)
+        return b"%PDF-extracted-pages"
+
     async def fake_convert_async(pdf_bytes, **kw):
+        captured["pdf_bytes"] = pdf_bytes
         captured.update(kw)
         return {"md_content": "## Fixed\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n"}
 
-    # The synchronous convert is gone; patching it would no longer exist.
-    assert not hasattr(esc.docling_client, "convert")
+    monkeypatch.setattr(esc, "_extract_page_range", fake_extract)
     monkeypatch.setattr(esc.docling_client, "convert_async", fake_convert_async)
-    out = await esc.escalate_segment(b"%PDF", _seg(p0=4, p1=5))
-    # convert_async derives pipeline="vlm" from use_vlm_api — no pipeline kwarg.
-    assert "pipeline" not in captured
+
+    out = await esc.escalate_segment(b"WHOLE-DOC", _seg(p0=4, p1=5))
+
+    # Extracted the segment's 1-based inclusive page range from the whole doc…
+    assert captured["extract"] == (b"WHOLE-DOC", 5, 6)
+    # …and sent the extract, not the whole document, with no page_range option.
+    assert captured["pdf_bytes"] == b"%PDF-extracted-pages"
+    assert "page_range" not in captured
     assert captured["use_vlm_api"] is True
-    assert captured["page_range"] == (5, 6)        # 1-based inclusive
     assert "| 1 | 2 |" in out
     assert out.lstrip().startswith("#")
 
 
 @pytest.mark.asyncio
 async def test_escalate_prepends_missing_heading(monkeypatch):
+    monkeypatch.setattr(esc, "_extract_page_range", lambda *a: b"%PDF-x")
+
     async def fake_convert_async(pdf_bytes, **kw):
         return {"md_content": "| a | b |\n| --- | --- |\n| 1 | 2 |\n"}
 
     monkeypatch.setattr(esc.docling_client, "convert_async", fake_convert_async)
-    out = await esc.escalate_segment(b"%PDF", _seg(title="My Table", level=2))
+    out = await esc.escalate_segment(b"WHOLE", _seg(title="My Table", level=2))
     assert out.lstrip().startswith("## My Table")
 
 
@@ -53,9 +61,11 @@ async def test_escalate_prepends_missing_heading(monkeypatch):
 async def test_escalate_returns_none_on_docling_failure(monkeypatch):
     # A docling-serve failure is signalled as None (not the original markdown) so
     # the caller can distinguish a service failure from a no-op improvement.
+    monkeypatch.setattr(esc, "_extract_page_range", lambda *a: b"%PDF-x")
+
     async def boom(pdf_bytes, **kw):
         raise dc.DoclingServeError("vlm down")
 
     monkeypatch.setattr(esc.docling_client, "convert_async", boom)
-    out = await esc.escalate_segment(b"%PDF", _seg(md="original body"))
+    out = await esc.escalate_segment(b"WHOLE", _seg(md="original body"))
     assert out is None

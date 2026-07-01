@@ -41,6 +41,12 @@ def _vlm_model_api() -> dict:
     }
 
 
+class _TaskLost(DoclingServeError):
+    """A poll/result returned 404 — docling-serve lost the task (it restarted and
+    dropped its in-memory job registry). Retrying the same task id is futile; the
+    caller should resubmit a fresh convert job."""
+
+
 async def _send_with_retry(do_request, label, deadline) -> dict:
     """Run ``do_request`` (an async callable returning an httpx response), raise
     for status, and parse JSON — tolerating transient HTTP errors (e.g. a 502
@@ -50,7 +56,11 @@ async def _send_with_retry(do_request, label, deadline) -> dict:
     A worker restart can take longer than a couple of poll ticks; abandoning an
     otherwise-fine conversion after a brief blip dumps the whole document to the
     pymupdf fallback. Applied to the submit POST and every poll/result GET so any
-    leg can ride out a restart (bounded by the overall deadline)."""
+    leg can ride out a restart (bounded by the overall deadline).
+
+    A 404 is treated specially: it means the task id is gone (docling restarted),
+    so we raise ``_TaskLost`` immediately instead of retrying a dead id — the
+    caller resubmits rather than waiting out the window pointlessly."""
     transient_deadline = None
     while True:
         try:
@@ -58,6 +68,9 @@ async def _send_with_retry(do_request, label, deadline) -> dict:
             r.raise_for_status()
             return await asyncio.to_thread(r.json)
         except (httpx.HTTPError, ValueError) as exc:
+            if (isinstance(exc, httpx.HTTPStatusError) and exc.response is not None
+                    and exc.response.status_code == 404):
+                raise _TaskLost(f"docling-serve task not found (404) on {label}") from exc
             now = time.monotonic()
             if transient_deadline is None:
                 transient_deadline = now + settings.docling_serve_transient_window
@@ -123,33 +136,51 @@ async def convert_async(
     headers = {"X-Api-Key": settings.docling_serve_api_key,
                "content-type": "application/json"}
     deadline = time.monotonic() + settings.docling_serve_timeout
+
+    async def _attempt(client) -> dict:
+        """One submit → poll → result cycle. Raises _TaskLost if docling drops the
+        task (404) so the caller can resubmit."""
+        status = await _send_with_retry(
+            lambda: client.post(base + "/v1/convert/source/async",
+                                headers=headers, json=body),
+            "convert/source/async", deadline)
+        task_id = status.get("task_id")
+        if not task_id:
+            raise DoclingServeError("async submit returned no task_id")
+
+        while status.get("task_status") not in (_TERMINAL_OK, _TERMINAL_FAIL):
+            if time.monotonic() > deadline:
+                raise DoclingServeError("docling-serve conversion timed out")
+            await asyncio.sleep(settings.docling_serve_poll_interval)
+            status = await _get_json_with_retry(
+                client, base + f"/v1/status/poll/{task_id}", headers, deadline)
+            if on_poll is not None:
+                try:
+                    await on_poll(status)
+                except Exception:  # noqa: BLE001 - progress must never crash a run
+                    logger.exception("on_poll callback failed")
+
+        if status.get("task_status") == _TERMINAL_FAIL:
+            raise DoclingServeError(f"docling-serve task failed: {status}")
+
+        return await _get_json_with_retry(
+            client, base + f"/v1/result/{task_id}", headers, deadline)
+
     try:
         async with httpx.AsyncClient(timeout=settings.docling_serve_timeout) as client:
-            status = await _send_with_retry(
-                lambda: client.post(base + "/v1/convert/source/async",
-                                    headers=headers, json=body),
-                "convert/source/async", deadline)
-            task_id = status.get("task_id")
-            if not task_id:
-                raise DoclingServeError("async submit returned no task_id")
-
-            while status.get("task_status") not in (_TERMINAL_OK, _TERMINAL_FAIL):
-                if time.monotonic() > deadline:
-                    raise DoclingServeError("docling-serve conversion timed out")
-                await asyncio.sleep(settings.docling_serve_poll_interval)
-                status = await _get_json_with_retry(
-                    client, base + f"/v1/status/poll/{task_id}", headers, deadline)
-                if on_poll is not None:
-                    try:
-                        await on_poll(status)
-                    except Exception:  # noqa: BLE001 - progress must never crash a run
-                        logger.exception("on_poll callback failed")
-
-            if status.get("task_status") == _TERMINAL_FAIL:
-                raise DoclingServeError(f"docling-serve task failed: {status}")
-
-            payload = await _get_json_with_retry(
-                client, base + f"/v1/result/{task_id}", headers, deadline)
+            for attempt in range(settings.docling_serve_max_resubmits + 1):
+                try:
+                    payload = await _attempt(client)
+                    break
+                except _TaskLost as exc:
+                    if (attempt >= settings.docling_serve_max_resubmits
+                            or time.monotonic() > deadline):
+                        raise
+                    logger.warning(
+                        "docling-serve lost the task (restart?) — resubmitting "
+                        "(%d/%d): %s", attempt + 1,
+                        settings.docling_serve_max_resubmits, exc,
+                    )
     except (httpx.HTTPError, ValueError) as exc:
         raise DoclingServeError(f"docling-serve async request failed: {exc}") from exc
 

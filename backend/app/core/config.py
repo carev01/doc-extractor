@@ -103,6 +103,10 @@ class Settings(BaseSettings):
     # out a worker restart so a brief blip doesn't dump a whole document to the
     # pymupdf fallback. Capped by docling_serve_timeout.
     docling_serve_transient_window: float = 120.0
+    # If docling-serve restarts mid-conversion it drops its in-memory job
+    # registry, so polling the task id returns 404. Resubmit a fresh convert job
+    # (up to this many times) rather than abandoning the document to pymupdf.
+    docling_serve_max_resubmits: int = 2
     # Large PDFs are converted through docling in page-range batches of this many
     # pages, so docling-serve doesn't load a whole 150+ page doc at once (OOM).
     # A doc with <= this many pages is converted in a single call.
