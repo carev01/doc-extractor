@@ -12,3 +12,6 @@ backend/media/
 
 # macOS
 .DS_Store
+
+# Autopilot worktree metadata (never commit)
+.mc-workspace.json
