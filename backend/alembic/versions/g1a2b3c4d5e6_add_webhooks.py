@@ -10,7 +10,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
 revision: str = "g1a2b3c4d5e6"
-down_revision: Union[str, Sequence[str], None] = "17c13db3546c"
+down_revision: Union[str, Sequence[str], None] = "c9e1f3a5b7d2"
 branch_labels = None
 depends_on = None
 
