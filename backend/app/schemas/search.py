@@ -1,6 +1,7 @@
 """Pydantic schemas for enhanced article search/filtering."""
 
 import base64
+import json
 import uuid
 from datetime import datetime
 from enum import Enum
@@ -9,7 +10,11 @@ from pydantic import BaseModel, ConfigDict
 
 
 class ChangeStatus(str, Enum):
-    """Change-status values for filtering articles."""
+    """Change-status of an article relative to the latest completed run.
+
+    Used both as the ``status`` query-param filter (FastAPI validates the value
+    and returns 422 for anything else) and as the per-item ``change_status``.
+    """
     NEW = "new"
     UPDATED = "updated"
     UNCHANGED = "unchanged"
@@ -22,16 +27,19 @@ class FacetCount(BaseModel):
 
 
 class Facets(BaseModel):
-    """Facet counts scoped to the current filter set (excluding the facet's
-    own dimension so counts reflect what the user would see if they removed
-    that single filter)."""
+    """Facet counts scoped to the current filter set (excluding the status
+    dimension, so the status counts reflect the full unfiltered-by-status
+    breakdown the user could drill into)."""
     status: list[FacetCount] = []
     date_bucket: list[FacetCount] = []
 
 
 class ArticleSearchResultItem(BaseModel):
-    """A single article in search results — includes search_rank when FTS5
-    is active, otherwise None."""
+    """A single article in search results.
+
+    A superset of ``ArticleResponse`` — every field the legacy list endpoint
+    returned, plus the additive ``search_rank`` (non-null only when ``q`` is
+    active) and ``change_status``."""
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
@@ -46,49 +54,55 @@ class ArticleSearchResultItem(BaseModel):
     created_at: datetime
     extracted_at: datetime
     search_rank: float | None = None
-    change_status: str | None = None
+    change_status: ChangeStatus | None = None
 
 
 class ArticleSearchResponse(BaseModel):
     """Paginated search response with cursor metadata and facets.
 
-    Backward compatible with the existing ``ArticleListResponse`` shape —
-    the ``articles`` field is present and ``total`` is included (computed
-    via a COUNT query; cursor pagination uses it only for display, not for
-    page navigation).  New fields ``next_cursor``, ``has_more``, ``limit``,
-    and ``facets`` are additive.
+    Backward compatible with the legacy ``ArticleListResponse`` shape: the
+    ``articles`` list and ``total`` are still present (``total`` is the full
+    COUNT on the first page; it is ``None`` on cursor-continuation pages, where
+    it is neither needed nor cheap to recompute). New fields ``next_cursor``,
+    ``has_more``, ``limit`` and ``facets`` are additive.
     """
     articles: list[ArticleSearchResultItem]
-    total: int
-    # Cursor pagination
+    total: int | None = None
+    # Cursor pagination — ``next_cursor`` is populated whenever ``has_more`` is
+    # true, in every mode (including the default first page), so a client can
+    # always page forward by echoing it back as ``?cursor=``.
     next_cursor: str | None = None
     has_more: bool = False
     limit: int = 50
-    # Faceted counts
+    # Faceted counts — computed once, on the first page only.
     facets: Facets | None = None
 
 
 # ── Cursor encoding/decoding ──────────────────────────────────────────────
+#
+# The cursor is an opaque, URL-safe base64 of a small JSON payload. Its shape
+# depends on the active ordering:
+#   • browse (no ``q``): keyset on (sort_order, id) → {"o": <int>, "id": <uuid>}
+#   • search (``q`` set): stable offset over the rank ordering → {"off": <int>}
+# The route interprets the payload; clients treat it as opaque.
 
-def encode_cursor(sort_key: str, value: str | int) -> str:
-    """Encode a cursor token (base64-encoded ``sort_key:value``).
 
-    The cursor is opaque to the client; we use base64 so it's URL-safe.
-    """
-    raw = f"{sort_key}:{value}"
+def encode_cursor(payload: dict) -> str:
+    """Encode a cursor payload as a URL-safe base64 JSON token."""
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True)
     return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
 
 
-def decode_cursor(cursor: str) -> tuple[str, str]:
-    """Decode a cursor token, returning (sort_key, value) as strings.
+def decode_cursor(cursor: str) -> dict:
+    """Decode a cursor token to its payload dict.
 
-    Raises ValueError if the cursor is malformed.
+    Raises ``ValueError`` if the token is malformed (caller maps this to 422).
     """
     try:
         raw = base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8")
-    except Exception as exc:
+        payload = json.loads(raw)
+    except Exception as exc:  # noqa: BLE001
         raise ValueError("Invalid cursor token") from exc
-    if ":" not in raw:
-        raise ValueError("Invalid cursor format — expected 'key:value'")
-    key, _, value = raw.partition(":")
-    return key, value
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid cursor payload")
+    return payload

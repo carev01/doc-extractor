@@ -3,9 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import (
-    DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func,
-)
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -77,13 +75,6 @@ class Article(Base):
     # SHA-256 hex digest of content_markdown — used to detect changes
     # between extraction runs for incremental extraction.
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
-
-    # NOTE: ``search_vector`` is a PostgreSQL GENERATED ALWAYS tsvector column
-    # created by the Alembic migration (fts5_search_vector).  It is NOT declared
-    # as a SQLAlchemy mapped column because the DB owns it entirely — SQLAlchemy
-    # must never try to INSERT or UPDATE it.  Queries reference it via
-    # ``Article.search_vector`` using the ``text()`` construct or via the
-    # ``func.plainto_tsquery`` / ``@@`` operators in the route layer.
 
     # Metadata
     last_updated_at: Mapped[datetime | None] = mapped_column(
