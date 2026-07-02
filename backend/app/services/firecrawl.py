@@ -30,6 +30,7 @@ from app.services.auth.realm_manager import NeedsLoginError
 from app.services.auth.session import session_expired
 from app.services.blockpage import is_auth_wall, is_block_page
 from app.services.notify import notify
+from app.services.webhook_dispatcher import dispatch_event as dispatch_webhook_event
 from app.services.profiles import registry as profile_registry
 from app.services.profiles.base import TocEntry as ProfileTocEntry
 from app.services.profiles.content_scope import scope_content_html, strip_selectors
@@ -991,6 +992,27 @@ class FirecrawlService:
                 .values(articles_updated=ExtractionRun.articles_updated + 1)
             )
         await db.commit()
+
+        # Fire per-page webhook events (best-effort, fire-and-forget).
+        # The dispatcher uses its own session and never raises.
+        page_event = "new_page" if outcome == "new" else "updated_page"
+        try:
+            asyncio.create_task(
+                dispatch_webhook_event(
+                    db=None,
+                    event_type=page_event,
+                    run_id=run_id,
+                    source_id=source_id,
+                    extra={
+                        "page_url": url,
+                        "page_title": title,
+                        "article_id": str(article.id),
+                    },
+                )
+            )
+        except Exception:
+            pass  # never let webhook dispatch break extraction
+
         return outcome
 
     async def _submit_batch(
@@ -1565,6 +1587,16 @@ class FirecrawlService:
 
         now = datetime.now(timezone.utc)
         # Newly removed.
+        # Query the articles about to be stamped removed so we can fire webhooks.
+        newly_removed = (
+            await db.execute(
+                select(Article.id, Article.title, Article.source_url).where(
+                    Article.source_id == source_id,
+                    Article.toc_entry_id.is_(None),
+                    Article.removed_at.is_(None),
+                )
+            )
+        ).all()
         await db.execute(
             update(Article)
             .where(
@@ -1585,6 +1617,25 @@ class FirecrawlService:
             .values(removed_at=None, removal_run_id=None)
         )
         await db.commit()
+
+        # Fire removed_page webhook events (best-effort, fire-and-forget).
+        for row in newly_removed:
+            try:
+                asyncio.create_task(
+                    dispatch_webhook_event(
+                        db=None,
+                        event_type="removed_page",
+                        run_id=run_id,
+                        source_id=source_id,
+                        extra={
+                            "page_url": row.source_url,
+                            "page_title": row.title,
+                            "article_id": str(row.id),
+                        },
+                    )
+                )
+            except Exception:
+                pass
 
     async def retry_escalation_run(
         self, db: AsyncSession, source_id: uuid.UUID, run_id: uuid.UUID,
@@ -2071,6 +2122,27 @@ class FirecrawlService:
             source.last_extracted_at = now
 
             await db.flush()
+
+            # Fire extraction_complete webhook (best-effort, fire-and-forget).
+            try:
+                asyncio.create_task(
+                    dispatch_webhook_event(
+                        db=None,
+                        event_type="extraction_complete",
+                        run_id=run_pk,
+                        source_id=source_id,
+                        extra={
+                            "status": "completed",
+                            "articles_extracted": int(extracted or 0),
+                            "articles_updated": int(updated or 0),
+                            "articles_unchanged": int(unchanged or 0),
+                            "articles_resumed": int(resumed or 0),
+                        },
+                    )
+                )
+            except Exception:
+                pass
+
             return run
 
         except RunControlSignal as sig:

@@ -13,6 +13,7 @@ from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.job_run import JobRun, JobRunStatus
 from app.models.export_job import ExportJob, ExportStatus
 from app.models.toc_checkpoint import TocCheckpoint
+from app.models.webhook import WebhookConfig, WebhookDelivery, WebhookEventType
 
 __all__ = [
     "Vendor",
@@ -33,4 +34,7 @@ __all__ = [
     "ExportJob",
     "ExportStatus",
     "TocCheckpoint",
+    "WebhookConfig",
+    "WebhookDelivery",
+    "WebhookEventType",
 ]

@@ -9,6 +9,7 @@ import ExportPanel from "./components/ExportPanel";
 import ChangelogPanel from "./components/ChangelogPanel";
 import DocsBrowser from "./components/DocsBrowser";
 import { Logins } from "./views/Logins";
+import { Webhooks } from "./views/Webhooks";
 import "./App.css";
 
 type View =
@@ -20,7 +21,8 @@ type View =
   | "changelog"
   | "jobs"
   | "dashboard"
-  | "logins";
+  | "logins"
+  | "webhooks";
 const SOURCE_TABS = ["browse", "export", "changelog"] as const;
 const SOURCE_TAB_LABELS: Record<string, string> = {
   browse: "Browse",
@@ -131,6 +133,12 @@ export default function App() {
           >
             Logins
           </button>
+          <button
+            className={view === "webhooks" ? "active" : ""}
+            onClick={() => setView("webhooks")}
+          >
+            Webhooks
+          </button>
         </nav>
       </header>
 
@@ -138,6 +146,8 @@ export default function App() {
         {view === "jobs" && <JobsView />}
 
         {view === "logins" && <Logins />}
+
+        {view === "webhooks" && <Webhooks />}
 
         {view === "dashboard" && (
           <Dashboard onSelectSource={handleSelectSource} />

@@ -451,3 +451,75 @@ export interface AuthRealmCreate {
   password?: string | null;
   totp_secret?: string | null;
 }
+
+// ── Webhooks ──
+
+export type WebhookEventType =
+  | 'new_page'
+  | 'updated_page'
+  | 'removed_page'
+  | 'extraction_complete';
+
+export interface Webhook {
+  id: string;
+  source_id: string | null;
+  url: string;
+  label: string | null;
+  events: WebhookEventType[];
+  secret: string | null;
+  is_active: boolean;
+  last_status_code: number | null;
+  last_attempt_at: string | null;
+  last_error: string | null;
+  total_deliveries: number;
+  total_failures: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WebhookList {
+  webhooks: Webhook[];
+  total: number;
+}
+
+export interface WebhookCreate {
+  url: string;
+  label?: string | null;
+  events?: WebhookEventType[];
+  secret?: string | null;
+  source_id?: string | null;
+  is_active?: boolean;
+}
+
+export interface WebhookUpdate {
+  url?: string;
+  label?: string | null;
+  events?: WebhookEventType[];
+  secret?: string | null;
+  is_active?: boolean;
+  source_id?: string | null;
+}
+
+export interface WebhookDelivery {
+  id: string;
+  webhook_id: string;
+  event_type: string;
+  run_id: string | null;
+  source_id: string | null;
+  status_code: number | null;
+  error: string | null;
+  attempt: number;
+  success: boolean;
+  created_at: string;
+}
+
+export interface WebhookDeliveryList {
+  deliveries: WebhookDelivery[];
+  total: number;
+}
+
+export interface WebhookTestResult {
+  success: boolean;
+  status_code: number | null;
+  error: string | null;
+}

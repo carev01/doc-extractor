@@ -1,0 +1,12 @@
+{
+  "taskId": "a751bb85-5620-4a6f-a7a5-d4f93e007188",
+  "productId": "8eb285ba-9606-44dc-bec0-42793c50fcfd",
+  "createdAt": "2026-07-02T22:37:50.898Z",
+  "strategy": "worktree",
+  "branch": "autopilot/webhook-notifications-for-content-changes",
+  "baseBranch": "main",
+  "baseCommit": "8caa250164ed52734ad607e87c985591c114dc70",
+  "status": "active",
+  "agentId": "f84f4812-90aa-4c0e-8f7b-26cf437538ec",
+  "isolatedPort": 4201
+}
