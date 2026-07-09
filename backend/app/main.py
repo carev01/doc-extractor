@@ -31,6 +31,7 @@ from app.routes import (
     profiles_router,
     dashboard_router,
     auth_realms_router,
+    webhooks_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,7 @@ app.include_router(jobs_router)
 app.include_router(profiles_router)
 app.include_router(dashboard_router)
 app.include_router(auth_realms_router)
+app.include_router(webhooks_router)
 
 # Serve canonical article images. The directory must exist before StaticFiles
 # is mounted, so create it here at import time.
