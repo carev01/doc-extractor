@@ -34,7 +34,8 @@ class WebhookResponse(BaseModel):
     url: str
     label: str | None
     events: list[str]
-    secret: str | None
+    # The HMAC secret itself is never returned — only whether one is configured.
+    has_secret: bool
     is_active: bool
     last_status_code: int | None
     last_attempt_at: datetime | None

@@ -137,6 +137,14 @@ class Settings(BaseSettings):
     # mid-run). Blank disables. POSTs JSON {title,message,text,content,...}.
     notify_webhook_url: str = ""
 
+    # User-configured content-change webhooks (see webhook_dispatcher) POST to
+    # URLs the operator supplies. Loopback and link-local targets (incl. the
+    # 169.254.169.254 cloud-metadata address) are always rejected. Private LAN
+    # ranges (10/8, 172.16/12, 192.168/16) are allowed by default because this
+    # is an internal tool whose webhook targets (ntfy/Slack relays) usually live
+    # on the LAN; set this False to lock delivery to public targets only.
+    webhook_allow_private_targets: bool = True
+
     model_config = {
         "env_prefix": "DOCEXTRACTOR_",
         "case_sensitive": False,

@@ -17,11 +17,20 @@ from app.schemas.webhook import (
     WebhookDeliveryListResponse,
     WebhookTestResponse,
 )
-from app.services.webhook_dispatcher import send_test_ping
+from app.services.webhook_dispatcher import (
+    send_test_ping,
+    validate_webhook_url,
+    WebhookURLError,
+)
 
 router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
 
-_ALL_EVENTS = {"new_page", "updated_page", "removed_page", "extraction_complete"}
+
+def _validate_url_or_422(url: str) -> None:
+    try:
+        validate_webhook_url(url)
+    except WebhookURLError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 def _to_response(w: WebhookConfig) -> WebhookResponse:
@@ -31,7 +40,7 @@ def _to_response(w: WebhookConfig) -> WebhookResponse:
         url=w.url,
         label=w.label,
         events=[e.strip() for e in w.events.split(",") if e.strip()],
-        secret=w.secret,
+        has_secret=bool(w.secret),
         is_active=w.is_active,
         last_status_code=w.last_status_code,
         last_attempt_at=w.last_attempt_at,
@@ -70,12 +79,13 @@ async def create_webhook(
     data: WebhookCreate,
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a new webhook configuration."""
+    """Create a new webhook configuration.
+
+    Event types are validated by the pydantic ``EVENT_TYPES`` Literal (a bad
+    value 422s before we get here). The URL is screened for internal/loopback
+    targets (SSRF guard)."""
+    _validate_url_or_422(str(data.url))
     events_str = ",".join(data.events) if data.events else "extraction_complete"
-    # Validate event types.
-    for e in data.events:
-        if e not in _ALL_EVENTS:
-            raise HTTPException(status_code=422, detail=f"Unknown event type: {e}")
     webhook = WebhookConfig(
         source_id=data.source_id,
         url=str(data.url),
@@ -109,13 +119,12 @@ async def update_webhook(
         raise HTTPException(status_code=404, detail="Webhook not found")
 
     if data.url is not None:
+        _validate_url_or_422(str(data.url))
         webhook.url = str(data.url)
     if data.label is not None:
         webhook.label = data.label
     if data.events is not None:
-        for e in data.events:
-            if e not in _ALL_EVENTS:
-                raise HTTPException(status_code=422, detail=f"Unknown event type: {e}")
+        # Event values are validated by the EVENT_TYPES Literal on the schema.
         webhook.events = ",".join(data.events) if data.events else "extraction_complete"
     if data.secret is not None:
         webhook.secret = data.secret

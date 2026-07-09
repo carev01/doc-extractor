@@ -466,7 +466,8 @@ export interface Webhook {
   url: string;
   label: string | null;
   events: WebhookEventType[];
-  secret: string | null;
+  // The HMAC secret is never returned by the API — only whether one is set.
+  has_secret: boolean;
   is_active: boolean;
   last_status_code: number | null;
   last_attempt_at: string | null;

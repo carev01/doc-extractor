@@ -123,7 +123,9 @@ export function Webhooks() {
       url: w.url,
       label: w.label,
       events: w.events,
-      secret: w.secret ?? "",
+      // Secret is never returned by the API; leave blank — an empty value on
+      // save leaves the stored secret unchanged.
+      secret: "",
     });
   };
 
@@ -237,7 +239,7 @@ export function Webhooks() {
                     }
                   />
                   <input
-                    placeholder="HMAC secret"
+                    placeholder="HMAC secret (blank = keep current)"
                     value={editForm.secret ?? ""}
                     onChange={(e) =>
                       setEditForm({ ...editForm, secret: e.target.value })
@@ -302,7 +304,7 @@ export function Webhooks() {
                         · {EVENT_LABELS[ev] || ev}
                       </span>
                     ))}
-                    {w.secret && <span className="sub">· signed</span>}
+                    {w.has_secret && <span className="sub">· signed</span>}
                     {w.source_id && (
                       <span className="sub">· scoped to source</span>
                     )}

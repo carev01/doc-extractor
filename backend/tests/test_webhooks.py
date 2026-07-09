@@ -11,11 +11,13 @@ Tests cover:
 - Fire-and-forget mode (db=None) does not raise
 """
 
+import asyncio
 import hashlib
 import hmac
 import json
 import os
 import sys
+import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -40,6 +42,13 @@ from app.services.webhook_dispatcher import (
     _events_list,
     dispatch_event,
     send_test_ping,
+    validate_webhook_url,
+    WebhookURLError,
+    prepare_run,
+    run_has_subscribers,
+    finish_run,
+    spawn,
+    _run_plans,
     SIGNATURE_HEADER,
     SIGNATURE_PREFIX,
 )
@@ -208,7 +217,9 @@ async def test_create_webhook(client):
     assert data["url"] == "https://example.com/hook"
     assert data["label"] == "Slack CI"
     assert set(data["events"]) == {"extraction_complete", "new_page"}
-    assert data["secret"] == "mysecret"
+    # The raw secret is never returned — only whether one is set.
+    assert "secret" not in data
+    assert data["has_secret"] is True
     assert data["is_active"] is True
     assert data["total_deliveries"] == 0
 
@@ -543,3 +554,130 @@ async def test_source_scoped_webhook(client, monkeypatch):
         assert "https://global.example.com/hook" in received_urls
     finally:
         await test_engine.dispose()
+
+
+# ── SSRF URL validation ──
+
+def test_validate_url_allows_public():
+    validate_webhook_url("https://example.com/hook")          # DNS name
+    validate_webhook_url("http://93.184.216.34/hook")          # public IP literal
+
+
+def test_validate_url_rejects_bad_scheme():
+    with pytest.raises(WebhookURLError):
+        validate_webhook_url("ftp://example.com/x")
+
+
+def test_validate_url_rejects_loopback_and_metadata():
+    for u in (
+        "http://127.0.0.1/x",
+        "http://[::1]/x",
+        "http://169.254.169.254/latest/meta-data/",  # cloud metadata (link-local)
+    ):
+        with pytest.raises(WebhookURLError):
+            validate_webhook_url(u)
+
+
+def test_validate_url_private_is_gated():
+    # Allowed under the homelab default; blocked when private targets are denied.
+    validate_webhook_url("http://10.0.0.5/hook", allow_private=True)
+    validate_webhook_url("http://192.168.1.10/hook", allow_private=True)
+    with pytest.raises(WebhookURLError):
+        validate_webhook_url("http://10.0.0.5/hook", allow_private=False)
+
+
+def test_validate_url_dns_name_not_resolved():
+    # Host names aren't resolved here (kept hermetic); literal IPs are screened.
+    validate_webhook_url("http://internal-thing.lan/hook")
+
+
+# ── SSRF at the API + delivery boundaries ──
+
+async def test_create_webhook_rejects_internal_url(client):
+    resp = await client.post("/api/webhooks", json={"url": "http://169.254.169.254/latest"})
+    assert resp.status_code == 422
+
+
+async def test_has_secret_false_without_secret(client):
+    resp = await client.post("/api/webhooks", json={"url": "https://example.com/hook"})
+    assert resp.status_code == 201
+    assert resp.json()["has_secret"] is False
+
+
+async def test_delivery_blocks_internal_target(client, monkeypatch):
+    """A row pointing at an internal IP (e.g. written directly to the DB) is not
+    POSTed — the delivery is recorded as blocked."""
+    posted = []
+
+    async def mock_post(self, url, **kwargs):
+        posted.append(url)
+        return _mock_response(200, "OK")
+
+    _patch_httpx_post(monkeypatch, mock_post)
+
+    test_engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
+    test_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    try:
+        async with test_factory() as db:
+            db.add(WebhookConfig(
+                url="http://127.0.0.1:9000/hook",
+                events="extraction_complete", is_active=True,
+            ))
+            await db.commit()
+        count = await dispatch_event(None, "extraction_complete", session_factory=test_factory)
+        assert count == 1        # delivery attempted (and recorded)…
+        assert posted == []      # …but no HTTP POST was made to the internal host
+    finally:
+        await test_engine.dispose()
+
+
+# ── Per-run gating (avoids per-page DB work when nothing is subscribed) ──
+
+async def test_prepare_run_gates_and_clears(client):
+    run_id = uuid.uuid4()
+    test_engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
+    test_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    try:
+        # No webhooks yet → no subscribers for any event.
+        async with test_factory() as db:
+            await prepare_run(db, run_id, None)
+        assert run_has_subscribers(run_id, "new_page") is False
+
+        # Add a global webhook subscribed to new_page only, then re-plan.
+        await client.post("/api/webhooks", json={
+            "url": "https://example.com/hook", "events": ["new_page"],
+        })
+        async with test_factory() as db:
+            await prepare_run(db, run_id, None)
+        assert run_has_subscribers(run_id, "new_page") is True
+        assert run_has_subscribers(run_id, "removed_page") is False
+
+        # finish_run drops the plan → gate closes again.
+        finish_run(run_id)
+        assert run_has_subscribers(run_id, "new_page") is False
+    finally:
+        await test_engine.dispose()
+
+
+def test_run_has_subscribers_without_plan():
+    # No prepare_run called → safely reports no subscribers (per-page work skipped).
+    assert run_has_subscribers(uuid.uuid4(), "new_page") is False
+    assert run_has_subscribers(None, "extraction_complete") is False
+
+
+async def test_spawn_tracks_task_until_done():
+    """spawn keeps a strong reference so the task isn't GC'd before it finishes."""
+    from app.services import webhook_dispatcher as wd
+    done = asyncio.Event()
+
+    async def work():
+        await asyncio.sleep(0)
+        done.set()
+
+    task = spawn(work())
+    assert task is not None
+    assert task in wd._bg_tasks          # strong reference held while running
+    await asyncio.wait_for(done.wait(), timeout=1)
+    await task
+    await asyncio.sleep(0)               # let the done-callback run
+    assert task not in wd._bg_tasks      # discarded on completion

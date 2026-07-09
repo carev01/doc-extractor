@@ -17,17 +17,22 @@ Event types:
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
+import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.webhook import WebhookConfig, WebhookDelivery, WebhookEventType
+from app.core.config import settings
+from app.models.webhook import WebhookConfig, WebhookDelivery
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +41,41 @@ RETRY_DELAYS = [0, 5, 15]  # seconds
 HTTP_TIMEOUT = httpx.Timeout(15.0, connect=10.0)
 SIGNATURE_HEADER = "X-DocExtractor-Signature"
 SIGNATURE_PREFIX = "sha256="
+
+
+# ── SSRF guard ─────────────────────────────────────────────────────────────
+# Webhook URLs are operator-supplied and POSTed from inside the cluster, so a
+# bad target could reach internal services. We always reject loopback and
+# link-local addresses (the latter covers the 169.254.169.254 cloud-metadata
+# endpoint), plus multicast/reserved/unspecified. Private LAN ranges are gated
+# by ``webhook_allow_private_targets`` (default allow — this is an internal tool
+# whose webhook targets often live on the LAN). Host names are not resolved here
+# (kept hermetic / no per-request DNS); literal-IP targets are the realistic
+# footgun and are what we block.
+
+class WebhookURLError(ValueError):
+    """Raised when a webhook URL points at a disallowed target."""
+
+
+def validate_webhook_url(url: str, allow_private: bool | None = None) -> None:
+    """Raise WebhookURLError if *url* is not an acceptable webhook target."""
+    if allow_private is None:
+        allow_private = settings.webhook_allow_private_targets
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise WebhookURLError("URL scheme must be http or https")
+    host = parsed.hostname
+    if not host:
+        raise WebhookURLError("URL has no host")
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        # A DNS name — not resolved here; literal-IP targets are what we screen.
+        return
+    if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+        raise WebhookURLError(f"URL host {host} is a disallowed (internal) address")
+    if ip.is_private and not allow_private:
+        raise WebhookURLError(f"URL host {host} is a private address (blocked by policy)")
 
 
 def _sign_payload(payload_body: bytes, secret: str) -> str:
@@ -162,8 +202,17 @@ async def _deliver_one(
     last_status: int | None = None
     response_body: str | None = None
 
+    # Defense-in-depth SSRF guard: also enforced at create/update time, but a
+    # row could have been written before validation existed or edited directly.
+    try:
+        validate_webhook_url(webhook.url)
+        url_ok = True
+    except WebhookURLError as exc:
+        url_ok = False
+        last_error = f"blocked target: {exc}"[:2048]
+
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-        for idx, delay in enumerate(RETRY_DELAYS):
+        for idx, delay in enumerate(RETRY_DELAYS if url_ok else []):
             if delay > 0:
                 await asyncio.sleep(delay)
             delivery.attempt = idx + 1
@@ -214,6 +263,110 @@ async def _deliver_one(
     return delivery
 
 
+# ── Per-run planning + task tracking ───────────────────────────────────────
+# To keep webhooks off the extraction hot path we resolve, once per run, which
+# event types actually have a subscriber and the source's display names. The
+# per-page code then gates on the cached plan (no DB) and only spawns a delivery
+# when there's a subscriber. Spawned tasks are tracked in a module-level set so
+# they aren't garbage-collected mid-flight (asyncio only keeps a weak reference).
+
+@dataclass
+class _RunPlan:
+    subscribed_events: set[str]
+    source_name: str | None
+    vendor_name: str | None
+    product_name: str | None
+    created_at: float
+
+
+_run_plans: dict[uuid.UUID, _RunPlan] = {}
+_PLAN_TTL_SECONDS = 6 * 3600  # safety net if finish_run is skipped (crash/cancel)
+_bg_tasks: set[asyncio.Task] = set()
+
+
+def _prune_run_plans() -> None:
+    cutoff = time.monotonic() - _PLAN_TTL_SECONDS
+    for rid in [rid for rid, p in _run_plans.items() if p.created_at < cutoff]:
+        _run_plans.pop(rid, None)
+
+
+async def prepare_run(
+    db: AsyncSession, run_id: uuid.UUID, source_id: uuid.UUID | None,
+) -> None:
+    """Resolve, once per run, which event types have an active subscriber and the
+    source's display names — cached so per-page dispatch does no DB work when
+    nothing is subscribed. Best-effort: never raises into extraction."""
+    try:
+        _prune_run_plans()
+        query = select(WebhookConfig).where(WebhookConfig.is_active.is_(True))
+        if source_id is not None:
+            query = query.where(
+                (WebhookConfig.source_id.is_(None))
+                | (WebhookConfig.source_id == source_id)
+            )
+        else:
+            query = query.where(WebhookConfig.source_id.is_(None))
+        webhooks = (await db.execute(query)).scalars().all()
+        subscribed: set[str] = set()
+        for w in webhooks:
+            subscribed |= _events_list(w)
+        source_name = vendor_name = product_name = None
+        if subscribed:
+            source_name, vendor_name, product_name = await _fetch_source_names(db, source_id)
+        _run_plans[run_id] = _RunPlan(
+            subscribed_events=subscribed,
+            source_name=source_name,
+            vendor_name=vendor_name,
+            product_name=product_name,
+            created_at=time.monotonic(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("webhook prepare_run failed for run %s: %s", run_id, exc)
+
+
+def run_has_subscribers(run_id: uuid.UUID | None, event_type: str) -> bool:
+    """True if the cached run plan has ≥1 active webhook subscribed to *event_type*.
+    Returns False when no plan exists (prepare_run not called / failed) so callers
+    safely skip all per-page work."""
+    plan = _run_plans.get(run_id) if run_id else None
+    return bool(plan and event_type in plan.subscribed_events)
+
+
+def finish_run(run_id: uuid.UUID | None) -> None:
+    """Drop a run's cached plan once the run is done."""
+    if run_id is not None:
+        _run_plans.pop(run_id, None)
+
+
+def spawn(coro) -> asyncio.Task | None:
+    """Schedule *coro* on the running loop, keeping a strong reference so it is
+    not garbage-collected before completion. Returns None if no loop is running."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        logger.warning("webhook spawn: no running event loop; dropping event")
+        coro.close()
+        return None
+    task = loop.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    return task
+
+
+def spawn_event(
+    event_type: str,
+    run_id: uuid.UUID | None,
+    source_id: uuid.UUID | None,
+    extra: dict[str, Any] | None = None,
+    session_factory=None,
+) -> None:
+    """Fire-and-forget a webhook event as a tracked background task."""
+    spawn(dispatch_event(
+        db=None, event_type=event_type, run_id=run_id,
+        source_id=source_id, extra=extra, session_factory=session_factory,
+    ))
+
+
 async def dispatch_event(
     db: AsyncSession | None,
     event_type: str,
@@ -226,10 +379,18 @@ async def dispatch_event(
     attempted. Never raises — webhook failures are logged, not propagated.
 
     When *db* is None (fire-and-forget mode), a fresh session is created via
-    *session_factory* to query eligible webhooks and resolve source names.
+    *session_factory* to query eligible webhooks and resolve source names. Source
+    names are taken from the cached run plan when available (resolved once per run
+    in prepare_run) to avoid a per-event join.
     """
     from app.core.database import async_session as default_session_factory
     sf = session_factory or default_session_factory
+    plan = _run_plans.get(run_id) if run_id else None
+
+    async def _resolve_names(session):
+        if plan is not None:
+            return plan.source_name, plan.vendor_name, plan.product_name
+        return await _fetch_source_names(session, source_id)
 
     try:
         if db is None:
@@ -237,12 +398,12 @@ async def dispatch_event(
                 webhooks = await get_eligible_webhooks(own_db, source_id, event_type)
                 if not webhooks:
                     return 0
-                source_name, vendor_name, product_name = await _fetch_source_names(own_db, source_id)
+                source_name, vendor_name, product_name = await _resolve_names(own_db)
         else:
             webhooks = await get_eligible_webhooks(db, source_id, event_type)
             if not webhooks:
                 return 0
-            source_name, vendor_name, product_name = await _fetch_source_names(db, source_id)
+            source_name, vendor_name, product_name = await _resolve_names(db)
 
         # Dispatch all webhooks concurrently — they're independent.
         tasks = [

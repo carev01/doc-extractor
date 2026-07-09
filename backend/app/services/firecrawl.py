@@ -30,7 +30,7 @@ from app.services.auth.realm_manager import NeedsLoginError
 from app.services.auth.session import session_expired
 from app.services.blockpage import is_auth_wall, is_block_page
 from app.services.notify import notify
-from app.services.webhook_dispatcher import dispatch_event as dispatch_webhook_event
+from app.services import webhook_dispatcher
 from app.services.profiles import registry as profile_registry
 from app.services.profiles.base import TocEntry as ProfileTocEntry
 from app.services.profiles.content_scope import scope_content_html, strip_selectors
@@ -993,25 +993,21 @@ class FirecrawlService:
             )
         await db.commit()
 
-        # Fire per-page webhook events (best-effort, fire-and-forget).
-        # The dispatcher uses its own session and never raises.
+        # Fire per-page webhook events (best-effort, tracked fire-and-forget).
+        # Gated on the per-run plan so we do zero webhook work — no task, no DB
+        # session — when nothing is subscribed to this event for this source.
         page_event = "new_page" if outcome == "new" else "updated_page"
-        try:
-            asyncio.create_task(
-                dispatch_webhook_event(
-                    db=None,
-                    event_type=page_event,
-                    run_id=run_id,
-                    source_id=source_id,
-                    extra={
-                        "page_url": url,
-                        "page_title": title,
-                        "article_id": str(article.id),
-                    },
-                )
+        if webhook_dispatcher.run_has_subscribers(run_id, page_event):
+            webhook_dispatcher.spawn_event(
+                event_type=page_event,
+                run_id=run_id,
+                source_id=source_id,
+                extra={
+                    "page_url": url,
+                    "page_title": title,
+                    "article_id": str(article.id),
+                },
             )
-        except Exception:
-            pass  # never let webhook dispatch break extraction
 
         return outcome
 
@@ -1586,17 +1582,22 @@ class FirecrawlService:
         )
 
         now = datetime.now(timezone.utc)
-        # Newly removed.
-        # Query the articles about to be stamped removed so we can fire webhooks.
+        # Newly removed. Only pre-query the rows (for webhook payloads) when a
+        # removed_page subscriber exists for this run — otherwise skip the query.
+        notify_removed = webhook_dispatcher.run_has_subscribers(run_id, "removed_page")
         newly_removed = (
-            await db.execute(
-                select(Article.id, Article.title, Article.source_url).where(
-                    Article.source_id == source_id,
-                    Article.toc_entry_id.is_(None),
-                    Article.removed_at.is_(None),
+            (
+                await db.execute(
+                    select(Article.id, Article.title, Article.source_url).where(
+                        Article.source_id == source_id,
+                        Article.toc_entry_id.is_(None),
+                        Article.removed_at.is_(None),
+                    )
                 )
-            )
-        ).all()
+            ).all()
+            if notify_removed
+            else []
+        )
         await db.execute(
             update(Article)
             .where(
@@ -1618,24 +1619,18 @@ class FirecrawlService:
         )
         await db.commit()
 
-        # Fire removed_page webhook events (best-effort, fire-and-forget).
+        # Fire removed_page webhook events (best-effort, tracked fire-and-forget).
         for row in newly_removed:
-            try:
-                asyncio.create_task(
-                    dispatch_webhook_event(
-                        db=None,
-                        event_type="removed_page",
-                        run_id=run_id,
-                        source_id=source_id,
-                        extra={
-                            "page_url": row.source_url,
-                            "page_title": row.title,
-                            "article_id": str(row.id),
-                        },
-                    )
-                )
-            except Exception:
-                pass
+            webhook_dispatcher.spawn_event(
+                event_type="removed_page",
+                run_id=run_id,
+                source_id=source_id,
+                extra={
+                    "page_url": row.source_url,
+                    "page_title": row.title,
+                    "article_id": str(row.id),
+                },
+            )
 
     async def retry_escalation_run(
         self, db: AsyncSession, source_id: uuid.UUID, run_id: uuid.UUID,
@@ -1812,6 +1807,11 @@ class FirecrawlService:
 
         try:
             await self._check_available()
+
+            # Resolve, once per run, which webhook events have a subscriber (and
+            # the source's display names) so per-page dispatch does no DB work
+            # when nothing is subscribed. Best-effort; never blocks extraction.
+            await webhook_dispatcher.prepare_run(db, run_pk, source_id)
 
             # ── Phase 1: Build ordered TOC via the source's extraction profile ──
             auth_cookies = (auth_state or {}).get("cookies")
@@ -2123,25 +2123,21 @@ class FirecrawlService:
 
             await db.flush()
 
-            # Fire extraction_complete webhook (best-effort, fire-and-forget).
-            try:
-                asyncio.create_task(
-                    dispatch_webhook_event(
-                        db=None,
-                        event_type="extraction_complete",
-                        run_id=run_pk,
-                        source_id=source_id,
-                        extra={
-                            "status": "completed",
-                            "articles_extracted": int(extracted or 0),
-                            "articles_updated": int(updated or 0),
-                            "articles_unchanged": int(unchanged or 0),
-                            "articles_resumed": int(resumed or 0),
-                        },
-                    )
+            # Fire extraction_complete webhook (best-effort, tracked fire-and-forget).
+            if webhook_dispatcher.run_has_subscribers(run_pk, "extraction_complete"):
+                webhook_dispatcher.spawn_event(
+                    event_type="extraction_complete",
+                    run_id=run_pk,
+                    source_id=source_id,
+                    extra={
+                        "status": "completed",
+                        "articles_extracted": int(extracted or 0),
+                        "articles_updated": int(updated or 0),
+                        "articles_unchanged": int(unchanged or 0),
+                        "articles_resumed": int(resumed or 0),
+                    },
                 )
-            except Exception:
-                pass
+            webhook_dispatcher.finish_run(run_pk)
 
             return run
 
