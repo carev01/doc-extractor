@@ -72,11 +72,11 @@ def test_build_toc_orders_and_nests_the_tree():
     # even though What's New appears... they're emitted in order.
     titles = [t for _, _, t, _ in rows]
     assert titles == [
-        "Getting Started",                     # L0 page-category (has slug + kids)
+        "Getting Started",                     # L0 page-category (categoryType 1 — has body)
         "Data Security Posture Management",    # L1 pure folder (url-less header)
         "DSPM Overview",                       # L2 article under the folder
         "Quickstart",                          # L1 article
-        "What's New in Securiti",              # L0 page-category
+        "What's New in Securiti",              # L0 index category (categoryType 2 — header)
         "What's New in 1.147",                 # L1 article
         "What's New in 1.146",                 # L1 article
         # "Secret Draft" is isHidden → skipped
@@ -88,7 +88,8 @@ def test_build_toc_article_vs_header_and_urls():
     toc = parse_document360_nav(_fixture(), ROOT)
     by_title = {e.title: e for e in toc}
 
-    # Page-category with a slug is a scrapable article that also parents children.
+    # A categoryType-1 "page category" has its own body → scrapable article that
+    # also parents children.
     gs = by_title["Getting Started"]
     assert gs.is_article is True
     assert gs.url == "https://helpcenter.securiti.ai/docs/getting-started"
@@ -108,6 +109,22 @@ def test_build_toc_article_vs_header_and_urls():
     assert art.parent_url == gs.url
 
 
+def test_index_category_is_header_but_children_are_scraped():
+    # categoryType==2 is a body-less index/landing page → emitted as a url-less
+    # structural header (so it doesn't inflate the article total or waste a
+    # fetch), but its child articles are still emitted as scrapable pages.
+    toc = parse_document360_nav(_fixture(), ROOT)
+    by_title = {e.title: e for e in toc}
+
+    idx = by_title["What's New in Securiti"]
+    assert idx.is_article is False
+    assert idx.url is None
+
+    child = by_title["What's New in 1.147"]
+    assert child.is_article is True
+    assert child.url == "https://helpcenter.securiti.ai/docs/what-s-new-in-1-147"
+
+
 def test_build_toc_empty_when_no_state():
     assert parse_document360_nav("<html><body>no state here</body></html>", ROOT) == []
 
@@ -117,7 +134,17 @@ async def test_build_toc_via_scraper():
     scraper = FakeScraper(html_by_url={}, raw_by_url={ROOT: _fixture()})
     toc = await Document360Profile().build_toc(ROOT, scraper)
     assert len(toc) == 7
-    assert sum(1 for e in toc if e.is_article) == 6   # 6 pages, 1 folder header
+    # 5 scrapable articles; 2 url-less headers (a pure folder + the ct-2 index).
+    assert sum(1 for e in toc if e.is_article) == 5
+    assert sum(1 for e in toc if not e.is_article) == 2
+
+
+def test_backoff_attributes():
+    # Gentler concurrency + retry 403 (429/5xx already retried by fetch_raw) so a
+    # large Document360 KB survives Cloudflare rate-limiting.
+    p = Document360Profile()
+    assert p.raw_http_concurrency == 4
+    assert 403 in p.raw_http_retry_statuses
 
 
 # ── Content extraction ───────────────────────────────────────────────────────

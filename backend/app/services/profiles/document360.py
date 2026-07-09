@@ -41,6 +41,14 @@ _STATE_RE = re.compile(
     r'<script id="serverApp-state"[^>]*>(.*?)</script>', re.S | re.I
 )
 
+# Document360 categoryType for an "index" category: a landing node that only
+# lists its children and has no article body of its own (confirmed against the
+# real site — every categoryType==2 page returns no #articleContent, while
+# categoryType==1 "page categories" DO carry a body). We emit these as url-less
+# structural headers so they don't inflate the article total or waste a fetch;
+# their child articles are still emitted and scraped.
+_CATEGORY_TYPE_INDEX = 2
+
 
 def _extract_state(html: str) -> dict | None:
     """Parse the Angular TransferState JSON out of the page, or None."""
@@ -116,8 +124,11 @@ def parse_document360_nav(html: str, root_url: str) -> list[TocEntry]:
             title = (n.get("title") or "").strip()
             slug = (n.get("slug") or "").strip()
             kids = n.get("children") or []
+            is_index = n.get("categoryType") == _CATEGORY_TYPE_INDEX
             node_url: str | None = None
-            if slug:
+            if slug and not is_index:
+                # A real article (articleType 0) or a "page category" (has its own
+                # body AND children) — a scrapable page.
                 node_url = f"{base}/{slug}"
                 if node_url not in seen and title:
                     seen.add(node_url)
@@ -125,8 +136,9 @@ def parse_document360_nav(html: str, root_url: str) -> list[TocEntry]:
                         title=title, url=node_url, level=level,
                         is_article=True, parent_url=parent_url,
                     ))
-            elif title and kids:
-                # Pure structural folder — a url-less header.
+            elif title:
+                # A pure folder (no slug) or a body-less index category
+                # (categoryType==2) — a url-less structural header.
                 out.append(TocEntry(
                     title=title, url=None, level=level,
                     is_article=False, parent_url=parent_url,
@@ -144,6 +156,15 @@ class Document360Profile:
     # fetches each page (with the realm's auth cookies) and extract_content_html
     # scopes to that container.
     content_engine = "raw_http"
+
+    # Backoff/politeness for large KBs (Securiti is ~2,600 pages). Document360
+    # (Cloudflare-fronted) rate-limits a fast parallel sweep with sporadic
+    # 429/403s. Fetch a bit more gently and retry 403 too — 429/5xx are already
+    # retried with exponential backoff by fetch_raw; 403 here is transient WAF
+    # throttling under a valid session (a genuinely dead session is caught by the
+    # raw_http consecutive-failure auth-expiry check, not by a lone 403).
+    raw_http_concurrency = 4
+    raw_http_retry_statuses = (403,)
 
     _EXCLUDE = [
         "script", "style",
