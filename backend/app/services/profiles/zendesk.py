@@ -52,10 +52,20 @@ class ZendeskProfile:
         # reliable even when the page itself is bot-gated (so root_html may be a
         # 403 shell — DropSuite's root 403s with no usable markers). Also accept
         # clear in-page markers as a fallback.
+        #
+        # NOTE: a bare "zendesk" substring is NOT a reliable marker — other docs
+        # platforms mention Zendesk in article content (e.g. Securiti's
+        # Document360 site has a "/docs/zendesk" integration page), which would
+        # misroute them here. Require the Help Center API path or a Zendesk asset
+        # host instead.
         if _HC_URL_RE.search(root_url):
             return True
         lower = root_html.lower()
-        return "/api/v2/help_center/" in lower or "zendesk" in lower
+        return (
+            "/api/v2/help_center/" in lower
+            or ".zendesk.com" in lower
+            or ".zdassets.com" in lower
+        )
 
     async def build_toc(self, root_url: str, scraper) -> list[TocEntry]:
         lm = _HC_URL_RE.search(root_url)
