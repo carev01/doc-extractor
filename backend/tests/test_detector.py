@@ -24,6 +24,11 @@ def test_lazy_tree_fixture_detects_as_lazy_tree():
     assert detect_platform(html, LAZY_TREE_ROOT) == "lazy_tree"
 
 
+def test_document360_fixture_detects_as_document360():
+    html = _read("document360.html")
+    assert detect_platform(html, "https://helpcenter.securiti.ai/docs") == "document360"
+
+
 def test_junk_html_returns_none():
     junk = "<html><body><p>Nothing here that matches any platform.</p></body></html>"
     assert detect_platform(junk, "https://example.com/") is None
