@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authz import Principal, get_principal
 from app.core.database import get_db
 from app.models.article import Article
 from app.models.extraction_run import ExtractionRun, RunStatus
@@ -23,8 +24,16 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 async def dashboard_sources(
     stale_days: int = Query(30, ge=1),
     db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ):
     now = datetime.now(timezone.utc)
+
+    visible = principal.visible_vendor_ids()
+    if visible is not None and not visible:
+        return DashboardResponse(
+            summary=DashboardSummary(total=0, never_extracted=0, stale=0, failing=0, running=0),
+            sources=[],
+        )
 
     # Active article counts per source (removed excluded).
     counts: dict = {}
@@ -72,6 +81,8 @@ async def dashboard_sources(
         .outerjoin(Job, DocumentationSource.job_id == Job.id)
         .order_by(Vendor.name, Product.name, DocumentationSource.name)
     )
+    if visible is not None:
+        rows_q = rows_q.where(Product.vendor_id.in_(visible))
     rows = (await db.execute(rows_q)).all()
 
     out: list[DashboardSourceRow] = []

@@ -548,3 +548,34 @@ export interface AuthUser {
   oauth_provider: string | null;
   created_at: string;
 }
+
+// ── User management / permissions / keys ──
+
+export interface VendorPermission {
+  vendor_id: string;
+  vendor_name: string;
+  level: "read_only" | "read_write";
+}
+export interface VendorPermissionList {
+  user_id: string;
+  permissions: VendorPermission[];
+}
+
+export interface ApiKeyItem {
+  id: string;
+  name: string;
+  key_prefix: string;
+  role: "admin" | "read_write" | "read_only";
+  is_active: boolean;
+  last_used_at: string | null;
+  expires_at: string | null;
+  created_at: string;
+  revoked_at: string | null;
+}
+export interface ApiKeyCreated extends ApiKeyItem {
+  raw_key: string;
+}
+export interface AdminApiKey extends ApiKeyItem {
+  user_id: string;
+  user_email: string;
+}

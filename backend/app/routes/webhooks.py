@@ -6,7 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authz import Principal, authorize_source, get_principal, require_admin
 from app.core.database import get_db
+from app.models.product import Product
+from app.models.source import DocumentationSource
 from app.models.webhook import WebhookConfig, WebhookDelivery
 from app.schemas.webhook import (
     WebhookCreate,
@@ -57,8 +60,12 @@ async def list_webhooks(
     source_id: uuid.UUID | None = None,
     is_active: bool | None = None,
     db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ):
     """List all configured webhooks, optionally filtered by source or active state."""
+    if source_id is not None:
+        await authorize_source(db, principal, source_id, write=False)
+
     query = select(WebhookConfig).order_by(WebhookConfig.created_at.desc())
     if source_id is not None:
         # Match both global (NULL) and source-scoped webhooks.
@@ -67,6 +74,20 @@ async def list_webhooks(
         )
     if is_active is not None:
         query = query.where(WebhookConfig.is_active.is_(is_active))
+
+    visible = principal.visible_vendor_ids()
+    if visible is not None:
+        if not visible:
+            return WebhookListResponse(webhooks=[], total=0)
+        query = (
+            query.join(
+                DocumentationSource, WebhookConfig.source_id == DocumentationSource.id
+            )
+            .join(Product, DocumentationSource.product_id == Product.id)
+            .where(WebhookConfig.source_id.is_not(None))
+            .where(Product.vendor_id.in_(visible))
+        )
+
     webhooks = (await db.execute(query)).scalars().all()
     return WebhookListResponse(
         webhooks=[_to_response(w) for w in webhooks],
@@ -78,12 +99,17 @@ async def list_webhooks(
 async def create_webhook(
     data: WebhookCreate,
     db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ):
     """Create a new webhook configuration.
 
     Event types are validated by the pydantic ``EVENT_TYPES`` Literal (a bad
     value 422s before we get here). The URL is screened for internal/loopback
     targets (SSRF guard)."""
+    if data.source_id is None:
+        require_admin(principal)
+    else:
+        await authorize_source(db, principal, data.source_id, write=True)
     _validate_url_or_422(str(data.url))
     events_str = ",".join(data.events) if data.events else "extraction_complete"
     webhook = WebhookConfig(
@@ -101,10 +127,18 @@ async def create_webhook(
 
 
 @router.get("/{webhook_id}", response_model=WebhookResponse)
-async def get_webhook(webhook_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_webhook(
+    webhook_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     webhook = await db.get(WebhookConfig, webhook_id)
     if not webhook:
         raise HTTPException(status_code=404, detail="Webhook not found")
+    if webhook.source_id is None:
+        require_admin(principal)
+    else:
+        await authorize_source(db, principal, webhook.source_id, write=False)
     return _to_response(webhook)
 
 
@@ -113,10 +147,17 @@ async def update_webhook(
     webhook_id: uuid.UUID,
     data: WebhookUpdate,
     db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ):
     webhook = await db.get(WebhookConfig, webhook_id)
     if not webhook:
         raise HTTPException(status_code=404, detail="Webhook not found")
+    if webhook.source_id is None:
+        require_admin(principal)
+    else:
+        await authorize_source(db, principal, webhook.source_id, write=True)
+    if data.source_id is not None:
+        await authorize_source(db, principal, data.source_id, write=True)
 
     if data.url is not None:
         _validate_url_or_422(str(data.url))
@@ -139,20 +180,36 @@ async def update_webhook(
 
 
 @router.delete("/{webhook_id}", status_code=204)
-async def delete_webhook(webhook_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def delete_webhook(
+    webhook_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     webhook = await db.get(WebhookConfig, webhook_id)
     if not webhook:
         raise HTTPException(status_code=404, detail="Webhook not found")
+    if webhook.source_id is None:
+        require_admin(principal)
+    else:
+        await authorize_source(db, principal, webhook.source_id, write=True)
     await db.delete(webhook)
     await db.commit()
 
 
 @router.post("/{webhook_id}/test", response_model=WebhookTestResponse)
-async def test_webhook(webhook_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def test_webhook(
+    webhook_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """Send a test ping to the webhook URL to verify connectivity."""
     webhook = await db.get(WebhookConfig, webhook_id)
     if not webhook:
         raise HTTPException(status_code=404, detail="Webhook not found")
+    if webhook.source_id is None:
+        require_admin(principal)
+    else:
+        await authorize_source(db, principal, webhook.source_id, write=False)
     delivery = await send_test_ping(webhook)
     return WebhookTestResponse(
         success=delivery.success,
@@ -166,11 +223,16 @@ async def list_deliveries(
     webhook_id: uuid.UUID,
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ):
     """List recent delivery attempts for a webhook."""
     webhook = await db.get(WebhookConfig, webhook_id)
     if not webhook:
         raise HTTPException(status_code=404, detail="Webhook not found")
+    if webhook.source_id is None:
+        require_admin(principal)
+    else:
+        await authorize_source(db, principal, webhook.source_id, write=False)
     deliveries = (
         await db.execute(
             select(WebhookDelivery)

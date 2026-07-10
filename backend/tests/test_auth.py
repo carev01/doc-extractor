@@ -412,7 +412,10 @@ async def test_read_only_can_read_but_not_write(client):
     assert resp.status_code == 403
 
 
-async def test_read_write_can_write(client):
+async def test_vendor_creation_is_admin_only(client):
+    """Vendor creation is admin-only; a read_write user is authenticated but
+    forbidden (403, not 401). Per-vendor write behaviour is covered in
+    test_authz_vendor.py."""
     await _register(client)
     admin = await _login(client)
     await _admin_creates_user(client, admin["access_token"], "rw2@test.com", "read_write")
@@ -420,7 +423,12 @@ async def test_read_write_can_write(client):
     resp = await client.post("/api/vendors", json={"name": "Acme"}, headers={
         "Authorization": f"Bearer {rw['access_token']}",
     })
-    assert resp.status_code in (200, 201)
+    assert resp.status_code == 403
+    # …and admin can create it.
+    resp = await client.post("/api/vendors", json={"name": "Acme"}, headers={
+        "Authorization": f"Bearer {admin['access_token']}",
+    })
+    assert resp.status_code == 201
 
 
 async def test_api_key_effective_role_restricts_writes(client):

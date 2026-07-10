@@ -67,11 +67,12 @@ def test_defect1_all_tables_in_metadata():
         "products",
         "toc_checkpoints",
         "toc_entries",
+        "user_vendor_permissions",
         "users",
         "vendors",
         "webhook_deliveries",
         "webhooks",
-    ], f"Expected 17 tables, got {len(table_names)}: {table_names}"
+    ], f"Expected 18 tables, got {len(table_names)}: {table_names}"
 
 
 def test_defect1_tables_created_on_startup(db_session):

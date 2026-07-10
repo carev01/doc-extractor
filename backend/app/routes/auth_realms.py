@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authz import Principal, get_principal, require_admin
 from app.core.database import get_db
 from app.models.auth_realm import AuthRealm, RealmStatus
 from app.schemas.auth_realm import (
@@ -26,7 +27,12 @@ from app.services.auth.realm_manager import NeedsLoginError
 from app.services.auth.session import session_expires_at
 from app.services.browserless import browserless_client
 
-router = APIRouter(prefix="/api/auth-realms", tags=["auth-realms"])
+
+def _require_admin(principal: Principal = Depends(get_principal)) -> None:
+    require_admin(principal)
+
+
+router = APIRouter(prefix="/api/auth-realms", tags=["auth-realms"], dependencies=[Depends(_require_admin)])
 
 
 # ---------------------------------------------------------------------------
