@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.security import role_at_least
 from app.models.article import Article
 from app.models.extraction_run import ExtractionRun
 from app.models.product import Product
@@ -31,26 +32,33 @@ from app.models.user_vendor_permission import UserVendorPermission, VendorAccess
 
 @dataclass
 class Principal:
-    """The caller's effective access for one request."""
-    unrestricted: bool                 # admin or auth-disabled → sees/does everything
+    """The caller's effective access for one request.
+
+    ``see_all`` (owner is an admin, or auth is disabled) means every vendor is
+    visible — but writes are still capped by ``role``. So an admin's *downgraded*
+    API key (effective role read_only/read_write) sees all vendors at that level,
+    while ``is_admin`` (admin-only operations) requires the effective role itself
+    to be admin.
+    """
+    see_all: bool
     role: UserRole
     user: User | None = None
     vendor_levels: dict[_uuid.UUID, VendorAccessLevel] = field(default_factory=dict)
 
     @property
     def is_admin(self) -> bool:
-        return self.unrestricted or self.role == UserRole.ADMIN
+        return self.role == UserRole.ADMIN
 
     def visible_vendor_ids(self) -> "set[_uuid.UUID] | None":
-        """Set of readable vendor ids, or None meaning ALL (unrestricted)."""
-        return None if self.unrestricted else set(self.vendor_levels)
+        """Set of readable vendor ids, or None meaning ALL."""
+        return None if self.see_all else set(self.vendor_levels)
 
     def can_read_vendor(self, vendor_id: _uuid.UUID) -> bool:
-        return self.unrestricted or vendor_id in self.vendor_levels
+        return self.see_all or vendor_id in self.vendor_levels
 
     def can_write_vendor(self, vendor_id: _uuid.UUID) -> bool:
-        if self.unrestricted:
-            return True
+        if self.see_all:
+            return role_at_least(self.role, UserRole.READ_WRITE)
         return self.vendor_levels.get(vendor_id) == VendorAccessLevel.READ_WRITE
 
 
@@ -58,7 +66,7 @@ async def get_principal(request: Request, db: AsyncSession = Depends(get_db)) ->
     """Build the request Principal from the user AuthMiddleware authenticated."""
     # Auth disabled (dev) → wide open, mirroring the middleware no-op.
     if not settings.auth_jwt_secret:
-        return Principal(unrestricted=True, role=UserRole.ADMIN)
+        return Principal(see_all=True, role=UserRole.ADMIN)
 
     user = getattr(request.state, "user", None)
     role = getattr(request.state, "effective_role", None)
@@ -67,8 +75,11 @@ async def get_principal(request: Request, db: AsyncSession = Depends(get_db)) ->
         # but never fail open.
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
-    if role == UserRole.ADMIN:
-        return Principal(unrestricted=True, role=role, user=user)
+    # An admin OWNER sees every vendor even through a role-capped API key; writes
+    # are still limited by the effective role, and admin-only ops require the
+    # effective role to be admin (is_admin).
+    if user.role == UserRole.ADMIN:
+        return Principal(see_all=True, role=role, user=user)
 
     grants = (
         await db.execute(
@@ -77,7 +88,7 @@ async def get_principal(request: Request, db: AsyncSession = Depends(get_db)) ->
         )
     ).all()
     return Principal(
-        unrestricted=False,
+        see_all=False,
         role=role,
         user=user,
         vendor_levels={vid: lvl for vid, lvl in grants},

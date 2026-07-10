@@ -213,3 +213,23 @@ async def test_change_password(client):
     assert (await client.post("/api/auth/change-password", json={
         "current_password": "userpass1", "new_password": "brandnew1"}, headers=H)).status_code == 204
     assert (await client.post("/api/auth/login", json={"email": "rw@t.com", "password": "brandnew1"})).status_code == 200
+
+
+async def test_admin_downgraded_key_sees_all_at_capped_level(client):
+    """An admin-owned read_only/read_write key sees every vendor (admin owner),
+    but writes are capped by the key's role."""
+    admin = _bearer(await _bootstrap_admin(client))
+    v1, p1, s1 = await _vendor_with_source(client, admin, "v1")
+
+    ro_key = (await client.post("/api/auth/keys", json={"name": "ro", "role": "read_only"}, headers=admin)).json()["raw_key"]
+    KH = {"X-API-Key": ro_key}
+    # Sees the vendor (not an empty allow-list) and can read it…
+    assert (await client.get("/api/vendors", headers=KH)).json()["total"] == 1
+    assert (await client.get(f"/api/sources/{s1}", headers=KH)).status_code == 200
+    # …but a read_only key cannot write, and cannot do admin-only ops.
+    assert (await client.post("/api/products", json={"vendor_id": v1, "name": "x"}, headers=KH)).status_code == 403
+    assert (await client.get("/api/auth/users", headers=KH)).status_code == 403
+
+    rw_key = (await client.post("/api/auth/keys", json={"name": "rw", "role": "read_write"}, headers=admin)).json()["raw_key"]
+    KH2 = {"X-API-Key": rw_key}
+    assert (await client.post("/api/products", json={"vendor_id": v1, "name": "y"}, headers=KH2)).status_code == 201
