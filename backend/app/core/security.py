@@ -84,6 +84,9 @@ def create_access_token(
         "type": "access",
         "iat": int(now.timestamp()),
         "exp": int(exp.timestamp()),
+        # Unique per issuance so two tokens minted in the same second (e.g. login
+        # then immediate refresh) are never byte-identical.
+        "jti": secrets.token_urlsafe(8),
     }
     return jwt.encode(payload, settings.auth_jwt_secret, algorithm=settings.auth_jwt_algorithm)
 

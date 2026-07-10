@@ -54,6 +54,7 @@ def test_defect1_all_tables_in_metadata():
     import app.models  # noqa: F401
     table_names = sorted(Base.metadata.tables.keys())
     assert table_names == [
+        "api_keys",
         "article_images",
         "article_versions",
         "articles",
@@ -66,10 +67,11 @@ def test_defect1_all_tables_in_metadata():
         "products",
         "toc_checkpoints",
         "toc_entries",
+        "users",
         "vendors",
         "webhook_deliveries",
         "webhooks",
-    ], f"Expected 15 tables, got {len(table_names)}: {table_names}"
+    ], f"Expected 17 tables, got {len(table_names)}: {table_names}"
 
 
 def test_defect1_tables_created_on_startup(db_session):
