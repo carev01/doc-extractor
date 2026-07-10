@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from app.core.auth_middleware import AuthMiddleware
 from app.core.config import settings
 from app.core.database import engine, Base
 
@@ -31,6 +32,7 @@ from app.routes import (
     profiles_router,
     dashboard_router,
     auth_realms_router,
+    auth_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -76,6 +78,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Authentication middleware — validates Bearer tokens and API keys on /api/ routes
+app.add_middleware(AuthMiddleware)
+
 # Register routes
 app.include_router(vendors_router)
 app.include_router(products_router)
@@ -87,6 +92,7 @@ app.include_router(jobs_router)
 app.include_router(profiles_router)
 app.include_router(dashboard_router)
 app.include_router(auth_realms_router)
+app.include_router(auth_router)
 
 # Serve canonical article images. The directory must exist before StaticFiles
 # is mounted, so create it here at import time.

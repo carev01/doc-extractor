@@ -4,6 +4,8 @@ from app.models.vendor import Vendor
 from app.models.product import Product
 from app.models.job import Job
 from app.models.auth_realm import AuthRealm, RealmStatus
+from app.models.user import User, UserRole
+from app.models.api_key import APIKey
 from app.models.source import DocumentationSource, SourceStatus
 from app.models.toc import TOCEntry
 from app.models.article import Article
@@ -20,6 +22,9 @@ __all__ = [
     "Job",
     "AuthRealm",
     "RealmStatus",
+    "User",
+    "UserRole",
+    "APIKey",
     "DocumentationSource",
     "SourceStatus",
     "TOCEntry",

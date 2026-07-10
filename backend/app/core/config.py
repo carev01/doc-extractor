@@ -128,6 +128,24 @@ class Settings(BaseSettings):
     # shared service with dozens of doomed conversions.
     pdf_vlm_max_consecutive_failures: int = 5
 
+    # Auth — JWT signing key for OAuth2 access/refresh tokens. Required when
+    # authentication is enabled. Generate with:
+    #   python -c "import secrets; print(secrets.token_urlsafe(48))"
+    # When empty, auth endpoints return 503 (auth disabled).
+    auth_jwt_secret: str = ""
+    auth_jwt_algorithm: str = "HS256"
+    auth_access_token_expire_minutes: int = 30
+    auth_refresh_token_expire_days: int = 7
+
+    # OAuth2 providers — set client_id/client_secret to enable each provider.
+    # Redirect URL pattern: {base}/api/auth/oauth/{provider}/callback
+    auth_oauth_redirect_base: str = "http://localhost:5173"
+    auth_google_client_id: str = ""
+    auth_google_client_secret: str = ""
+    auth_okta_client_id: str = ""
+    auth_okta_client_secret: str = ""
+    auth_okta_domain: str = ""
+
     # Master key for encrypting credentials/sessions at rest (Fernet, urlsafe
     # base64, 32 bytes). Required only when auth_realm rows exist. Generate with:
     #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
