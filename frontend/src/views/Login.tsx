@@ -31,39 +31,45 @@ export function Login({
   };
 
   return (
-    <div style={{ maxWidth: 360, margin: "10vh auto", padding: "1.5em" }}>
-      <h2>DocExtractor</h2>
-      {needsBootstrap ? (
-        <p className="sub">
-          No users exist yet. The first account you create becomes the
-          administrator — register it via <code>POST /api/auth/register</code>,
-          then sign in here.
-        </p>
-      ) : (
-        <p className="sub">Sign in to continue.</p>
-      )}
-      <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: "0.6em" }}>
-        <input
-          type="email"
-          placeholder="Email"
-          value={email}
-          autoComplete="username"
-          onChange={(e) => setEmail(e.target.value)}
-          required
-        />
-        <input
-          type="password"
-          placeholder="Password"
-          value={password}
-          autoComplete="current-password"
-          onChange={(e) => setPassword(e.target.value)}
-          required
-        />
-        <button type="submit" disabled={busy}>
-          {busy ? "Signing in…" : "Sign in"}
-        </button>
-        {error && <div className="error">{error}</div>}
-      </form>
+    <div className="login-shell">
+      <div className="login-card">
+        <div className="login-brand">
+          <span className="brand-mark" aria-hidden="true">◧</span>
+          <h2>DocExtractor</h2>
+        </div>
+        {needsBootstrap ? (
+          <p className="login-sub">
+            No users exist yet. The first account you create becomes the
+            administrator — register it via{" "}
+            <code className="login-code">POST /api/auth/register</code>,
+            then sign in here.
+          </p>
+        ) : (
+          <p className="login-sub">Sign in to continue.</p>
+        )}
+        <form className="login-form" onSubmit={submit}>
+          <input
+            type="email"
+            placeholder="Email"
+            value={email}
+            autoComplete="username"
+            onChange={(e) => setEmail(e.target.value)}
+            required
+          />
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            autoComplete="current-password"
+            onChange={(e) => setPassword(e.target.value)}
+            required
+          />
+          <button type="submit" className="btn-primary" disabled={busy}>
+            {busy ? "Signing in…" : "Sign in"}
+          </button>
+          {error && <div className="error login-error">{error}</div>}
+        </form>
+      </div>
     </div>
   );
 }

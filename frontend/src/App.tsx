@@ -234,7 +234,7 @@ export default function App() {
         </nav>
       </header>
 
-      <main className="app-main">
+      <main className="app-main fade-in-up">
         {view === "jobs" && <JobsView />}
 
         {view === "logins" && <Logins />}
