@@ -8,6 +8,7 @@ from sqlalchemy import select, func, and_, or_, text, exists, false, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.authz import Principal, get_principal, authorize_source, authorize_article
 from app.core.database import get_db
 from app.models.article import Article
 from app.models.article_version import ArticleVersion
@@ -68,11 +69,18 @@ def _fts_rank(q: str):
     return func.ts_rank(text(_TSV), func.plainto_tsquery("english", q))
 
 
-def _filter_conditions(source_id, toc_entry_id, q, search, date_from, date_to):
+def _filter_conditions(
+    source_id, toc_entry_id, q, search, date_from, date_to, visible_vendor_ids=None
+):
     """Common WHERE conditions shared by the main query, the count, and facets.
 
     ``q`` (FTS) takes precedence over the legacy ``search`` ILIKE. Excludes the
-    change-status dimension (applied separately) so facets can reuse this."""
+    change-status dimension (applied separately) so facets can reuse this.
+
+    ``visible_vendor_ids``, when not None, restricts to articles whose source's
+    product's vendor is in that set (row-level authz filter for list endpoints
+    with no explicit ``source_id``).
+    """
     conds = []
     if source_id:
         conds.append(Article.source_id == source_id)
@@ -86,6 +94,14 @@ def _filter_conditions(source_id, toc_entry_id, q, search, date_from, date_to):
         conds.append(Article.extracted_at >= date_from)
     if date_to:
         conds.append(Article.extracted_at <= date_to)
+    if visible_vendor_ids is not None:
+        visible_sources = (
+            select(DocumentationSource.id)
+            .join(Product, DocumentationSource.product_id == Product.id)
+            .where(Product.vendor_id.in_(visible_vendor_ids))
+            .scalar_subquery()
+        )
+        conds.append(Article.source_id.in_(visible_sources))
     return conds
 
 
@@ -139,6 +155,7 @@ async def list_articles(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ):
     """List articles with optional full-text search, date-range and change-status
     filtering, facets, and forward pagination.
@@ -149,6 +166,20 @@ async def list_articles(
     ``skip`` remains supported for legacy offset paging. With no enhanced params
     the endpoint is a drop-in superset of the original list response.
     """
+    if source_id:
+        await authorize_source(db, principal, source_id, write=False)
+
+    visible_vendor_ids = None
+    if not source_id:
+        visible = principal.visible_vendor_ids()
+        if visible is not None:
+            if not visible:
+                return ArticleSearchResponse(
+                    articles=[], total=0, next_cursor=None, has_more=False,
+                    limit=limit, facets=None,
+                )
+            visible_vendor_ids = visible
+
     searching = bool(q)
 
     # ── Decode cursor (opaque; shape depends on browse vs. search ordering) ──
@@ -162,7 +193,9 @@ async def list_articles(
     using_enhanced = any([q, date_from, date_to, status is not None, cursor is not None])
     first_page = cursor is None
 
-    conds = _filter_conditions(source_id, toc_entry_id, q, search, date_from, date_to)
+    conds = _filter_conditions(
+        source_id, toc_entry_id, q, search, date_from, date_to, visible_vendor_ids
+    )
 
     # Latest completed run — computed once and reused for the status filter,
     # per-item change_status, and facets. Only needed in enhanced mode.
@@ -276,7 +309,7 @@ async def list_articles(
         facets = await _compute_facets(
             db, source_id=source_id, toc_entry_id=toc_entry_id, q=q,
             search=search, date_from=date_from, date_to=date_to,
-            latest_run_id=latest_run_id,
+            latest_run_id=latest_run_id, visible_vendor_ids=visible_vendor_ids,
         )
 
     return ArticleSearchResponse(
@@ -299,11 +332,14 @@ async def _compute_facets(
     date_from: datetime | None,
     date_to: datetime | None,
     latest_run_id,
+    visible_vendor_ids=None,
 ) -> Facets:
     """Facet counts per change-status and per month, scoped to the current
     filter set but excluding the status dimension. Two queries total: one
     conditional-aggregation query for status, one grouped query for dates."""
-    conds = _filter_conditions(source_id, toc_entry_id, q, search, date_from, date_to)
+    conds = _filter_conditions(
+        source_id, toc_entry_id, q, search, date_from, date_to, visible_vendor_ids
+    )
 
     # Status facets — a single query using COUNT(*) FILTER (WHERE …), matching
     # the per-item classification (new > updated > unchanged).
@@ -350,12 +386,17 @@ async def _compute_facets(
 
 
 @router.get("/{article_id}", response_model=ArticleDetailResponse)
-async def get_article(article_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_article(
+    article_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """Get a single article with full content, images, and provenance metadata.
 
     Vendor, product, and parent/top-level chapter are derived (the TOC is the
     source of truth), so they stay correct as the TOC is rebuilt across runs.
     """
+    await authorize_article(db, principal, article_id, write=False)
     result = await db.execute(
         select(Article)
         .where(Article.id == article_id)
@@ -425,8 +466,13 @@ async def get_article(article_id: uuid.UUID, db: AsyncSession = Depends(get_db))
 
 
 @router.get("/toc/{source_id}", response_model=TOCResponse)
-async def get_toc(source_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_toc(
+    source_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """Get the table of contents for a source, with article IDs."""
+    await authorize_source(db, principal, source_id, write=False)
     result = await db.execute(
         select(TOCEntry)
         .where(TOCEntry.source_id == source_id)
@@ -486,12 +532,14 @@ async def list_article_versions(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ):
     """List an article's historical snapshots, newest first.
 
     Each ArticleVersion holds a *previous* content snapshot; the live content
     is on the Article itself (exposed here as ``current_hash``).
     """
+    await authorize_article(db, principal, article_id, write=False)
     article = await _get_article_or_404(db, article_id)
 
     count_query = select(func.count(ArticleVersion.id)).where(
@@ -567,8 +615,10 @@ async def get_article_version(
     article_id: uuid.UUID,
     version_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ):
     """Fetch a single version with its full content body (for side-by-side view)."""
+    await authorize_article(db, principal, article_id, write=False)
     version = await _get_version_or_404(db, article_id, version_id)
     return ArticleVersionDetailResponse(
         id=version.id,
@@ -597,6 +647,7 @@ async def get_version_diff(
         "('next') or the live article ('current').",
     ),
     db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ):
     """Return the diff from a version's content to a newer state.
 
@@ -605,6 +656,7 @@ async def get_version_diff(
     ``against=next`` we return that stored diff when available, otherwise we
     compute one. ``against=current`` always diffs against the live article.
     """
+    await authorize_article(db, principal, article_id, write=False)
     version = await _get_version_or_404(db, article_id, version_id)
     article = await _get_article_or_404(db, article_id)
 

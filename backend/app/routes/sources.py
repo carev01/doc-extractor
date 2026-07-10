@@ -11,6 +11,14 @@ from sqlalchemy import select, func, literal, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.authz import (
+    Principal,
+    get_principal,
+    require_admin,
+    require_vendor_read,
+    authorize_product,
+    authorize_source,
+)
 from app.core.config import settings
 from app.core.database import get_db
 from app.services.pdf_import import pdf_path_for
@@ -41,8 +49,13 @@ router = APIRouter(prefix="/api/sources", tags=["sources"])
 
 
 @router.post("", response_model=SourceResponse, status_code=201)
-async def create_source(body: SourceCreate, db: AsyncSession = Depends(get_db)):
+async def create_source(
+    body: SourceCreate,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """Add a new documentation source to extract, under a product."""
+    await authorize_product(db, principal, body.product_id, write=True)
     product = (
         await db.execute(select(Product).where(Product.id == body.product_id))
     ).scalar_one_or_none()
@@ -73,12 +86,18 @@ async def list_sources(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ):
     """List documentation sources, optionally filtered by product or vendor.
 
     ``product_id`` filters directly; ``vendor_id`` filters via the source's
     product (so "all sources for a vendor" still resolves under the new nesting).
     """
+    if vendor_id:
+        require_vendor_read(principal, vendor_id)
+    elif product_id:
+        await authorize_product(db, principal, product_id, write=False)
+
     base_query = select(DocumentationSource)
     count_query = select(func.count(DocumentationSource.id))
 
@@ -95,6 +114,19 @@ async def list_sources(
             DocumentationSource.product_id.in_(vendor_products)
         )
 
+    if not product_id and not vendor_id:
+        visible = principal.visible_vendor_ids()
+        if visible is not None:
+            if not visible:
+                return SourceListResponse(sources=[], total=0)
+            visible_products = (
+                select(Product.id).where(Product.vendor_id.in_(visible)).scalar_subquery()
+            )
+            base_query = base_query.where(DocumentationSource.product_id.in_(visible_products))
+            count_query = count_query.where(
+                DocumentationSource.product_id.in_(visible_products)
+            )
+
     total_result = await db.execute(count_query)
     total = total_result.scalar()
 
@@ -107,25 +139,34 @@ async def list_sources(
 
 
 @router.get("/pickable", response_model=PickableSourceList)
-async def list_pickable_sources(db: AsyncSession = Depends(get_db)):
+async def list_pickable_sources(
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """All sources with vendor/product labels and their current job (if any),
     for the job view's source picker."""
-    rows = (
-        await db.execute(
-            select(
-                DocumentationSource.id,
-                DocumentationSource.name,
-                Vendor.name.label("vendor_name"),
-                Product.name.label("product_name"),
-                DocumentationSource.job_id,
-                Job.name.label("job_name"),
-            )
-            .join(Product, DocumentationSource.product_id == Product.id)
-            .join(Vendor, Product.vendor_id == Vendor.id)
-            .outerjoin(Job, DocumentationSource.job_id == Job.id)
-            .order_by(Vendor.name, Product.name, DocumentationSource.name)
+    visible = principal.visible_vendor_ids()
+    if visible is not None and not visible:
+        return PickableSourceList(sources=[])
+
+    query = (
+        select(
+            DocumentationSource.id,
+            DocumentationSource.name,
+            Vendor.name.label("vendor_name"),
+            Product.name.label("product_name"),
+            DocumentationSource.job_id,
+            Job.name.label("job_name"),
         )
-    ).all()
+        .join(Product, DocumentationSource.product_id == Product.id)
+        .join(Vendor, Product.vendor_id == Vendor.id)
+        .outerjoin(Job, DocumentationSource.job_id == Job.id)
+        .order_by(Vendor.name, Product.name, DocumentationSource.name)
+    )
+    if visible is not None:
+        query = query.where(Product.vendor_id.in_(visible))
+
+    rows = (await db.execute(query)).all()
     return PickableSourceList(sources=[
         PickableSource(
             id=r.id, name=r.name, vendor_name=r.vendor_name,
@@ -139,9 +180,14 @@ REQUIRED_COLUMNS = {"vendor", "product", "source_name", "base_url"}
 
 
 @router.post("/import", response_model=SourceImportResult)
-async def import_sources(body: SourceImportRequest, db: AsyncSession = Depends(get_db)):
+async def import_sources(
+    body: SourceImportRequest,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """Bulk-import sources from CSV. Auto-creates vendors/products by name;
     skips a source when (product, base_url) already exists."""
+    require_admin(principal)
     reader = csvlib.DictReader(io.StringIO(body.csv))
     if reader.fieldnames is None or not REQUIRED_COLUMNS.issubset(
         {(f or "").strip().lower() for f in reader.fieldnames}
@@ -260,10 +306,12 @@ async def create_pdf_source(
     auth_realm_id: uuid.UUID | None = Form(None),
     file: UploadFile | None = File(None),
     db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ):
     """Create a PDF source from either a URL (re-fetchable) or an uploaded file.
     ``auth_realm_id`` attaches an auth realm so a login-walled PDF URL downloads
     authenticated (same as web sources)."""
+    await authorize_product(db, principal, product_id, write=True)
     product = (
         await db.execute(select(Product).where(Product.id == product_id))
     ).scalar_one_or_none()
@@ -312,8 +360,10 @@ async def replace_pdf_file(
     source_id: uuid.UUID,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ):
     """Replace the stored file for an upload-origin PDF source."""
+    await authorize_source(db, principal, source_id, write=True)
     source = (
         await db.execute(select(DocumentationSource).where(DocumentationSource.id == source_id))
     ).scalar_one_or_none()
@@ -335,8 +385,13 @@ async def replace_pdf_file(
 
 
 @router.get("/{source_id}", response_model=SourceResponse)
-async def get_source(source_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_source(
+    source_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """Get a documentation source by ID."""
+    await authorize_source(db, principal, source_id, write=False)
     result = await db.execute(
         select(DocumentationSource).where(DocumentationSource.id == source_id)
     )
@@ -348,9 +403,15 @@ async def get_source(source_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 
 @router.patch("/{source_id}", response_model=SourceResponse)
 async def update_source(
-    source_id: uuid.UUID, body: SourceUpdate, db: AsyncSession = Depends(get_db)
+    source_id: uuid.UUID,
+    body: SourceUpdate,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ):
     """Update a documentation source."""
+    await authorize_source(db, principal, source_id, write=True)
+    if body.product_id is not None:
+        await authorize_product(db, principal, body.product_id, write=True)
     result = await db.execute(
         select(DocumentationSource).where(DocumentationSource.id == source_id)
     )
@@ -428,9 +489,13 @@ class _DetectTokenBody(BaseModel):
 
 @router.post("/{source_id}/detect-version-token")
 async def detect_version_token_route(
-    source_id: uuid.UUID, body: _DetectTokenBody, db: AsyncSession = Depends(get_db)
+    source_id: uuid.UUID,
+    body: _DetectTokenBody,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ):
     """Return a url_template by detecting the version token in the source's base_url."""
+    await authorize_source(db, principal, source_id, write=False)
     source = await db.get(DocumentationSource, source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
@@ -438,8 +503,13 @@ async def detect_version_token_route(
 
 
 @router.delete("/{source_id}", status_code=204)
-async def delete_source(source_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def delete_source(
+    source_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """Delete a documentation source and all associated data."""
+    await authorize_source(db, principal, source_id, write=True)
     result = await db.execute(
         select(DocumentationSource).where(DocumentationSource.id == source_id)
     )
@@ -457,6 +527,7 @@ async def get_source_changelog(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ):
     """Consolidated changelog: every article change for a source, newest first.
 
@@ -464,6 +535,7 @@ async def get_source_changelog(
     for the title. Link each entry to the article version-diff endpoint for the
     detailed change.
     """
+    await authorize_source(db, principal, source_id, write=False)
     result = await db.execute(
         select(DocumentationSource.id).where(DocumentationSource.id == source_id)
     )
@@ -590,7 +662,11 @@ async def get_source_changelog(
 
 
 @router.get("/{source_id}/browse", response_model=BrowseResponse)
-async def browse_source(source_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def browse_source(
+    source_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """Return the TOC tree annotated for the documentation browser.
 
     Each article node carries a ``change_status`` relative to the most recent
@@ -599,6 +675,7 @@ async def browse_source(source_id: uuid.UUID, db: AsyncSession = Depends(get_db)
     last-updated timestamp. Articles no longer present in the rebuilt TOC
     (``toc_entry_id IS NULL``) are returned separately as ``removed``.
     """
+    await authorize_source(db, principal, source_id, write=False)
     src = await db.execute(
         select(DocumentationSource.id).where(DocumentationSource.id == source_id)
     )

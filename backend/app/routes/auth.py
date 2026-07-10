@@ -25,6 +25,7 @@ from app.core.dependencies import (
     authenticate_request,
     get_current_user,
     get_user_role,
+    require_admin,
 )
 from app.core.security import (
     create_access_token,
@@ -40,17 +41,26 @@ from app.core.security import (
 )
 from app.models.api_key import APIKey
 from app.models.user import User, UserRole
+from app.models.user_vendor_permission import UserVendorPermission, VendorAccessLevel
+from app.models.vendor import Vendor
 from app.schemas.auth import (
+    APIKeyAdminResponse,
     APIKeyCreate,
     APIKeyCreatedResponse,
     APIKeyResponse,
     AuthStatusResponse,
+    ChangePasswordRequest,
     LoginRequest,
     OAuthAuthorizeResponse,
     RefreshRequest,
     TokenResponse,
     UserCreate,
+    UserListResponse,
     UserResponse,
+    UserUpdate,
+    VendorPermissionListResponse,
+    VendorPermissionResponse,
+    VendorPermissionSet,
 )
 
 logger = logging.getLogger(__name__)
@@ -262,15 +272,14 @@ async def list_api_keys(
 @router.delete("/keys/{key_id}", status_code=204)
 async def revoke_api_key(
     key_id: uuid.UUID,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Revoke one of the caller's API keys."""
-    result = await db.execute(
-        select(APIKey).where(APIKey.id == key_id, APIKey.user_id == user.id)
-    )
-    api_key = result.scalar_one_or_none()
-    if not api_key:
+    """Revoke an API key. Users may revoke their own; admins may revoke any."""
+    api_key = (await db.execute(select(APIKey).where(APIKey.id == key_id))).scalar_one_or_none()
+    is_admin = get_user_role(request) == UserRole.ADMIN
+    if not api_key or (api_key.user_id != user.id and not is_admin):
         raise HTTPException(status_code=404, detail="API key not found")
     api_key.is_active = False
     api_key.revoked_at = datetime.now(timezone.utc)
@@ -399,3 +408,243 @@ async def oauth_callback(
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
     return _tokens_for_user(user)
+
+
+# ---------------------------------------------------------------------------
+# Self-service: change password + rotate own key
+# ---------------------------------------------------------------------------
+
+@router.post("/change-password", status_code=204)
+async def change_password(
+    body: ChangePasswordRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change the current user's password (verifies the current one first)."""
+    _auth_disabled()
+    if not user.hashed_password:
+        raise HTTPException(
+            status_code=400,
+            detail="This account signs in via an external provider and has no password",
+        )
+    if not verify_password(body.current_password, user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Current password is incorrect")
+    user.hashed_password = hash_password(body.new_password)
+    await db.commit()
+
+
+async def _rotate(db: AsyncSession, api_key: APIKey) -> APIKeyCreatedResponse:
+    """Issue a replacement key (same name/role/expiry), revoke the old one."""
+    raw_key, hashed = generate_api_key()
+    new_key = APIKey(
+        user_id=api_key.user_id,
+        name=api_key.name,
+        key_prefix=key_prefix_from_raw(raw_key),
+        hashed_key=hashed,
+        role=api_key.role,
+        expires_at=api_key.expires_at,
+    )
+    api_key.is_active = False
+    api_key.revoked_at = datetime.now(timezone.utc)
+    db.add(new_key)
+    await db.commit()
+    await db.refresh(new_key)
+    return APIKeyCreatedResponse(
+        id=new_key.id, name=new_key.name, key_prefix=new_key.key_prefix,
+        role=new_key.role, is_active=new_key.is_active, last_used_at=new_key.last_used_at,
+        expires_at=new_key.expires_at, created_at=new_key.created_at,
+        revoked_at=new_key.revoked_at, raw_key=raw_key,
+    )
+
+
+@router.post("/keys/{key_id}/rotate", response_model=APIKeyCreatedResponse, status_code=201)
+async def rotate_api_key(
+    key_id: uuid.UUID,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rotate a key: mint a replacement and revoke the old one (raw shown once).
+    Users may rotate their own keys; admins may rotate any key."""
+    _auth_disabled()
+    api_key = (await db.execute(select(APIKey).where(APIKey.id == key_id))).scalar_one_or_none()
+    is_admin = get_user_role(request) == UserRole.ADMIN
+    if not api_key or (api_key.user_id != user.id and not is_admin):
+        raise HTTPException(status_code=404, detail="API key not found")
+    return await _rotate(db, api_key)
+
+
+# ---------------------------------------------------------------------------
+# Admin: cross-user API-key oversight
+# ---------------------------------------------------------------------------
+
+@router.get("/admin/keys", response_model=list[APIKeyAdminResponse])
+async def admin_list_keys(
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """List every API key with its owner (admin oversight)."""
+    rows = (
+        await db.execute(
+            select(APIKey, User.email)
+            .join(User, User.id == APIKey.user_id)
+            .order_by(APIKey.created_at.desc())
+        )
+    ).all()
+    return [
+        APIKeyAdminResponse(
+            id=k.id, name=k.name, key_prefix=k.key_prefix, role=k.role,
+            is_active=k.is_active, last_used_at=k.last_used_at, expires_at=k.expires_at,
+            created_at=k.created_at, revoked_at=k.revoked_at,
+            user_id=k.user_id, user_email=email,
+        )
+        for k, email in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Admin: user management
+# ---------------------------------------------------------------------------
+
+async def _count_active_admins(db: AsyncSession) -> int:
+    return (
+        await db.execute(
+            select(func.count(User.id)).where(User.role == UserRole.ADMIN, User.is_active.is_(True))
+        )
+    ).scalar() or 0
+
+
+@router.get("/users", response_model=UserListResponse)
+async def list_users(
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    users = (await db.execute(select(User).order_by(User.created_at.asc()))).scalars().all()
+    return UserListResponse(users=list(users), total=len(users))
+
+
+@router.patch("/users/{user_id}", response_model=UserResponse)
+async def update_user(
+    user_id: uuid.UUID,
+    body: UserUpdate,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a user's display name, role, or active state (admin only).
+
+    Guards against locking everyone out: an admin cannot demote or deactivate
+    their own account, nor remove the last remaining active admin."""
+    target = await db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    demoting = body.role is not None and body.role != UserRole.ADMIN and target.role == UserRole.ADMIN
+    deactivating = body.is_active is False and target.is_active
+
+    if target.id == admin.id and (demoting or deactivating):
+        raise HTTPException(status_code=400, detail="You cannot demote or deactivate your own account")
+    if (demoting or deactivating) and target.role == UserRole.ADMIN and await _count_active_admins(db) <= 1:
+        raise HTTPException(status_code=400, detail="Cannot remove the last active admin")
+
+    if body.display_name is not None:
+        target.display_name = body.display_name
+    if body.role is not None:
+        target.role = body.role
+    if body.is_active is not None:
+        target.is_active = body.is_active
+    await db.commit()
+    await db.refresh(target)
+    return target
+
+
+@router.delete("/users/{user_id}", status_code=204)
+async def delete_user(
+    user_id: uuid.UUID,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a user and their keys + vendor grants (admin only)."""
+    target = await db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.id == admin.id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account")
+    if target.role == UserRole.ADMIN and await _count_active_admins(db) <= 1:
+        raise HTTPException(status_code=400, detail="Cannot delete the last active admin")
+    await db.delete(target)  # cascades to api_keys + user_vendor_permissions
+    await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Admin: per-vendor permissions
+# ---------------------------------------------------------------------------
+
+@router.get("/users/{user_id}/vendor-permissions", response_model=VendorPermissionListResponse)
+async def get_vendor_permissions(
+    user_id: uuid.UUID,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if not await db.get(User, user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+    rows = (
+        await db.execute(
+            select(UserVendorPermission.vendor_id, Vendor.name, UserVendorPermission.level)
+            .join(Vendor, Vendor.id == UserVendorPermission.vendor_id)
+            .where(UserVendorPermission.user_id == user_id)
+            .order_by(Vendor.name.asc())
+        )
+    ).all()
+    return VendorPermissionListResponse(
+        user_id=user_id,
+        permissions=[
+            VendorPermissionResponse(vendor_id=vid, vendor_name=name, level=level.value)
+            for vid, name, level in rows
+        ],
+    )
+
+
+@router.put("/users/{user_id}/vendor-permissions", response_model=VendorPermissionListResponse)
+async def set_vendor_permissions(
+    user_id: uuid.UUID,
+    body: VendorPermissionSet,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Replace a user's per-vendor grants wholesale (admin only).
+
+    Each grant's level is capped by the user's global role (a global read_only
+    user cannot be granted read_write on any vendor). Vendors omitted here become
+    invisible to the user."""
+    target = await db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Validate vendors exist and levels don't exceed the user's global role.
+    ceiling_rw = role_at_least(target.role, UserRole.READ_WRITE)
+    seen: set[uuid.UUID] = set()
+    for item in body.permissions:
+        if item.vendor_id in seen:
+            raise HTTPException(status_code=400, detail=f"Duplicate vendor {item.vendor_id}")
+        seen.add(item.vendor_id)
+        if not await db.get(Vendor, item.vendor_id):
+            raise HTTPException(status_code=400, detail=f"Unknown vendor {item.vendor_id}")
+        if item.level == "read_write" and not ceiling_rw:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot grant read_write on {item.vendor_id}: user's global role is read_only",
+            )
+
+    # Replace all grants for this user.
+    existing = (
+        await db.execute(select(UserVendorPermission).where(UserVendorPermission.user_id == user_id))
+    ).scalars().all()
+    for row in existing:
+        await db.delete(row)
+    for item in body.permissions:
+        db.add(UserVendorPermission(
+            user_id=user_id, vendor_id=item.vendor_id,
+            level=VendorAccessLevel(item.level),
+        ))
+    await db.commit()
+    return await get_vendor_permissions(user_id, admin=target, db=db)

@@ -43,6 +43,10 @@ import type {
   AuthStatus,
   TokenResponse,
   AuthUser,
+  VendorPermissionList,
+  ApiKeyItem,
+  ApiKeyCreated,
+  AdminApiKey,
 } from "../types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -605,4 +609,37 @@ export const authApi = {
   },
   me: () => api.get<AuthUser>("/auth/me").then((r) => r.data),
   logout: () => clearTokens(),
+};
+
+// ── User management (admin) ──
+
+export const usersApi = {
+  list: () => api.get<{ users: AuthUser[]; total: number }>("/auth/users").then((r) => r.data),
+  update: (id: string, data: { display_name?: string; role?: string; is_active?: boolean }) =>
+    api.patch<AuthUser>(`/auth/users/${id}`, data).then((r) => r.data),
+  remove: (id: string) => api.delete(`/auth/users/${id}`),
+  getVendorPerms: (id: string) =>
+    api.get<VendorPermissionList>(`/auth/users/${id}/vendor-permissions`).then((r) => r.data),
+  setVendorPerms: (id: string, permissions: { vendor_id: string; level: string }[]) =>
+    api.put<VendorPermissionList>(`/auth/users/${id}/vendor-permissions`, { permissions }).then((r) => r.data),
+  register: (data: { email: string; display_name: string; password: string; role: string }) =>
+    api.post<AuthUser>("/auth/register", data).then((r) => r.data),
+};
+
+// ── API keys (self-service + admin oversight) ──
+
+export const keysApi = {
+  listMine: () => api.get<ApiKeyItem[]>("/auth/keys").then((r) => r.data),
+  create: (data: { name: string; role: string; expires_at?: string | null }) =>
+    api.post<ApiKeyCreated>("/auth/keys", data).then((r) => r.data),
+  rotate: (id: string) => api.post<ApiKeyCreated>(`/auth/keys/${id}/rotate`).then((r) => r.data),
+  revoke: (id: string) => api.delete(`/auth/keys/${id}`),
+  listAll: () => api.get<AdminApiKey[]>("/auth/admin/keys").then((r) => r.data),
+};
+
+// ── Account ──
+
+export const accountApi = {
+  changePassword: (current_password: string, new_password: string) =>
+    api.post("/auth/change-password", { current_password, new_password }),
 };

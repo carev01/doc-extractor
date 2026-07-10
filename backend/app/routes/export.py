@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authz import Principal, authorize_source, get_principal, require_admin
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.export_job import ExportJob, ExportStatus
@@ -27,13 +28,18 @@ router = APIRouter(prefix="/api/export", tags=["export"])
 
 
 @router.post("", response_model=ExportJobCreatedResponse)
-async def create_export(body: ExportRequest, db: AsyncSession = Depends(get_db)):
+async def create_export(
+    body: ExportRequest,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """Enqueue an export job; the worker generates it. Poll /api/export/jobs/{id}."""
     src = await db.execute(
         select(DocumentationSource.id).where(DocumentationSource.id == body.source_id)
     )
     if src.scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="Source not found")
+    await authorize_source(db, principal, body.source_id, write=False)
     job = await enqueue_export(db, body.source_id, body.model_dump(mode="json"))
     return ExportJobCreatedResponse(export_job_id=job.id, status="pending")
 
@@ -43,12 +49,18 @@ async def list_export_jobs(
     status: str | None = None,
     limit: int = 100,
     db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ):
     """List export jobs (newest first) with vendor/product/source names.
 
     Powers the Exports section of the Jobs view. Optionally filter by status.
     """
     limit = max(1, min(limit, 500))
+
+    visible = principal.visible_vendor_ids()
+    if visible is not None and not visible:
+        return {"jobs": []}
+
     query = (
         select(
             ExportJob,
@@ -63,6 +75,8 @@ async def list_export_jobs(
     )
     if status:
         query = query.where(ExportJob.status == status)
+    if visible is not None:
+        query = query.where(Product.vendor_id.in_(visible))
     rows = (await db.execute(query.limit(limit))).all()
     return {
         "jobs": [
@@ -87,12 +101,17 @@ async def list_export_jobs(
 
 
 @router.post("/jobs/{job_id}/cancel")
-async def cancel_export_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def cancel_export_job(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """Cancel a *queued* export job. Running jobs can't be cancelled (one-shot
     generation); they finish or fail on their own."""
     job = (await db.execute(select(ExportJob).where(ExportJob.id == job_id))).scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=404, detail="Export job not found")
+    await authorize_source(db, principal, job.source_id, write=False)
     if job.status != ExportStatus.PENDING:
         raise HTTPException(
             status_code=409,
@@ -104,10 +123,15 @@ async def cancel_export_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_db
 
 
 @router.get("/jobs/{job_id}", response_model=ExportJobStatusResponse)
-async def get_export_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_export_job(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     job = (await db.execute(select(ExportJob).where(ExportJob.id == job_id))).scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=404, detail="Export job not found")
+    await authorize_source(db, principal, job.source_id, write=False)
     result = job.result or {}
     return ExportJobStatusResponse(
         id=job.id, source_id=job.source_id, status=job.status.value,
@@ -117,8 +141,19 @@ async def get_export_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/download/{export_id}")
-async def download_export_zip(export_id: uuid.UUID):
+async def download_export_zip(
+    export_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """Download the self-contained zip bundle (markdown + images) for an export."""
+    job = (
+        await db.execute(select(ExportJob).where(ExportJob.export_id == export_id))
+    ).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Export not found")
+    await authorize_source(db, principal, job.source_id, write=False)
+
     export_subdir = os.path.join(export_engine.export_dir, str(export_id))
     if not os.path.isdir(export_subdir):
         raise HTTPException(status_code=404, detail="Export not found")
@@ -135,8 +170,20 @@ async def download_export_zip(export_id: uuid.UUID):
 
 
 @router.get("/download/{export_id}/{filename}")
-async def download_export_file(export_id: uuid.UUID, filename: str):
+async def download_export_file(
+    export_id: uuid.UUID,
+    filename: str,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """Download a specific export file."""
+    job = (
+        await db.execute(select(ExportJob).where(ExportJob.export_id == export_id))
+    ).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Export file not found")
+    await authorize_source(db, principal, job.source_id, write=False)
+
     filepath = os.path.join(
         export_engine.export_dir, str(export_id), filename
     )
@@ -161,7 +208,10 @@ async def download_export_file(export_id: uuid.UUID, filename: str):
 
 
 @router.get("/list")
-async def list_exports(db: AsyncSession = Depends(get_db)):
+async def list_exports(
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """List recent (non-expired) completed exports with metadata, newest first.
 
     Backed by export_jobs (the source of truth) so the listing survives page
@@ -170,18 +220,25 @@ async def list_exports(db: AsyncSession = Depends(get_db)):
     """
     from datetime import timedelta
 
-    rows = (
-        await db.execute(
-            select(ExportJob, DocumentationSource.name)
-            .join(DocumentationSource, ExportJob.source_id == DocumentationSource.id)
-            .where(
-                ExportJob.status == ExportStatus.COMPLETED,
-                ExportJob.export_id.isnot(None),
-            )
-            .order_by(ExportJob.created_at.desc())
-            .limit(20)
+    visible = principal.visible_vendor_ids()
+    if visible is not None and not visible:
+        return {"exports": []}
+
+    query = (
+        select(ExportJob, DocumentationSource.name)
+        .join(DocumentationSource, ExportJob.source_id == DocumentationSource.id)
+        .join(Product, DocumentationSource.product_id == Product.id)
+        .where(
+            ExportJob.status == ExportStatus.COMPLETED,
+            ExportJob.export_id.isnot(None),
         )
-    ).all()
+        .order_by(ExportJob.created_at.desc())
+        .limit(20)
+    )
+    if visible is not None:
+        query = query.where(Product.vendor_id.in_(visible))
+
+    rows = (await db.execute(query)).all()
 
     retention_days = settings.export_retention_days
     exports = []
@@ -211,7 +268,11 @@ async def list_exports(db: AsyncSession = Depends(get_db)):
 
 
 @router.delete("/{export_id}", status_code=204)
-async def delete_export(export_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def delete_export(
+    export_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """Delete a generated export now — its on-disk directory and its export_jobs
     row — so a user can reclaim space without waiting for the retention sweep.
 
@@ -229,6 +290,13 @@ async def delete_export(export_id: uuid.UUID, db: AsyncSession = Depends(get_db)
     dir_exists = os.path.isdir(subdir)
     if job is None and not dir_exists:
         raise HTTPException(status_code=404, detail="Export not found")
+
+    if job is not None:
+        await authorize_source(db, principal, job.source_id, write=False)
+    else:
+        # Orphaned directory with no export_jobs row → no vendor to check
+        # against; only an admin may reclaim it.
+        require_admin(principal)
 
     if dir_exists:
         shutil.rmtree(subdir, ignore_errors=True)

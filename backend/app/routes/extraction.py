@@ -9,6 +9,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authz import Principal, authorize_run, authorize_source, get_principal
 from app.core.database import get_db
 from app.models.article import Article
 from app.models.article_version import ArticleVersion
@@ -35,11 +36,14 @@ router = APIRouter(prefix="/api/extraction", tags=["extraction"])
 async def trigger_extraction(
     source_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ):
     """Queue a full extraction for a source. A worker picks it up.
 
     Poll /api/extraction/runs/{run_id} for status (pending -> running -> completed).
     """
+    await authorize_source(db, principal, source_id, write=True)
+
     result = await db.execute(
         select(DocumentationSource).where(DocumentationSource.id == source_id)
     )
@@ -75,11 +79,17 @@ async def trigger_extraction(
 
 
 @router.post("/runs/{run_id}/retry-escalation", response_model=ExtractionTriggerResponse)
-async def retry_escalation(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def retry_escalation(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """Re-attempt the VLM escalation that failed on a PDF run, without redoing the
     Layer-A conversion. Enqueues a lightweight kind="escalate" run that re-converts
     only the recorded page ranges. 409 if there is nothing pending or a run is
     already active for the source."""
+    await authorize_run(db, principal, run_id, write=True)
+
     run = await db.get(ExtractionRun, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -207,8 +217,14 @@ async def firecrawl_webhook(
 
 
 @router.get("/runs/{run_id}")
-async def get_run_status(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_run_status(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """Get the status of an extraction run."""
+    await authorize_run(db, principal, run_id, write=False)
+
     result = await db.execute(
         select(ExtractionRun).where(ExtractionRun.id == run_id)
     )
@@ -241,6 +257,7 @@ async def list_runs(
     status: str | None = None,
     limit: int = 100,
     db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ):
     """List extraction runs (newest first) with vendor/product/source names.
 
@@ -248,6 +265,15 @@ async def list_runs(
     history and by the unified Jobs view (no source filter = all runs).
     """
     limit = max(1, min(limit, 500))
+
+    visible = None
+    if source_id:
+        await authorize_source(db, principal, source_id, write=False)
+    else:
+        visible = principal.visible_vendor_ids()
+        if visible is not None and not visible:
+            return {"runs": []}
+
     query = (
         select(
             ExtractionRun,
@@ -262,6 +288,8 @@ async def list_runs(
     )
     if source_id:
         query = query.where(ExtractionRun.source_id == source_id)
+    elif visible is not None:
+        query = query.where(Product.vendor_id.in_(visible))
     if status:
         query = query.where(ExtractionRun.status == status)
 
@@ -301,8 +329,14 @@ async def list_runs(
 
 
 @router.get("/runs/{run_id}/logs")
-async def get_run_logs(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_run_logs(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """Return the captured raw worker logs for a run (tail-capped at write time)."""
+    await authorize_run(db, principal, run_id, write=False)
+
     log_text = (
         await db.execute(
             select(ExtractionRun.log_text).where(ExtractionRun.id == run_id)
@@ -335,10 +369,16 @@ async def _clear_checkpoint(source_id: uuid.UUID, db: AsyncSession) -> None:
 
 
 @router.post("/runs/{run_id}/cancel")
-async def cancel_run(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def cancel_run(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """Cancel a run. Queued/paused runs end immediately (and their resume
     checkpoint is discarded); a running run gets a cooperative cancel signal that
     the worker honours at the next batch boundary."""
+    await authorize_run(db, principal, run_id, write=True)
+
     run = await _load_run(run_id, db)
     from datetime import datetime, timezone
 
@@ -361,9 +401,15 @@ async def cancel_run(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/runs/{run_id}/pause")
-async def pause_run(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def pause_run(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """Pause a run, keeping its resume checkpoint. A running run is signalled and
     pauses at the next batch boundary; a queued run is held as PAUSED."""
+    await authorize_run(db, principal, run_id, write=True)
+
     run = await _load_run(run_id, db)
     if run.status == RunStatus.RUNNING:
         run.control = "pause"
@@ -380,9 +426,15 @@ async def pause_run(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/runs/{run_id}/resume")
-async def resume_run(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def resume_run(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """Resume a paused run by re-queuing it; the worker re-claims it and continues
     from the checkpoint. 409 if another run is already active for the source."""
+    await authorize_run(db, principal, run_id, write=True)
+
     run = await _load_run(run_id, db)
     if run.status != RunStatus.PAUSED:
         raise HTTPException(
@@ -406,7 +458,11 @@ async def resume_run(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/resanitize/{source_id}")
-async def resanitize_source(source_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def resanitize_source(
+    source_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
     """Re-apply the current sanitizer to a source's stored articles.
 
     Content sanitization runs at write time, so existing articles are only
@@ -421,6 +477,8 @@ async def resanitize_source(source_id: uuid.UUID, db: AsyncSession = Depends(get
     versions. Rejected with 409 while a run is active for the source, so it never
     races the writer.
     """
+    await authorize_source(db, principal, source_id, write=True)
+
     source = (
         await db.execute(
             select(DocumentationSource).where(DocumentationSource.id == source_id)

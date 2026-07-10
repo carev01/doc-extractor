@@ -6,6 +6,7 @@ from app.models.job import Job
 from app.models.auth_realm import AuthRealm, RealmStatus
 from app.models.user import User, UserRole
 from app.models.api_key import APIKey
+from app.models.user_vendor_permission import UserVendorPermission, VendorAccessLevel
 from app.models.source import DocumentationSource, SourceStatus
 from app.models.toc import TOCEntry
 from app.models.article import Article
@@ -26,6 +27,8 @@ __all__ = [
     "User",
     "UserRole",
     "APIKey",
+    "UserVendorPermission",
+    "VendorAccessLevel",
     "DocumentationSource",
     "SourceStatus",
     "TOCEntry",

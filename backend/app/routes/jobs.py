@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authz import Principal, get_principal, require_admin
 from app.core.database import get_db
 from app.models.job import Job
 from app.models.job_run import JobRun
@@ -24,7 +25,12 @@ from app.schemas.job import (
 from app.services.cron import build_cron, compute_next_run
 from app.services.scheduling import fan_out_job
 
-router = APIRouter(prefix="/api/jobs", tags=["jobs"])
+
+def _require_admin(principal: Principal = Depends(get_principal)) -> None:
+    require_admin(principal)
+
+
+router = APIRouter(prefix="/api/jobs", tags=["jobs"], dependencies=[Depends(_require_admin)])
 
 
 async def _job_sources(db: AsyncSession, job_id: uuid.UUID) -> list[JobSourceRef]:

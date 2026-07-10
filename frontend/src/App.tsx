@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
-import type { Vendor, Product, DocumentationSource } from "./types";
+import type { Vendor, Product, DocumentationSource, AuthUser } from "./types";
 import { authApi, getAccessToken } from "./api/client";
 import { Login } from "./views/Login";
+import { ApiKeys } from "./views/ApiKeys";
+import { Admin } from "./views/Admin";
 import VendorList from "./components/VendorList";
 import ProductList from "./components/ProductList";
 import SourceList from "./components/SourceList";
@@ -24,7 +26,9 @@ type View =
   | "jobs"
   | "dashboard"
   | "logins"
-  | "webhooks";
+  | "webhooks"
+  | "apikeys"
+  | "admin";
 const SOURCE_TABS = ["browse", "export", "changelog"] as const;
 const SOURCE_TAB_LABELS: Record<string, string> = {
   browse: "Browse",
@@ -43,6 +47,7 @@ export default function App() {
   // 'login' = sign-in required; 'authed' = signed in.
   const [authGate, setAuthGate] = useState<"loading" | "open" | "login" | "authed">("loading");
   const [needsBootstrap, setNeedsBootstrap] = useState(false);
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -60,7 +65,8 @@ export default function App() {
           return;
         }
         try {
-          await authApi.me();
+          const u = await authApi.me();
+          setCurrentUser(u);
           setAuthGate("authed");
         } catch {
           setAuthGate("login");
@@ -106,7 +112,19 @@ export default function App() {
     return <div className="app" style={{ padding: "2em" }}>Loading…</div>;
   }
   if (authGate === "login") {
-    return <Login needsBootstrap={needsBootstrap} onSuccess={() => setAuthGate("authed")} />;
+    return (
+      <Login
+        needsBootstrap={needsBootstrap}
+        onSuccess={async () => {
+          try {
+            setCurrentUser(await authApi.me());
+          } catch {
+            /* ignore — /me will be retried on next load */
+          }
+          setAuthGate("authed");
+        }}
+      />
+    );
   }
 
   return (
@@ -196,6 +214,20 @@ export default function App() {
           {authGate === "authed" && (
             <>
               <span className="sep">│</span>
+              <button
+                className={view === "apikeys" ? "active" : ""}
+                onClick={() => setView("apikeys")}
+              >
+                API Keys
+              </button>
+              {currentUser?.role === "admin" && (
+                <button
+                  className={view === "admin" ? "active" : ""}
+                  onClick={() => setView("admin")}
+                >
+                  Admin
+                </button>
+              )}
               <button onClick={handleLogout}>Log out</button>
             </>
           )}
@@ -208,6 +240,10 @@ export default function App() {
         {view === "logins" && <Logins />}
 
         {view === "webhooks" && <Webhooks />}
+
+        {view === "apikeys" && <ApiKeys me={currentUser} />}
+
+        {view === "admin" && <Admin meId={currentUser?.id ?? null} />}
 
         {view === "dashboard" && (
           <Dashboard onSelectSource={handleSelectSource} />

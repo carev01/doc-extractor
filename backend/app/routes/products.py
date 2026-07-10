@@ -2,7 +2,8 @@
 
 A product groups one or more documentation sources under a vendor. Deleting a
 product cascades to its sources (and their articles/TOC/runs), same as deleting
-a vendor cascades to its products.
+a vendor cascades to its products. Access follows the owning vendor: read needs
+a grant, mutations need a read_write grant (admins bypass).
 """
 
 import uuid
@@ -12,6 +13,9 @@ from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authz import (
+    Principal, authorize_product, get_principal, require_vendor_read, require_vendor_write,
+)
 from app.core.database import get_db
 from app.models.article import Article
 from app.models.product import Product
@@ -30,14 +34,18 @@ router = APIRouter(prefix="/api/products", tags=["products"])
 
 
 @router.post("", response_model=ProductResponse, status_code=201)
-async def create_product(body: ProductCreate, db: AsyncSession = Depends(get_db)):
-    """Create a new product under a vendor."""
+async def create_product(
+    body: ProductCreate,
+    principal: Principal = Depends(get_principal),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a new product under a vendor (needs read_write on the vendor)."""
+    require_vendor_write(principal, body.vendor_id)
     vendor = (
         await db.execute(select(Vendor).where(Vendor.id == body.vendor_id))
     ).scalar_one_or_none()
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
-
     product = Product(vendor_id=body.vendor_id, name=body.name)
     db.add(product)
     await db.commit()
@@ -50,28 +58,38 @@ async def list_products(
     vendor_id: uuid.UUID | None = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
+    principal: Principal = Depends(get_principal),
     db: AsyncSession = Depends(get_db),
 ):
-    """List products, optionally filtered by vendor."""
+    """List products under vendors the caller can see."""
     base_query = select(Product)
     count_query = select(func.count(Product.id))
 
     if vendor_id:
+        require_vendor_read(principal, vendor_id)
         base_query = base_query.where(Product.vendor_id == vendor_id)
         count_query = count_query.where(Product.vendor_id == vendor_id)
+    else:
+        visible = principal.visible_vendor_ids()  # None = all
+        if visible is not None:
+            if not visible:
+                return ProductListResponse(products=[], total=0)
+            base_query = base_query.where(Product.vendor_id.in_(visible))
+            count_query = count_query.where(Product.vendor_id.in_(visible))
 
     total = (await db.execute(count_query)).scalar()
-    result = await db.execute(
-        base_query.order_by(Product.name).offset(skip).limit(limit)
-    )
-    products = result.scalars().all()
-
-    return ProductListResponse(products=products, total=total)
+    result = await db.execute(base_query.order_by(Product.name).offset(skip).limit(limit))
+    return ProductListResponse(products=result.scalars().all(), total=total)
 
 
 @router.get("/{product_id}", response_model=ProductResponse)
-async def get_product(product_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Get a product by ID."""
+async def get_product(
+    product_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a product by ID (404 if its vendor isn't visible)."""
+    await authorize_product(db, principal, product_id, write=False)
     product = (
         await db.execute(select(Product).where(Product.id == product_id))
     ).scalar_one_or_none()
@@ -82,32 +100,38 @@ async def get_product(product_id: uuid.UUID, db: AsyncSession = Depends(get_db))
 
 @router.patch("/{product_id}", response_model=ProductResponse)
 async def update_product(
-    product_id: uuid.UUID, body: ProductUpdate, db: AsyncSession = Depends(get_db)
+    product_id: uuid.UUID,
+    body: ProductUpdate,
+    principal: Principal = Depends(get_principal),
+    db: AsyncSession = Depends(get_db),
 ):
     """Update a product (rename)."""
+    await authorize_product(db, principal, product_id, write=True)
     product = (
         await db.execute(select(Product).where(Product.id == product_id))
     ).scalar_one_or_none()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
-
     if body.name is not None:
         product.name = body.name
-
     await db.commit()
     await db.refresh(product)
     return product
 
 
 @router.delete("/{product_id}", status_code=204)
-async def delete_product(product_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def delete_product(
+    product_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: AsyncSession = Depends(get_db),
+):
     """Delete a product and all its sources (cascades)."""
+    await authorize_product(db, principal, product_id, write=True)
     product = (
         await db.execute(select(Product).where(Product.id == product_id))
     ).scalar_one_or_none()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
-
     await db.delete(product)
     await db.commit()
 
@@ -118,9 +142,13 @@ class _EnableVersionBody(BaseModel):
 
 @router.post("/{product_id}/versions/enable")
 async def enable_versioning(
-    product_id: uuid.UUID, body: _EnableVersionBody, db: AsyncSession = Depends(get_db)
+    product_id: uuid.UUID,
+    body: _EnableVersionBody,
+    principal: Principal = Depends(get_principal),
+    db: AsyncSession = Depends(get_db),
 ):
     """Templatize child sources containing the version and rekey their articles."""
+    await authorize_product(db, principal, product_id, write=True)
     product = await db.get(Product, product_id)
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -138,7 +166,6 @@ async def enable_versioning(
             continue
         src.url_template = tmpl
         templatized += 1
-        # Rekey existing articles so a later bump matches by version-independent key.
         arts = (
             await db.execute(select(Article).where(Article.source_id == src.id))
         ).scalars().all()
@@ -155,9 +182,13 @@ class _BumpVersionBody(BaseModel):
 
 @router.post("/{product_id}/versions/bump")
 async def bump_version(
-    product_id: uuid.UUID, body: _BumpVersionBody, db: AsyncSession = Depends(get_db)
+    product_id: uuid.UUID,
+    body: _BumpVersionBody,
+    principal: Principal = Depends(get_principal),
+    db: AsyncSession = Depends(get_db),
 ):
     """Bump a product to a new version: rewrite templated source URLs and enqueue runs."""
+    await authorize_product(db, principal, product_id, write=True)
     product = await db.get(Product, product_id)
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -188,5 +219,5 @@ async def bump_version(
             run = await enqueue_run(db, s.id, trigger="version-bump")
             run_ids.append(str(run.id))
         except ActiveRunExists:
-            continue  # a run is already queued/active for this source; skip
+            continue
     return {"version": product.version, "runs": run_ids}
