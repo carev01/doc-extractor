@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Vendor, Product, DocumentationSource, AuthUser } from "./types";
 import { authApi, getAccessToken } from "./api/client";
 import { Login } from "./views/Login";
 import { ApiKeys } from "./views/ApiKeys";
 import { Admin } from "./views/Admin";
+import { Account } from "./views/Account";
 import VendorList from "./components/VendorList";
 import ProductList from "./components/ProductList";
 import SourceList from "./components/SourceList";
@@ -28,7 +29,8 @@ type View =
   | "logins"
   | "webhooks"
   | "apikeys"
-  | "admin";
+  | "user-management"
+  | "account";
 const SOURCE_TABS = ["browse", "export", "changelog"] as const;
 const SOURCE_TAB_LABELS: Record<string, string> = {
   browse: "Browse",
@@ -48,6 +50,10 @@ export default function App() {
   const [authGate, setAuthGate] = useState<"loading" | "open" | "login" | "authed">("loading");
   const [needsBootstrap, setNeedsBootstrap] = useState(false);
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+
+  // Hamburger menu state
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -85,6 +91,18 @@ export default function App() {
     };
   }, []);
 
+  // Click-outside handler for hamburger menu
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [menuOpen]);
+
   const handleLogout = () => {
     authApi.logout();
     setAuthGate("login");
@@ -106,6 +124,11 @@ export default function App() {
   const handleSelectSource = (source: DocumentationSource) => {
     setSelectedSource(source);
     setView("browse");
+  };
+
+  const handleMenuNav = (target: View) => {
+    setView(target);
+    setMenuOpen(false);
   };
 
   if (authGate === "loading") {
@@ -199,38 +222,60 @@ export default function App() {
           >
             Dashboard
           </button>
-          <button
-            className={view === "logins" ? "active" : ""}
-            onClick={() => setView("logins")}
-          >
-            Logins
-          </button>
-          <button
-            className={view === "webhooks" ? "active" : ""}
-            onClick={() => setView("webhooks")}
-          >
-            Webhooks
-          </button>
-          {authGate === "authed" && (
-            <>
-              <span className="sep">│</span>
-              <button
-                className={view === "apikeys" ? "active" : ""}
-                onClick={() => setView("apikeys")}
-              >
-                API Keys
-              </button>
-              {currentUser?.role === "admin" && (
+          <div className="hamburger-wrapper" ref={menuRef}>
+            <button
+              className={`hamburger${menuOpen ? " active" : ""}`}
+              onClick={() => setMenuOpen((v) => !v)}
+              aria-label="Menu"
+              aria-expanded={menuOpen}
+            >
+              ☰
+            </button>
+            {menuOpen && (
+              <div className="hamburger-menu">
                 <button
-                  className={view === "admin" ? "active" : ""}
-                  onClick={() => setView("admin")}
+                  className={`hamburger-menu-item${view === "logins" ? " active" : ""}`}
+                  onClick={() => handleMenuNav("logins")}
                 >
-                  Admin
+                  Logins
                 </button>
-              )}
-              <button onClick={handleLogout}>Log out</button>
-            </>
-          )}
+                <button
+                  className={`hamburger-menu-item${view === "webhooks" ? " active" : ""}`}
+                  onClick={() => handleMenuNav("webhooks")}
+                >
+                  Webhooks
+                </button>
+                <button
+                  className={`hamburger-menu-item${view === "apikeys" ? " active" : ""}`}
+                  onClick={() => handleMenuNav("apikeys")}
+                >
+                  API Keys
+                </button>
+                {currentUser?.role === "admin" && (
+                  <button
+                    className={`hamburger-menu-item${view === "user-management" ? " active" : ""}`}
+                    onClick={() => handleMenuNav("user-management")}
+                  >
+                    User Management
+                  </button>
+                )}
+                <div className="hamburger-menu-divider" />
+                <button
+                  className={`hamburger-menu-item${view === "account" ? " active" : ""}`}
+                  onClick={() => handleMenuNav("account")}
+                >
+                  Account
+                </button>
+                <div className="hamburger-menu-divider" />
+                <button
+                  className="hamburger-menu-item"
+                  onClick={() => { handleLogout(); setMenuOpen(false); }}
+                >
+                  Log out
+                </button>
+              </div>
+            )}
+          </div>
         </nav>
       </header>
 
@@ -243,7 +288,9 @@ export default function App() {
 
         {view === "apikeys" && <ApiKeys me={currentUser} />}
 
-        {view === "admin" && <Admin meId={currentUser?.id ?? null} />}
+        {view === "user-management" && <Admin meId={currentUser?.id ?? null} />}
+
+        {view === "account" && <Account />}
 
         {view === "dashboard" && (
           <Dashboard onSelectSource={handleSelectSource} />

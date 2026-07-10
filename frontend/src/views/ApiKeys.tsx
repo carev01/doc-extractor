@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { keysApi, accountApi } from "../api/client";
 import { apiError } from "../api/errors";
-import type { ApiKeyItem, ApiKeyCreated, AuthUser } from "../types";
+import type { ApiKeyItem, ApiKeyCreated, AuthUser, AdminApiKey } from "../types";
 
-/** Self-service: manage your own API keys and change your password. */
+/** Self-service: manage your own API keys. Admins also see all keys. */
 export function ApiKeys({ me }: { me: AuthUser | null }) {
   const [keys, setKeys] = useState<ApiKeyItem[]>([]);
   const [name, setName] = useState("");
@@ -98,12 +98,48 @@ export function ApiKeys({ me }: { me: AuthUser | null }) {
         </tbody>
       </table>
 
-      {me?.oauth_provider == null && <ChangePassword />}
+      {me?.role === "admin" && <AdminKeys />}
     </div>
   );
 }
 
-function ChangePassword() {
+function AdminKeys() {
+  const [keys, setKeys] = useState<AdminApiKey[]>([]);
+  const refresh = () => keysApi.listAll().then(setKeys).catch(() => {});
+  useEffect(() => { refresh(); }, []);
+  const revoke = async (id: string) => {
+    if (!confirm("Revoke this key?")) return;
+    try { await keysApi.revoke(id); refresh(); } catch { /* ignore */ }
+  };
+  return (
+    <div style={{ marginTop: "2em", borderTop: "1px solid var(--line)", paddingTop: "1.5em" }}>
+      <h3>All API Keys</h3>
+      <table style={{ width: "100%", fontSize: "0.9em", borderCollapse: "collapse" }}>
+        <thead>
+          <tr style={{ textAlign: "left", color: "#888" }}>
+            <th>Owner</th><th>Name</th><th>Prefix</th><th>Role</th><th>Status</th><th>Last used</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {keys.map((k) => (
+            <tr key={k.id} style={{ opacity: k.is_active ? 1 : 0.5 }}>
+              <td>{k.user_email}</td>
+              <td>{k.name}</td>
+              <td><code>{k.key_prefix}…</code></td>
+              <td>{k.role}</td>
+              <td>{k.is_active ? "active" : "revoked"}</td>
+              <td>{k.last_used_at ? new Date(k.last_used_at).toLocaleString() : "never"}</td>
+              <td>{k.is_active && <button className="btn-danger-sm" onClick={() => revoke(k.id)}>Revoke</button>}</td>
+            </tr>
+          ))}
+          {keys.length === 0 && <tr><td colSpan={7} className="sub">No keys.</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export function ChangePassword() {
   const [cur, setCur] = useState("");
   const [next, setNext] = useState("");
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -121,13 +157,18 @@ function ChangePassword() {
   };
 
   return (
-    <div style={{ marginTop: "2em", maxWidth: 360 }}>
-      <h3>Change password</h3>
-      <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: "0.5em" }}>
-        <input type="password" placeholder="Current password" value={cur} autoComplete="current-password" onChange={(e) => setCur(e.target.value)} required />
-        <input type="password" placeholder="New password (min 8 chars)" value={next} autoComplete="new-password" minLength={8} onChange={(e) => setNext(e.target.value)} required />
-        <button type="submit">Update password</button>
-        {msg && <div className={msg.ok ? "sub" : "error"}>{msg.text}</div>}
+    <div className="account-card">
+      <form onSubmit={submit} className="account-form">
+        <div className="account-form-header">
+          <h3>Change Password</h3>
+          <p className="sub">Update your account password.</p>
+        </div>
+        <div className="account-form-fields">
+          <input type="password" placeholder="Current password" value={cur} autoComplete="current-password" onChange={(e) => setCur(e.target.value)} required />
+          <input type="password" placeholder="New password (min 8 chars)" value={next} autoComplete="new-password" minLength={8} onChange={(e) => setNext(e.target.value)} required />
+        </div>
+        <button type="submit" className="btn-primary account-form-submit">Update password</button>
+        {msg && <div className={msg.ok ? "sub account-form-msg" : "error account-form-msg"}>{msg.text}</div>}
       </form>
     </div>
   );
