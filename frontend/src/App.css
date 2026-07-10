@@ -2145,3 +2145,166 @@ a.btn-primary {
   border-radius: 4px;
 }
 .import-result { margin-top: 0.6rem; max-height: 30vh; overflow-y: auto; }
+
+/* ============================================================
+   Hamburger menu
+   ============================================================ */
+.hamburger-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+.hamburger {
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 1.1rem;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s ease, background 0.2s ease;
+}
+
+.hamburger:hover {
+  color: var(--text);
+  background: var(--ink-2);
+}
+
+.hamburger.active {
+  color: var(--amber);
+  background: var(--ink-2);
+}
+
+.hamburger-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  background: var(--ink-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 12px 30px -10px rgba(0, 0, 0, 0.7);
+  min-width: 180px;
+  z-index: 50;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  animation: hamburger-in 0.15s ease;
+}
+
+@keyframes hamburger-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.hamburger-menu button {
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  min-height: 32px;
+  text-align: left;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.hamburger-menu button:hover {
+  color: var(--text);
+  background: var(--ink-2);
+}
+
+.hamburger-menu button.active {
+  color: var(--amber);
+}
+
+.hamburger-menu-divider {
+  height: 1px;
+  background: var(--line);
+  margin: 4px 0;
+}
+
+/* ============================================================
+   Account page
+   ============================================================ */
+.account-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.account-card {
+  background: linear-gradient(180deg, var(--ink-1) 0%, var(--ink-0) 100%);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 32px 36px;
+  width: min(420px, 92vw);
+  box-shadow: var(--shadow), 0 1px 0 rgba(255, 255, 255, 0.02) inset;
+}
+
+.account-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.account-form-header h3 {
+  margin: 0 0 4px;
+}
+
+.account-form-header .sub {
+  font-size: 0.82rem;
+  color: var(--text-faint);
+}
+
+.account-form-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.account-form-fields input {
+  padding: 11px 14px;
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 0.92rem;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.account-form-fields input:hover {
+  border-color: var(--text-faint);
+  background: var(--ink-3);
+}
+
+.account-form-fields input:focus {
+  outline: none;
+  border-color: var(--amber);
+  box-shadow: 0 0 0 3px var(--amber-ghost);
+}
+
+.account-form-fields input::placeholder {
+  color: var(--text-faint);
+}
+
+.account-form-submit {
+  align-self: flex-start;
+}
+
+.account-form-msg {
+  font-size: 0.85rem;
+}

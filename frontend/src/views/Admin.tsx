@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { usersApi, keysApi, listVendors } from "../api/client";
+import { usersApi, listVendors } from "../api/client";
 import { apiError } from "../api/errors";
-import type { AuthUser, Vendor, AdminApiKey } from "../types";
+import type { AuthUser, Vendor } from "../types";
 
 type Role = "admin" | "read_write" | "read_only";
 type Level = "none" | "read_only" | "read_write";
@@ -31,7 +31,7 @@ export function Admin({ meId }: { meId: string | null }) {
 
   return (
     <div className="admin-view">
-      <h2>Administration</h2>
+      <h2>User Management</h2>
       {err && <div className="error">{err}</div>}
 
       <CreateUser onCreated={refresh} />
@@ -75,8 +75,6 @@ export function Admin({ meId }: { meId: string | null }) {
       {editingPerms && (
         <VendorPermsEditor user={editingPerms} onClose={() => setEditingPerms(null)} />
       )}
-
-      <AdminKeys />
     </div>
   );
 }
@@ -184,38 +182,4 @@ function VendorPermsEditor({ user, onClose }: { user: AuthUser; onClose: () => v
   );
 }
 
-function AdminKeys() {
-  const [keys, setKeys] = useState<AdminApiKey[]>([]);
-  const refresh = () => keysApi.listAll().then(setKeys).catch(() => {});
-  useEffect(() => { refresh(); }, []);
-  const revoke = async (id: string) => {
-    if (!confirm("Revoke this key?")) return;
-    try { await keysApi.revoke(id); refresh(); } catch { /* ignore */ }
-  };
-  return (
-    <div style={{ marginTop: "2em" }}>
-      <h3>All API keys</h3>
-      <table style={{ width: "100%", fontSize: "0.9em", borderCollapse: "collapse" }}>
-        <thead>
-          <tr style={{ textAlign: "left", color: "#888" }}>
-            <th>Owner</th><th>Name</th><th>Prefix</th><th>Role</th><th>Status</th><th>Last used</th><th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {keys.map((k) => (
-            <tr key={k.id} style={{ opacity: k.is_active ? 1 : 0.5 }}>
-              <td>{k.user_email}</td>
-              <td>{k.name}</td>
-              <td><code>{k.key_prefix}…</code></td>
-              <td>{k.role}</td>
-              <td>{k.is_active ? "active" : "revoked"}</td>
-              <td>{k.last_used_at ? new Date(k.last_used_at).toLocaleString() : "never"}</td>
-              <td>{k.is_active && <button className="btn-danger-sm" onClick={() => revoke(k.id)}>Revoke</button>}</td>
-            </tr>
-          ))}
-          {keys.length === 0 && <tr><td colSpan={7} className="sub">No keys.</td></tr>}
-        </tbody>
-      </table>
-    </div>
-  );
-}
+
