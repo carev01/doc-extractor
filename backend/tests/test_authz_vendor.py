@@ -233,3 +233,18 @@ async def test_admin_downgraded_key_sees_all_at_capped_level(client):
     rw_key = (await client.post("/api/auth/keys", json={"name": "rw", "role": "read_write"}, headers=admin)).json()["raw_key"]
     KH2 = {"X-API-Key": rw_key}
     assert (await client.post("/api/products", json={"vendor_id": v1, "name": "y"}, headers=KH2)).status_code == 201
+
+
+async def test_delete_user_with_key_and_grant_cascades(client):
+    """Deleting a user who owns an API key + vendor grant succeeds (children are
+    removed, not NULL-ed) and the user disappears."""
+    admin = _bearer(await _bootstrap_admin(client))
+    v1, _, _ = await _vendor_with_source(client, admin, "v1")
+    uid, rw = await _make_user(client, admin, "rw@t.com", "read_write")
+    await client.put(f"/api/auth/users/{uid}/vendor-permissions", json={"permissions": [
+        {"vendor_id": v1, "level": "read_write"}]}, headers=admin)
+    await client.post("/api/auth/keys", json={"name": "k", "role": "read_only"}, headers=_bearer(rw))
+
+    assert (await client.delete(f"/api/auth/users/{uid}", headers=admin)).status_code == 204
+    emails = [u["email"] for u in (await client.get("/api/auth/users", headers=admin)).json()["users"]]
+    assert "rw@t.com" not in emails

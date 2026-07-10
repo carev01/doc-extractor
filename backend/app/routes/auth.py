@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 import httpx
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -576,7 +576,13 @@ async def delete_user(
         raise HTTPException(status_code=400, detail="You cannot delete your own account")
     if target.role == UserRole.ADMIN and await _count_active_admins(db) <= 1:
         raise HTTPException(status_code=400, detail="Cannot delete the last active admin")
-    await db.delete(target)  # cascades to api_keys + user_vendor_permissions
+    # Delete children explicitly: the api_keys/vendor_permissions relationships are
+    # backrefs without an ORM delete-cascade, so a plain db.delete(user) would try
+    # to NULL their (NOT NULL) user_id. The DB FKs are ON DELETE CASCADE, but the
+    # ORM manages the relationship first — so remove children ourselves.
+    await db.execute(delete(APIKey).where(APIKey.user_id == target.id))
+    await db.execute(delete(UserVendorPermission).where(UserVendorPermission.user_id == target.id))
+    await db.delete(target)
     await db.commit()
 
 
