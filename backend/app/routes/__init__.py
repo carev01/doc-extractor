@@ -10,6 +10,7 @@ from app.routes.jobs import router as jobs_router
 from app.routes.profiles import router as profiles_router
 from app.routes.dashboard import router as dashboard_router
 from app.routes.auth_realms import router as auth_realms_router
+from app.routes.auth import router as auth_router
 from app.routes.webhooks import router as webhooks_router
 
 __all__ = [
@@ -23,5 +24,6 @@ __all__ = [
     "profiles_router",
     "dashboard_router",
     "auth_realms_router",
+    "auth_router",
     "webhooks_router",
 ]

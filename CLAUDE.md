@@ -31,9 +31,12 @@ Full-stack app: FastAPI backend + React/TypeScript frontend. The two are separat
 - `app/core/` — database engine/session (`database.py`) and settings (`config.py`)
 - `app/models/` — SQLAlchemy ORM models. **All models must be imported in `app/models/__init__.py`** so `Base.metadata` is populated before `create_all` runs on startup.
 - `app/schemas/` — Pydantic request/response schemas
-- `app/routes/` — FastAPI routers (vendors, products, sources, extraction, articles, export, jobs, webhooks)
+- `app/routes/` — FastAPI routers (vendors, products, sources, extraction, articles, export, jobs, webhooks, auth)
 - `app/services/firecrawl.py` — core extraction engine; `app/services/exporter.py` — markdown export engine; `app/services/webhook_dispatcher.py` — outbound webhook dispatch with HMAC signing and retry
+- `app/core/auth_middleware.py` + `app/core/dependencies.py` + `app/core/security.py` — API auth (API keys + OAuth2/JWT with RBAC)
 - `exports/` — generated markdown files written here (one subdirectory per export UUID)
+
+**Authentication (opt-in):** disabled by default; enabled by setting `DOCEXTRACTOR_AUTH_JWT_SECRET`. `AuthMiddleware` is the single enforcement point — it authenticates every `/api/` request (X-API-Key or Bearer JWT), stashes `request.state.user`/`effective_role`, and enforces method-based RBAC (safe methods need `read_only`, mutations need `read_write`). FastAPI deps in `dependencies.py` read that state; they don't re-validate. The first registered user bootstraps as `admin`; afterwards `/api/auth/register` is admin-only. Exempt paths: health, `/api/auth/{login,register,refresh,status,oauth/*}`, and the Firecrawl `/api/extraction/webhook/*` callback.
 
 **Extraction flow:** `POST /api/extraction/trigger/{source_id}` creates an `ExtractionRun` row synchronously then dispatches `_run_extraction_background` as a FastAPI `BackgroundTask`. The background task calls `FirecrawlService.extract_source(db, source_id, run_id=run_id)` — the `run_id` must be passed so the service updates the pre-existing run row rather than creating a new one (otherwise the original run is orphaned with status `running`).
 

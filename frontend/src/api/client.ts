@@ -40,6 +40,9 @@ import type {
   WebhookUpdate,
   WebhookDeliveryList,
   WebhookTestResult,
+  AuthStatus,
+  TokenResponse,
+  AuthUser,
 } from "../types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -48,6 +51,45 @@ const api = axios.create({
   baseURL: `${API_BASE}/api`,
   timeout: 30000,
 });
+
+// ── Auth token handling ──
+// The backend enforces auth only when AUTH_JWT_SECRET is set (otherwise the API
+// is open). We attach the stored access token to every request and, on a 401,
+// clear it and signal the app to show the login screen.
+const ACCESS_KEY = "dx_access_token";
+const REFRESH_KEY = "dx_refresh_token";
+
+export function getAccessToken(): string | null {
+  return localStorage.getItem(ACCESS_KEY);
+}
+export function setTokens(access: string, refresh?: string) {
+  localStorage.setItem(ACCESS_KEY, access);
+  if (refresh) localStorage.setItem(REFRESH_KEY, refresh);
+}
+export function clearTokens() {
+  localStorage.removeItem(ACCESS_KEY);
+  localStorage.removeItem(REFRESH_KEY);
+}
+
+api.interceptors.request.use((config) => {
+  const token = getAccessToken();
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+
+api.interceptors.response.use(
+  (resp) => resp,
+  (error) => {
+    const url: string = error.config?.url ?? "";
+    // Don't treat the login/status probes as a session expiry.
+    const isAuthProbe = url.includes("/auth/login") || url.includes("/auth/status");
+    if (error.response?.status === 401 && !isAuthProbe) {
+      clearTokens();
+      window.dispatchEvent(new CustomEvent("dx-auth-expired"));
+    }
+    return Promise.reject(error);
+  },
+);
 
 // ── Vendors ──
 
@@ -550,4 +592,17 @@ export const webhookApi = {
         params: { limit },
       })
       .then((r) => r.data),
+};
+
+// ── Auth ──
+
+export const authApi = {
+  status: () => api.get<AuthStatus>("/auth/status").then((r) => r.data),
+  login: async (email: string, password: string) => {
+    const r = await api.post<TokenResponse>("/auth/login", { email, password });
+    setTokens(r.data.access_token, r.data.refresh_token);
+    return r.data;
+  },
+  me: () => api.get<AuthUser>("/auth/me").then((r) => r.data),
+  logout: () => clearTokens(),
 };

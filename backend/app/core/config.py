@@ -145,6 +145,24 @@ class Settings(BaseSettings):
     # on the LAN; set this False to lock delivery to public targets only.
     webhook_allow_private_targets: bool = True
 
+    # ── API authentication ──────────────────────────────────────────────
+    # JWT signing key for access/refresh tokens. When EMPTY, authentication is
+    # DISABLED (the API is open — dev only). Set it to require auth. Generate:
+    #   python -c "import secrets; print(secrets.token_urlsafe(48))"
+    auth_jwt_secret: str = ""
+    auth_jwt_algorithm: str = "HS256"
+    auth_access_token_expire_minutes: int = 30
+    auth_refresh_token_expire_days: int = 7
+
+    # OAuth2 providers — set client_id/client_secret to enable each provider.
+    # Redirect URL pattern: {base}/api/auth/oauth/{provider}/callback
+    auth_oauth_redirect_base: str = "http://localhost:5173"
+    auth_google_client_id: str = ""
+    auth_google_client_secret: str = ""
+    auth_okta_client_id: str = ""
+    auth_okta_client_secret: str = ""
+    auth_okta_domain: str = ""
+
     model_config = {
         "env_prefix": "DOCEXTRACTOR_",
         "case_sensitive": False,

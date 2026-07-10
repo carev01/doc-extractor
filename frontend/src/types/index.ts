@@ -524,3 +524,27 @@ export interface WebhookTestResult {
   status_code: number | null;
   error: string | null;
 }
+
+// ── Auth ──
+
+export interface AuthStatus {
+  auth_enabled: boolean;
+  needs_bootstrap: boolean;
+}
+
+export interface TokenResponse {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+  expires_in: number;
+}
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  display_name: string;
+  role: "admin" | "read_write" | "read_only";
+  is_active: boolean;
+  oauth_provider: string | null;
+  created_at: string;
+}
