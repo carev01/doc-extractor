@@ -1,5 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Vendor, Product, DocumentationSource } from "./types";
+import { authApi, getAccessToken } from "./api/client";
+import { Login } from "./views/Login";
 import VendorList from "./components/VendorList";
 import ProductList from "./components/ProductList";
 import SourceList from "./components/SourceList";
@@ -37,6 +39,51 @@ export default function App() {
   const [selectedSource, setSelectedSource] =
     useState<DocumentationSource | null>(null);
 
+  // Auth gate. 'loading' = probing; 'open' = auth disabled on the server;
+  // 'login' = sign-in required; 'authed' = signed in.
+  const [authGate, setAuthGate] = useState<"loading" | "open" | "login" | "authed">("loading");
+  const [needsBootstrap, setNeedsBootstrap] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const status = await authApi.status();
+        if (cancelled) return;
+        if (!status.auth_enabled) {
+          setAuthGate("open");
+          return;
+        }
+        setNeedsBootstrap(status.needs_bootstrap);
+        if (!getAccessToken()) {
+          setAuthGate("login");
+          return;
+        }
+        try {
+          await authApi.me();
+          setAuthGate("authed");
+        } catch {
+          setAuthGate("login");
+        }
+      } catch {
+        // Status probe failed (e.g. older backend without /auth/status) — don't
+        // hard-block the UI.
+        if (!cancelled) setAuthGate("open");
+      }
+    })();
+    const onExpired = () => setAuthGate("login");
+    window.addEventListener("dx-auth-expired", onExpired);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("dx-auth-expired", onExpired);
+    };
+  }, []);
+
+  const handleLogout = () => {
+    authApi.logout();
+    setAuthGate("login");
+  };
+
   const handleSelectVendor = (vendor: Vendor) => {
     setSelectedVendor(vendor);
     setSelectedProduct(null);
@@ -54,6 +101,13 @@ export default function App() {
     setSelectedSource(source);
     setView("browse");
   };
+
+  if (authGate === "loading") {
+    return <div className="app" style={{ padding: "2em" }}>Loading…</div>;
+  }
+  if (authGate === "login") {
+    return <Login needsBootstrap={needsBootstrap} onSuccess={() => setAuthGate("authed")} />;
+  }
 
   return (
     <div className="app">
@@ -139,6 +193,12 @@ export default function App() {
           >
             Webhooks
           </button>
+          {authGate === "authed" && (
+            <>
+              <span className="sep">│</span>
+              <button onClick={handleLogout}>Log out</button>
+            </>
+          )}
         </nav>
       </header>
 

@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from app.core.auth_middleware import AuthMiddleware
 from app.core.config import settings
 from app.core.database import engine, Base
 
@@ -31,6 +32,7 @@ from app.routes import (
     profiles_router,
     dashboard_router,
     auth_realms_router,
+    auth_router,
     webhooks_router,
 )
 
@@ -68,6 +70,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Authentication + RBAC on /api routes (no-op until AUTH_JWT_SECRET is set).
+# Added before CORS so CORS remains the OUTERMOST middleware — its headers then
+# apply to auth's 401/403 responses too (matters for the dev cross-origin UI).
+app.add_middleware(AuthMiddleware)
+
 # CORS — allow frontend dev server
 app.add_middleware(
     CORSMiddleware,
@@ -88,6 +95,7 @@ app.include_router(jobs_router)
 app.include_router(profiles_router)
 app.include_router(dashboard_router)
 app.include_router(auth_realms_router)
+app.include_router(auth_router)
 app.include_router(webhooks_router)
 
 # Serve canonical article images. The directory must exist before StaticFiles

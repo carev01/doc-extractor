@@ -84,6 +84,28 @@ secretKey: ""                     # OVERRIDE (never commit a real key)
 # mid-run). Blank disables. ntfy/Slack/Discord/generic.
 notifyWebhookUrl: ""              # OVERRIDE (optional)
 
+# -- API authentication (API keys + OAuth2/JWT with RBAC).
+# When jwtSecret is EMPTY, auth is DISABLED and the API is open — set jwtSecret
+# to require authentication on all /api routes. The first account registered
+# becomes the admin (bootstrap); afterwards only an admin can create users.
+# Generate a secret with:
+#   python -c "import secrets; print(secrets.token_urlsafe(48))"
+auth:
+  jwtSecret: ""                   # OVERRIDE to enable auth (kept in the Secret)
+  jwtAlgorithm: HS256
+  accessTokenExpireMinutes: 30
+  refreshTokenExpireDays: 7
+  # External OAuth2 (optional). Redirect base is the public app URL; the callback
+  # path is {base}/api/auth/oauth/{provider}/callback.
+  oauthRedirectBase: ""           # e.g. https://docextractor.k3s.home.lan
+  google:
+    clientId: ""
+    clientSecret: ""              # OVERRIDE (Secret)
+  okta:
+    clientId: ""
+    clientSecret: ""              # OVERRIDE (Secret)
+    domain: ""                    # e.g. https://your-org.okta.com
+
 # -- Ingress (Traefik)
 ingress:
   enabled: true

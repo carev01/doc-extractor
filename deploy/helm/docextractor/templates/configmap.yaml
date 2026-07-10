@@ -24,3 +24,12 @@ data:
   DOCEXTRACTOR_BROWSERLESS_URL: {{ (.Values.browserless | default dict).url | default "http://browserless.browserless.svc.cluster.local:3000" | quote }}
   DOCEXTRACTOR_BROWSERLESS_WAIT_MS: {{ (.Values.browserless | default dict).waitMs | default 9000 | quote }}
   DOCEXTRACTOR_BROWSERLESS_CONCURRENCY: {{ (.Values.browserless | default dict).concurrency | default 4 | quote }}
+  # API authentication (non-secret settings; the JWT + OAuth client secrets live
+  # in the Secret). These are inert until auth.jwtSecret is set.
+  DOCEXTRACTOR_AUTH_JWT_ALGORITHM: {{ (.Values.auth | default dict).jwtAlgorithm | default "HS256" | quote }}
+  DOCEXTRACTOR_AUTH_ACCESS_TOKEN_EXPIRE_MINUTES: {{ (.Values.auth | default dict).accessTokenExpireMinutes | default 30 | quote }}
+  DOCEXTRACTOR_AUTH_REFRESH_TOKEN_EXPIRE_DAYS: {{ (.Values.auth | default dict).refreshTokenExpireDays | default 7 | quote }}
+  DOCEXTRACTOR_AUTH_OAUTH_REDIRECT_BASE: {{ (.Values.auth | default dict).oauthRedirectBase | default (printf "http://%s" .Values.ingress.host) | quote }}
+  DOCEXTRACTOR_AUTH_GOOGLE_CLIENT_ID: {{ ((.Values.auth | default dict).google | default dict).clientId | default "" | quote }}
+  DOCEXTRACTOR_AUTH_OKTA_CLIENT_ID: {{ ((.Values.auth | default dict).okta | default dict).clientId | default "" | quote }}
+  DOCEXTRACTOR_AUTH_OKTA_DOMAIN: {{ ((.Values.auth | default dict).okta | default dict).domain | default "" | quote }}
