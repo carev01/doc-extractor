@@ -12,7 +12,7 @@ DocExtractor is a full-stack application that scrapes product documentation from
 - **20+ documentation platform profiles** — Built-in adapters for Docusaurus, MkDocs, Sphinx, GitBook, ReadTheDocs, Intercom, Zendesk, Freshdesk, HelpJuice, Confluence, Document360, Flare (HTML5 + WebHelp), Oxygen WebHelp, Salesforce, Fern, RSPress, DocFX, Zoomin, and more. A generic sitemap fallback handles unrecognized platforms. An optional LLM fallback can auto-derive a profile for completely unknown sites.
 - **PDF source support** — Upload PDF manuals and convert them to Markdown via [Docling](https://github.com/docling-project/docling-serve) (with VLM escalation for complex layouts) or an in-process PyMuPDF fallback.
 - **Incremental extraction** — After the initial full run, subsequent runs only fetch changed pages. Historical versions are kept with side-by-side diff views and a consolidated changelog.
-- **Scheduled extraction** — Define recurring jobs (interval, daily, weekly, monthly, or cron expressions) to keep documentation archives up to date automatically.
+- **Scheduled extraction** — Define recurring jobs (hourly, daily, weekly, monthly, or cron expressions) to keep documentation archives up to date automatically.
 - **Flexible export** — Export full or partial documentation as Markdown or PDF. Split by article count, file size, or token budget. Articles are never split across files.
 - **Authenticated scraping** — Store login credentials/cookies for sites behind auth walls. Sessions are encrypted at rest (Fernet). Supports login scripts for complex multi-step authentication flows.
 - **Authentication & RBAC** — Optional JWT or API-key authentication with three roles (`admin`, `read_write`, `read_only`). OAuth2 support for Google and Okta. Per-vendor permission scoping.
@@ -323,7 +323,7 @@ doc-extractor/
 │   │   ├── worker.py       # Background extraction/export worker
 │   │   └── scheduler.py    # Cron job scheduler
 │   ├── alembic/            # Database migrations
-│   ├── tests/              # 142 test files
+│   ├── tests/              # 139 test files
 │   ├── requirements.txt
 │   └── Dockerfile
 ├── frontend/

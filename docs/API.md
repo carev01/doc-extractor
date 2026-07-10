@@ -92,7 +92,7 @@ Admin-only endpoints (user management, jobs, auth realms) require `admin`.
 | `GET` | `/api/articles/toc/{source_id}` | Get TOC tree for a source |
 | `GET` | `/api/articles/{id}/versions` | List article versions |
 | `GET` | `/api/articles/{id}/versions/{version_id}` | Get a specific version |
-| `GET` | `/api/articles/{id}/diff` | Diff current vs. previous version |
+| `GET` | `/api/articles/{id}/versions/{version_id}/diff` | Diff a version against the next or current version (`against=next\|current`) |
 
 ---
 

@@ -104,7 +104,7 @@ constraints or generate unnecessary diffs.
 
 ## Testing
 
-- **142 test files** covering extraction, export, versioning, auth, profiles,
+- **139 test files** covering extraction, export, versioning, auth, profiles,
   PDF pipeline, webhooks, scheduling, and more.
 - Tests require a running PostgreSQL with a `docextractor_test` database.
 - The CI pipeline creates this database automatically; for local testing:
