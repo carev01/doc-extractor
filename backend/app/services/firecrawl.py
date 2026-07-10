@@ -13,18 +13,20 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
-from sqlalchemy import bindparam, delete, select, update
+from sqlalchemy import bindparam, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.article import Article
 from app.models.article_version import ArticleVersion
+from app.models.content_change import ContentChange
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.image import ArticleImage
 from app.models.product import Product
 from app.models.source import DocumentationSource, SourceStatus
 from app.models.toc import TOCEntry
 from app.models.auth_realm import AuthRealm, RealmStatus
+from app.schemas.delta import encode_delta_cursor
 from app.services.auth import realm_manager
 from app.services.auth.realm_manager import NeedsLoginError
 from app.services.auth.session import session_expired
@@ -2138,6 +2140,10 @@ class FirecrawlService:
 
             # Fire extraction_complete webhook (best-effort, tracked fire-and-forget).
             if webhook_dispatcher.run_has_subscribers(run_pk, "extraction_complete"):
+                delta_counts = await change_log.run_change_counts(db, run_pk)
+                max_seq = (
+                    await db.execute(select(func.max(ContentChange.id)))
+                ).scalar() or 0
                 webhook_dispatcher.spawn_event(
                     event_type="extraction_complete",
                     run_id=run_pk,
@@ -2148,6 +2154,12 @@ class FirecrawlService:
                         "articles_updated": int(updated or 0),
                         "articles_unchanged": int(unchanged or 0),
                         "articles_resumed": int(resumed or 0),
+                        "delta": {
+                            "added": delta_counts["added"],
+                            "updated": delta_counts["updated"],
+                            "removed": delta_counts["removed"],
+                            "watermark": encode_delta_cursor(max_seq),
+                        },
                     },
                 )
             webhook_dispatcher.finish_run(run_pk)
