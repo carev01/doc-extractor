@@ -11,7 +11,7 @@ import json
 import uuid
 from typing import AsyncIterator
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -198,7 +198,13 @@ async def stream_delta(
         if len(rows) < _BATCH:
             break
 
-    next_since = encode_delta_cursor(last) if count else encode_delta_cursor(since_seq)
+    # `last` is the id of the last row examined (initialized to since_seq, so it
+    # equals since_seq when no rows were examined). Every examined row is below the
+    # safe ceiling and therefore belongs to a terminal run — it is either served or
+    # permanently unservable (an added/updated whose article was hard-deleted). So
+    # advancing to `last` even when count == 0 is safe and prevents a poller from
+    # re-scanning an all-skip range on every poll.
+    next_since = encode_delta_cursor(last)
     yield _line({"control": "cursor", "next_since": next_since, "count": count})
 
 
