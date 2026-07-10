@@ -81,7 +81,7 @@ async def _vendor_with_source(client, admin_h, name):
 # ── Vendor allow-list visibility ────────────────────────────────────────────
 
 async def test_ungranted_vendors_are_invisible(client):
-    admin = await _bearer(await _bootstrap_admin(client))
+    admin = _bearer(await _bootstrap_admin(client))
     v1, p1, s1 = await _vendor_with_source(client, admin, "v1")
     v2, p2, s2 = await _vendor_with_source(client, admin, "v2")
     _, rw = await _make_user(client, admin, "rw@t.com", "read_write")
@@ -96,7 +96,7 @@ async def test_ungranted_vendors_are_invisible(client):
 
 
 async def test_grant_scopes_visibility_and_writes(client):
-    admin = await _bearer(await _bootstrap_admin(client))
+    admin = _bearer(await _bootstrap_admin(client))
     v1, p1, s1 = await _vendor_with_source(client, admin, "v1")
     v2, p2, s2 = await _vendor_with_source(client, admin, "v2")
     rw_id, rw = await _make_user(client, admin, "rw@t.com", "read_write")
@@ -125,7 +125,7 @@ async def test_grant_scopes_visibility_and_writes(client):
 
 
 async def test_global_read_only_cannot_write_even_with_grant(client):
-    admin = await _bearer(await _bootstrap_admin(client))
+    admin = _bearer(await _bootstrap_admin(client))
     v1, p1, s1 = await _vendor_with_source(client, admin, "v1")
     ro_id, ro = await _make_user(client, admin, "ro@t.com", "read_only")
     # Grant read_only on v1 (can't grant read_write to a global read_only user).
@@ -137,7 +137,7 @@ async def test_global_read_only_cannot_write_even_with_grant(client):
 
 
 async def test_cannot_grant_read_write_to_global_read_only(client):
-    admin = await _bearer(await _bootstrap_admin(client))
+    admin = _bearer(await _bootstrap_admin(client))
     v1, _, _ = await _vendor_with_source(client, admin, "v1")
     ro_id, _ = await _make_user(client, admin, "ro@t.com", "read_only")
     r = await client.put(f"/api/auth/users/{ro_id}/vendor-permissions", json={"permissions": [
@@ -148,20 +148,20 @@ async def test_cannot_grant_read_write_to_global_read_only(client):
 # ── Admin-only surfaces ─────────────────────────────────────────────────────
 
 async def test_vendor_creation_is_admin_only(client):
-    admin = await _bearer(await _bootstrap_admin(client))
+    admin = _bearer(await _bootstrap_admin(client))
     _, rw = await _make_user(client, admin, "rw@t.com", "read_write")
     assert (await client.post("/api/vendors", json={"name": "nope"}, headers=_bearer(rw))).status_code == 403
 
 
 async def test_duplicate_vendor_name_conflict(client):
-    admin = await _bearer(await _bootstrap_admin(client))
+    admin = _bearer(await _bootstrap_admin(client))
     await client.post("/api/vendors", json={"name": "Acme"}, headers=admin)
     r = await client.post("/api/vendors", json={"name": "Acme"}, headers=admin)
     assert r.status_code == 409
 
 
 async def test_user_management_requires_admin(client):
-    admin = await _bearer(await _bootstrap_admin(client))
+    admin = _bearer(await _bootstrap_admin(client))
     _, rw = await _make_user(client, admin, "rw@t.com", "read_write")
     assert (await client.get("/api/auth/users", headers=_bearer(rw))).status_code == 403
     assert (await client.get("/api/auth/users", headers=admin)).status_code == 200

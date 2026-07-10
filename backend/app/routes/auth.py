@@ -422,14 +422,19 @@ async def change_password(
 ):
     """Change the current user's password (verifies the current one first)."""
     _auth_disabled()
-    if not user.hashed_password:
+    # `user` comes from the middleware's (closed) session, so re-load it into this
+    # request's session before mutating — otherwise the commit would be a no-op.
+    target = await db.get(User, user.id)
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    if not target.hashed_password:
         raise HTTPException(
             status_code=400,
             detail="This account signs in via an external provider and has no password",
         )
-    if not verify_password(body.current_password, user.hashed_password):
+    if not verify_password(body.current_password, target.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Current password is incorrect")
-    user.hashed_password = hash_password(body.new_password)
+    target.hashed_password = hash_password(body.new_password)
     await db.commit()
 
 
