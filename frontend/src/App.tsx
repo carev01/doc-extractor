@@ -290,7 +290,7 @@ export default function App() {
 
         {view === "user-management" && <Admin meId={currentUser?.id ?? null} />}
 
-        {view === "account" && <Account />}
+        {view === "account" && <Account me={currentUser} />}
 
         {view === "dashboard" && (
           <Dashboard onSelectSource={handleSelectSource} />

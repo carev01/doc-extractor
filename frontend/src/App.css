@@ -2230,7 +2230,7 @@ a.btn-primary {
   color: var(--amber);
 }
 
-.hamburger-divider {
+.hamburger-menu-divider {
   height: 1px;
   background: var(--line);
   margin: 4px 0;
