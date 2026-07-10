@@ -316,9 +316,11 @@ def test_record_change_writes_row(db_session):
     )
     db_session.add(article); db_session.flush()
 
-    # change_log is async; drive it on a throwaway loop with a sync session
-    # (the helper only calls db.add, which works on a sync Session too).
-    asyncio.get_event_loop().run_until_complete(
+    # record_change is a coroutine but performs no awaited I/O — it only calls
+    # db.add — so asyncio.run drives it to completion against a sync Session.
+    # (asyncio.run, not get_event_loop().run_until_complete, to avoid the 3.12
+    # "no current event loop" DeprecationWarning — test output must stay pristine.)
+    asyncio.run(
         change_log.record_change(db_session, article=article, change_type="added", run_id=run.id)
     )
     db_session.commit()
@@ -413,12 +415,12 @@ async def run_change_counts(db: AsyncSession, run_id: uuid.UUID) -> dict[str, in
 Run: `pytest tests/test_change_log.py::test_record_change_writes_row -v`
 Expected: PASS.
 
-- [ ] **Step 5: Add tests for removals and counts**
+- [ ] **Step 5: Add a test for removals**
 
-Append to `tests/test_change_log.py`:
+Append to `tests/test_change_log.py`. Assert the removed rows directly (query `ContentChange`) — do **not** call `run_change_counts` here: it does `await db.execute(...)`, which fails on a sync `Session` (that helper is covered by Task 7's async test). `record_removals`, like `record_change`, only calls `db.add`, so `asyncio.run` drives it cleanly.
 
 ```python
-def test_record_removals_and_counts(db_session):
+def test_record_removals_writes_rows(db_session):
     source, run = _seed(db_session)
 
     class Row:
@@ -427,30 +429,27 @@ def test_record_removals_and_counts(db_session):
             self.topic_key = topic_key
 
     removed = [Row(uuid.uuid4(), "https://x/gone1"), Row(uuid.uuid4(), "https://x/gone2")]
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(
+    asyncio.run(
         change_log.record_removals(db_session, rows=removed, source_id=source.id, run_id=run.id)
-    )
-    # also one added row for the same run
-    article = Article(
-        source_id=source.id, extraction_run_id=run.id, created_run_id=run.id,
-        title="T", source_url="https://x/a", topic_key="https://x/a",
-        content_markdown="# T", content_hash="h",
-    )
-    db_session.add(article); db_session.flush()
-    loop.run_until_complete(
-        change_log.record_change(db_session, article=article, change_type="added", run_id=run.id)
     )
     db_session.commit()
 
-    counts = loop.run_until_complete(change_log.run_change_counts(db_session, run.id))
-    assert counts == {"added": 1, "updated": 0, "removed": 2}
+    rows = db_session.execute(
+        select(ContentChange).where(ContentChange.change_type == "removed").order_by(ContentChange.id)
+    ).scalars().all()
+    assert len(rows) == 2
+    assert {r.topic_key for r in rows} == {"https://x/gone1", "https://x/gone2"}
+    assert all(r.source_id == source.id and r.run_id == run.id for r in rows)
+    assert all(r.content_hash is None for r in rows)
+    assert {r.article_id for r in rows} == {removed[0].id, removed[1].id}
 ```
+
+> `run_change_counts` is implemented in Step 3 (Task 7 needs it) and is exercised by `tests/test_delta_webhook.py::test_run_change_counts_feeds_delta_block` in Task 7's async harness — the only place a sync/async mismatch is avoided.
 
 - [ ] **Step 6: Run both tests**
 
 Run: `pytest tests/test_change_log.py -v`
-Expected: 2 passed.
+Expected: 2 passed, output pristine (no deprecation warnings).
 
 - [ ] **Step 7: Commit**
 
