@@ -170,13 +170,13 @@ Expected: PASS.
 
 - [ ] **Step 6: Create the Alembic migration**
 
-Find the current head: `cd backend && alembic heads` (expect `g1a2b3c4d5e6`). Create `alembic/versions/h2b3c4d5e6f7_add_content_changes.py`:
+Confirm the current head first: `cd backend && alembic heads` — it must print exactly `a3c1e5b7d9f2 (head)` (the real DAG head; do not assume from file mtime). Create `alembic/versions/h2b3c4d5e6f7_add_content_changes.py` chaining from it:
 
 ```python
 """add content_changes outbox
 
 Revision ID: h2b3c4d5e6f7
-Revises: g1a2b3c4d5e6
+Revises: a3c1e5b7d9f2
 """
 from typing import Sequence, Union
 
@@ -185,7 +185,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
 revision: str = "h2b3c4d5e6f7"
-down_revision: Union[str, Sequence[str], None] = "g1a2b3c4d5e6"
+down_revision: Union[str, Sequence[str], None] = "a3c1e5b7d9f2"
 branch_labels = None
 depends_on = None
 
@@ -230,7 +230,7 @@ def downgrade() -> None:
 - [ ] **Step 7: Verify the migration applies cleanly**
 
 Run: `cd backend && alembic upgrade head && alembic heads`
-Expected: upgrade runs without error; single head `h2b3c4d5e6f7`.
+Expected: the one new migration applies without error; `alembic heads` prints exactly one line, `h2b3c4d5e6f7 (head)` (a single head — a second head means `down_revision` is wrong). The dev DB is already at `a3c1e5b7d9f2`, so only `content_changes` is created.
 
 - [ ] **Step 8: Commit**
 
