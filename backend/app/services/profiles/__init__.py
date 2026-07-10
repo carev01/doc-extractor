@@ -27,6 +27,9 @@ from app.services.profiles import devsite  # noqa: F401,E402
 from app.services.profiles import json_toc  # noqa: F401,E402
 from app.services.profiles import docfx  # noqa: F401,E402
 from app.services.profiles import zoomin  # noqa: F401,E402
+# Before zendesk: Document360 pages can mention "zendesk" (e.g. an article about
+# a Zendesk integration), so the specific Document360 marker must win first.
+from app.services.profiles import document360  # noqa: F401,E402
 from app.services.profiles import zendesk  # noqa: F401,E402
 from app.services.profiles import help_tree  # noqa: F401,E402
 from app.services.profiles import helpjuice  # noqa: F401,E402

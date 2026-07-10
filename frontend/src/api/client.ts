@@ -34,6 +34,12 @@ import type {
   SourceImportResult,
   AuthRealm,
   AuthRealmCreate,
+  Webhook,
+  WebhookList,
+  WebhookCreate,
+  WebhookUpdate,
+  WebhookDeliveryList,
+  WebhookTestResult,
 } from "../types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -520,4 +526,28 @@ export const authRealmApi = {
     api.post<AuthRealm>(`/auth-realms/${id}/session`, data).then((r) => r.data),
   test: (id: string) =>
     api.post<AuthRealm>(`/auth-realms/${id}/test`).then((r) => r.data),
+};
+
+// ── Webhooks ──
+
+export const webhookApi = {
+  list: (sourceId?: string, isActive?: boolean) =>
+    api
+      .get<WebhookList>('/webhooks', {
+        params: { source_id: sourceId, is_active: isActive },
+      })
+      .then((r) => r.data),
+  create: (data: WebhookCreate) =>
+    api.post<Webhook>('/webhooks', data).then((r) => r.data),
+  update: (id: string, data: WebhookUpdate) =>
+    api.patch<Webhook>(`/webhooks/${id}`, data).then((r) => r.data),
+  remove: (id: string) => api.delete(`/webhooks/${id}`),
+  test: (id: string) =>
+    api.post<WebhookTestResult>(`/webhooks/${id}/test`).then((r) => r.data),
+  deliveries: (id: string, limit = 50) =>
+    api
+      .get<WebhookDeliveryList>(`/webhooks/${id}/deliveries`, {
+        params: { limit },
+      })
+      .then((r) => r.data),
 };

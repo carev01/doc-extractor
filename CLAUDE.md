@@ -31,8 +31,8 @@ Full-stack app: FastAPI backend + React/TypeScript frontend. The two are separat
 - `app/core/` — database engine/session (`database.py`) and settings (`config.py`)
 - `app/models/` — SQLAlchemy ORM models. **All models must be imported in `app/models/__init__.py`** so `Base.metadata` is populated before `create_all` runs on startup.
 - `app/schemas/` — Pydantic request/response schemas
-- `app/routes/` — FastAPI routers (vendors, products, sources, extraction, articles, export, jobs)
-- `app/services/firecrawl.py` — core extraction engine; `app/services/exporter.py` — markdown export engine
+- `app/routes/` — FastAPI routers (vendors, products, sources, extraction, articles, export, jobs, webhooks)
+- `app/services/firecrawl.py` — core extraction engine; `app/services/exporter.py` — markdown export engine; `app/services/webhook_dispatcher.py` — outbound webhook dispatch with HMAC signing and retry
 - `exports/` — generated markdown files written here (one subdirectory per export UUID)
 
 **Extraction flow:** `POST /api/extraction/trigger/{source_id}` creates an `ExtractionRun` row synchronously then dispatches `_run_extraction_background` as a FastAPI `BackgroundTask`. The background task calls `FirecrawlService.extract_source(db, source_id, run_id=run_id)` — the `run_id` must be passed so the service updates the pre-existing run row rather than creating a new one (otherwise the original run is orphaned with status `running`).

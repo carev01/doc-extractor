@@ -24,6 +24,15 @@ from app.schemas.version import (
     ChangelogEntry,
     ChangelogResponse,
 )
+from app.schemas.webhook import (
+    WebhookCreate,
+    WebhookUpdate,
+    WebhookResponse,
+    WebhookListResponse,
+    WebhookDeliveryResponse,
+    WebhookDeliveryListResponse,
+    WebhookTestResponse,
+)
 
 __all__ = [
     "VendorCreate",
@@ -50,4 +59,11 @@ __all__ = [
     "VersionDiffResponse",
     "ChangelogEntry",
     "ChangelogResponse",
+    "WebhookCreate",
+    "WebhookUpdate",
+    "WebhookResponse",
+    "WebhookListResponse",
+    "WebhookDeliveryResponse",
+    "WebhookDeliveryListResponse",
+    "WebhookTestResponse",
 ]
