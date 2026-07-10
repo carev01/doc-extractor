@@ -30,6 +30,7 @@ from app.services.auth.realm_manager import NeedsLoginError
 from app.services.auth.session import session_expired
 from app.services.blockpage import is_auth_wall, is_block_page
 from app.services.notify import notify
+from app.services import change_log
 from app.services import webhook_dispatcher
 from app.services.profiles import registry as profile_registry
 from app.services.profiles.base import TocEntry as ProfileTocEntry
@@ -978,6 +979,14 @@ class FirecrawlService:
 
         article.content_markdown = markdown_content
 
+        # Outbox: record the change in the same transaction as the mutation.
+        await change_log.record_change(
+            db,
+            article=article,
+            change_type="added" if outcome == "new" else "updated",
+            run_id=run_id,
+        )
+
         # Atomic counter increment so concurrent webhook calls don't race.
         if outcome == "new":
             await db.execute(
@@ -1582,22 +1591,19 @@ class FirecrawlService:
         )
 
         now = datetime.now(timezone.utc)
-        # Newly removed. Only pre-query the rows (for webhook payloads) when a
-        # removed_page subscriber exists for this run — otherwise skip the query.
-        notify_removed = webhook_dispatcher.run_has_subscribers(run_id, "removed_page")
+        # Always capture the newly-removed rows: needed for the outbox, and reused
+        # for the removed_page webhook payloads when a subscriber exists.
         newly_removed = (
-            (
-                await db.execute(
-                    select(Article.id, Article.title, Article.source_url).where(
-                        Article.source_id == source_id,
-                        Article.toc_entry_id.is_(None),
-                        Article.removed_at.is_(None),
-                    )
+            await db.execute(
+                select(
+                    Article.id, Article.title, Article.source_url, Article.topic_key
+                ).where(
+                    Article.source_id == source_id,
+                    Article.toc_entry_id.is_(None),
+                    Article.removed_at.is_(None),
                 )
-            ).all()
-            if notify_removed
-            else []
-        )
+            )
+        ).all()
         await db.execute(
             update(Article)
             .where(
@@ -1617,20 +1623,27 @@ class FirecrawlService:
             )
             .values(removed_at=None, removal_run_id=None)
         )
+
+        # Outbox: one removed row per newly-removed article, same transaction.
+        if newly_removed:
+            await change_log.record_removals(
+                db, rows=newly_removed, source_id=source_id, run_id=run_id
+            )
         await db.commit()
 
         # Fire removed_page webhook events (best-effort, tracked fire-and-forget).
-        for row in newly_removed:
-            webhook_dispatcher.spawn_event(
-                event_type="removed_page",
-                run_id=run_id,
-                source_id=source_id,
-                extra={
-                    "page_url": row.source_url,
-                    "page_title": row.title,
-                    "article_id": str(row.id),
-                },
-            )
+        if webhook_dispatcher.run_has_subscribers(run_id, "removed_page"):
+            for row in newly_removed:
+                webhook_dispatcher.spawn_event(
+                    event_type="removed_page",
+                    run_id=run_id,
+                    source_id=source_id,
+                    extra={
+                        "page_url": row.source_url,
+                        "page_title": row.title,
+                        "article_id": str(row.id),
+                    },
+                )
 
     async def retry_escalation_run(
         self, db: AsyncSession, source_id: uuid.UUID, run_id: uuid.UUID,
