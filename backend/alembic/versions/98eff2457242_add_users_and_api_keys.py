@@ -22,9 +22,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Create user_role enum type
-    user_role = sa.Enum("admin", "read_write", "read_only", name="userrole")
-    user_role.create(op.get_bind(), checkfirst=True)
+    # Create the user_role enum type once, explicitly. The column type below uses
+    # create_type=False so op.create_table does NOT try to emit CREATE TYPE again
+    # (which would fail with "type userrole already exists").
+    sa.Enum("admin", "read_write", "read_only", name="userrole").create(
+        op.get_bind(), checkfirst=True
+    )
+    user_role = postgresql.ENUM(
+        "admin", "read_write", "read_only", name="userrole", create_type=False
+    )
 
     op.create_table(
         "users",
