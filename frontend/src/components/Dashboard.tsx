@@ -60,14 +60,29 @@ export default function Dashboard({
 
   const s = data.summary;
   return (
-    <div className="dashboard">
+    <div className="dashboard fade-in-up">
       <h2>Dashboard</h2>
       <div className="tile-row">
-        <div className="tile"><span className="tile-n">{s.total}</span>Sources</div>
-        <div className="tile warn"><span className="tile-n">{s.never_extracted}</span>Never extracted</div>
-        <div className="tile warn"><span className="tile-n">{s.stale}</span>Stale (&gt;30d)</div>
-        <div className="tile bad"><span className="tile-n">{s.failing}</span>Failing</div>
-        <div className="tile"><span className="tile-n">{s.running}</span>Running</div>
+        <div className="tile">
+          <span className="tile-n">{s.total}</span>
+          <span className="tile-label">Sources</span>
+        </div>
+        <div className="tile warn">
+          <span className="tile-n">{s.never_extracted}</span>
+          <span className="tile-label">Never extracted</span>
+        </div>
+        <div className="tile warn">
+          <span className="tile-n">{s.stale}</span>
+          <span className="tile-label">Stale (&gt;30d)</span>
+        </div>
+        <div className="tile bad">
+          <span className="tile-n">{s.failing}</span>
+          <span className="tile-label">Failing</span>
+        </div>
+        <div className="tile">
+          <span className="tile-n">{s.running}</span>
+          <span className="tile-label">Running</span>
+        </div>
       </div>
       <table className="dashboard-table">
         <thead>
