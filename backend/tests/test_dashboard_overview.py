@@ -150,6 +150,7 @@ async def test_overview_shape_and_signals(ctx):
     assert ra["last_run"]["new"] == 3 and ra["last_run"]["updated"] == 1
     assert ra["enrichment"] == {"described": 2, "pending": 3}   # decorative excluded
     assert ra["escalation"]["warning"] is False
+    assert ra["escalation"]["run_id"] is None and ra["escalation"]["pending_count"] == 0
 
     rb = rows[str(b)]
     assert rb["source_type"] == "pdf"
