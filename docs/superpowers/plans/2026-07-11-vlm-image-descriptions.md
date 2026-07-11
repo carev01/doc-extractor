@@ -736,6 +736,14 @@ def _png(w, h, color=(20, 40, 60)):
     buf = io.BytesIO(); Image.new("RGB", (w, h), color).save(buf, format="PNG"); return buf.getvalue()
 
 
+def _noise_png(w, h):
+    # Noise doesn't compress, so it clears image_min_bytes (a solid-color PNG is
+    # ~1 KB, under the threshold, and would be wrongly rejected as decorative).
+    buf = io.BytesIO()
+    Image.effect_noise((w, h), 100).convert("RGB").save(buf, format="PNG")
+    return buf.getvalue()
+
+
 async def _seed_article_with_image(f, *, img_bytes, filename="x.png", md=None):
     async with f() as s:
         v = Vendor(name="V"); s.add(v); await s.flush()
@@ -763,7 +771,7 @@ async def _seed_article_with_image(f, *, img_bytes, filename="x.png", md=None):
 
 
 async def test_describes_and_captions_and_emits_updated_row(factory):
-    src_id, art_id, run_id = await _seed_article_with_image(factory, img_bytes=_png(400, 300))
+    src_id, art_id, run_id = await _seed_article_with_image(factory, img_bytes=_noise_png(400, 300))
     calls = {"n": 0}
 
     async def fake_describe(data, alt, **kw):
@@ -789,7 +797,7 @@ async def test_describes_and_captions_and_emits_updated_row(factory):
 
 async def test_cache_hit_skips_vlm_call(factory):
     # Two articles sharing identical image bytes → described once, reused.
-    img = _png(400, 300, (1, 2, 3))
+    img = _noise_png(400, 300)
     src_id, a1, run_id = await _seed_article_with_image(factory, img_bytes=img, filename="a.png")
     # second article in the same source with the same bytes
     async with factory() as s:
@@ -814,7 +822,7 @@ async def test_cache_hit_skips_vlm_call(factory):
 
 
 async def test_idempotent_second_run_no_vlm_no_new_row(factory):
-    src_id, art_id, run_id = await _seed_article_with_image(factory, img_bytes=_png(400, 300))
+    src_id, art_id, run_id = await _seed_article_with_image(factory, img_bytes=_noise_png(400, 300))
     async def fake(data, alt, **kw):
         return Desc(text="Desc.", kind="screenshot")
     await enrich_run_images_via(factory, src_id, run_id, fake)
@@ -833,7 +841,7 @@ async def test_idempotent_second_run_no_vlm_no_new_row(factory):
 
 async def test_budget_cap_defers(factory, monkeypatch):
     monkeypatch.setattr(settings, "image_vlm_max_per_run", 1)
-    src_id, a1, run_id = await _seed_article_with_image(factory, img_bytes=_png(400, 300, (5, 5, 5)), filename="a.png")
+    src_id, a1, run_id = await _seed_article_with_image(factory, img_bytes=_noise_png(400, 300), filename="a.png")
     async with factory() as s:  # second article, distinct bytes
         art2 = Article(source_id=src_id, extraction_run_id=run_id, created_run_id=run_id,
                        title="B", source_url="https://x/b", topic_key="https://x/b",
@@ -844,7 +852,7 @@ async def test_budget_cap_defers(factory, monkeypatch):
                            local_path=f"/media/{art2.id}/b.png", sort_order=0))
         await s.commit()
         d = os.path.join(settings.media_dir, str(art2.id)); os.makedirs(d, exist_ok=True)
-        open(os.path.join(d, "b.png"), "wb").write(_png(400, 300, (9, 9, 9)))
+        open(os.path.join(d, "b.png"), "wb").write(_noise_png(400, 300))
 
     calls = {"n": 0}
     async def fake(data, alt, **kw):
@@ -878,7 +886,7 @@ Expected: FAIL — `enrich_run_images` not defined.
 
 - [ ] **Step 3: Implement `enrich_run_images`**
 
-Append to `app/services/image_describe.py` (add imports: `import asyncio`, `import os`, `import uuid`, `from sqlalchemy import select, or_`, `from sqlalchemy.ext.asyncio import AsyncSession`, `from app.models.article import Article`, `from app.models.image import ArticleImage`, `from app.models.image_description import ImageDescription`, `from app.services import change_log`):
+Append to `app/services/image_describe.py` (add imports: `import asyncio`, `import os`, `import uuid`, `from sqlalchemy import select, or_`, `from sqlalchemy.ext.asyncio import AsyncSession`, `from app.models.article import Article`, `from app.models.image import ArticleImage`, `from app.services import change_log`, and — **aliased to avoid colliding with the `ImageDescription` dataclass from Task 3** — `from app.models.image_description import ImageDescription as ImageDescriptionCache`):
 
 ```python
 def _needs_work(img: ArticleImage) -> bool:
@@ -928,7 +936,7 @@ async def enrich_run_images(db: AsyncSession, source_id, run_id, *, describe=des
                 if not img.is_meaningful:
                     continue
                 # Resolve a description: cache first, then VLM (budget + breaker).
-                cached = await db.get(ImageDescription, img.bytes_sha256)
+                cached = await db.get(ImageDescriptionCache, img.bytes_sha256)
                 if cached is not None:
                     text, kind = cached.description, cached.kind or "other"
                 else:
@@ -940,7 +948,7 @@ async def enrich_run_images(db: AsyncSession, source_id, run_id, *, describe=des
                         continue
                     consecutive_failures = 0
                     budget -= 1
-                    db.add(ImageDescription(
+                    db.add(ImageDescriptionCache(
                         bytes_sha256=img.bytes_sha256, description=res.text,
                         kind=res.kind, model=settings.image_vlm_model,
                     ))
