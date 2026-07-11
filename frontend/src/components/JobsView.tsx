@@ -45,6 +45,12 @@ function runStatusBadge(run: ExtractionRun) {
   return statusBadge(run.status);
 }
 
+/** Image-enrichment backfill runs get a small "enrich" tag next to the status badge. */
+function kindBadge(run: ExtractionRun) {
+  if (run.kind !== "enrich") return null;
+  return <span className="kind-badge">enrich</span>;
+}
+
 function fmtDuration(fromIso: string | null, toIso: string | null): string {
   if (!fromIso) return "—";
   const from = new Date(fromIso).getTime();
@@ -167,6 +173,7 @@ export default function JobsView() {
                   <strong>{path(run)}</strong>
                   <div className="item-meta">
                     {runStatusBadge(run)}
+                    {kindBadge(run)}
                     {run.control && (
                       <span className="sub" style={{ color: "var(--amber)" }}>
                         {run.control === "cancel" ? "cancelling…" : "pausing…"}
@@ -281,6 +288,7 @@ export default function JobsView() {
                 <strong>{path(run)}</strong>
                 <div className="item-meta">
                   {runStatusBadge(run)}
+                  {kindBadge(run)}
                   <span className="sub">{run.trigger}</span>
                   <span className="sub">
                     {run.started_at ? new Date(run.started_at).toLocaleString() : "—"}
@@ -361,6 +369,7 @@ function RunDetail({ run, onBack }: { run: ExtractionRun; onBack: () => void }) 
       <h2>{path(run)}</h2>
       <div className="item-meta">
         {runStatusBadge(run)}
+        {kindBadge(run)}
         <span className="sub">{run.trigger}</span>
         {run.attempts ? <span className="sub">attempt {run.attempts}</span> : null}
       </div>

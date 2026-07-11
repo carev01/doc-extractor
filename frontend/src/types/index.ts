@@ -411,6 +411,21 @@ export interface DashboardResponse {
   sources: DashboardSourceRow[];
 }
 
+export interface SourceEnrichment {
+  source_id: string;
+  vendor: string;
+  product: string;
+  name: string;
+  described: number;
+  pending: number;
+  active_run: boolean;
+}
+
+export interface EnrichmentSummary {
+  aggregate: { described: number; pending: number; sources_with_backlog: number };
+  sources: SourceEnrichment[];
+}
+
 export interface SourceImportRow {
   row: number;
   result: string;
