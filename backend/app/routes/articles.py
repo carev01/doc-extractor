@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func, and_, or_, text, exists, false, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -24,6 +25,7 @@ from app.schemas.article import (
     TOCEntryResponse,
     TOCResponse,
 )
+from app.schemas.delta import decode_delta_cursor
 from app.schemas.search import (
     ArticleSearchResponse,
     ArticleSearchResultItem,
@@ -39,6 +41,7 @@ from app.schemas.version import (
     ArticleVersionListResponse,
     VersionDiffResponse,
 )
+from app.services import delta_feed
 from app.services.diffing import compute_unified_diff
 # Reuse the exporter's canonical FTS expression so the planner uses the existing
 # GIN expression index (ix_articles_fts) — no second index/column is introduced.
@@ -383,6 +386,49 @@ async def _compute_facets(
     date_facets = [FacetCount(label=row.bucket, count=row.cnt) for row in date_rows]
 
     return Facets(status=status_facets, date_bucket=date_facets)
+
+
+@router.get("/delta")
+async def article_delta_feed(
+    since: str | None = Query(
+        None,
+        description="Opaque cursor from a prior pull's control record. "
+        "Omit for a full bootstrap snapshot.",
+    ),
+    source_id: uuid.UUID | None = Query(None),
+    vendor_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """Stream article changes as JSONL for the downstream GraphRAG pipeline.
+
+    - ``since`` omitted → full bootstrap snapshot (every current, visible,
+      non-removed article as ``added``); the control record's ``next_since`` is
+      the watermark to continue from.
+    - ``since`` present → changes after that watermark (added/updated content
+      records + removed tombstones), gap-free under concurrent runs.
+
+    The final line is always a control record: ``{"control":"cursor",
+    "next_since": "...","count": N}``. A truncated stream lacks it — clients must
+    only advance their stored cursor on a clean finish.
+    """
+    visible = principal.visible_vendor_ids()
+
+    if since is None:
+        gen = delta_feed.stream_bootstrap(
+            db, source_id=source_id, vendor_id=vendor_id, visible_vendor_ids=visible,
+        )
+    else:
+        try:
+            since_seq = decode_delta_cursor(since)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        gen = delta_feed.stream_delta(
+            db, since_seq=since_seq, source_id=source_id, vendor_id=vendor_id,
+            visible_vendor_ids=visible,
+        )
+
+    return StreamingResponse(gen, media_type="application/x-ndjson")
 
 
 @router.get("/{article_id}", response_model=ArticleDetailResponse)

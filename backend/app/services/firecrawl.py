@@ -13,23 +13,26 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
-from sqlalchemy import bindparam, delete, select, update
+from sqlalchemy import bindparam, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.article import Article
 from app.models.article_version import ArticleVersion
+from app.models.content_change import ContentChange
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.image import ArticleImage
 from app.models.product import Product
 from app.models.source import DocumentationSource, SourceStatus
 from app.models.toc import TOCEntry
 from app.models.auth_realm import AuthRealm, RealmStatus
+from app.schemas.delta import encode_delta_cursor
 from app.services.auth import realm_manager
 from app.services.auth.realm_manager import NeedsLoginError
 from app.services.auth.session import session_expired
 from app.services.blockpage import is_auth_wall, is_block_page
 from app.services.notify import notify
+from app.services import change_log
 from app.services import webhook_dispatcher
 from app.services.profiles import registry as profile_registry
 from app.services.profiles.base import TocEntry as ProfileTocEntry
@@ -978,6 +981,14 @@ class FirecrawlService:
 
         article.content_markdown = markdown_content
 
+        # Outbox: record the change in the same transaction as the mutation.
+        await change_log.record_change(
+            db,
+            article=article,
+            change_type="added" if outcome == "new" else "updated",
+            run_id=run_id,
+        )
+
         # Atomic counter increment so concurrent webhook calls don't race.
         if outcome == "new":
             await db.execute(
@@ -1582,22 +1593,19 @@ class FirecrawlService:
         )
 
         now = datetime.now(timezone.utc)
-        # Newly removed. Only pre-query the rows (for webhook payloads) when a
-        # removed_page subscriber exists for this run — otherwise skip the query.
-        notify_removed = webhook_dispatcher.run_has_subscribers(run_id, "removed_page")
+        # Always capture the newly-removed rows: needed for the outbox, and reused
+        # for the removed_page webhook payloads when a subscriber exists.
         newly_removed = (
-            (
-                await db.execute(
-                    select(Article.id, Article.title, Article.source_url).where(
-                        Article.source_id == source_id,
-                        Article.toc_entry_id.is_(None),
-                        Article.removed_at.is_(None),
-                    )
+            await db.execute(
+                select(
+                    Article.id, Article.title, Article.source_url, Article.topic_key
+                ).where(
+                    Article.source_id == source_id,
+                    Article.toc_entry_id.is_(None),
+                    Article.removed_at.is_(None),
                 )
-            ).all()
-            if notify_removed
-            else []
-        )
+            )
+        ).all()
         await db.execute(
             update(Article)
             .where(
@@ -1617,20 +1625,27 @@ class FirecrawlService:
             )
             .values(removed_at=None, removal_run_id=None)
         )
+
+        # Outbox: one removed row per newly-removed article, same transaction.
+        if newly_removed:
+            await change_log.record_removals(
+                db, rows=newly_removed, source_id=source_id, run_id=run_id
+            )
         await db.commit()
 
         # Fire removed_page webhook events (best-effort, tracked fire-and-forget).
-        for row in newly_removed:
-            webhook_dispatcher.spawn_event(
-                event_type="removed_page",
-                run_id=run_id,
-                source_id=source_id,
-                extra={
-                    "page_url": row.source_url,
-                    "page_title": row.title,
-                    "article_id": str(row.id),
-                },
-            )
+        if webhook_dispatcher.run_has_subscribers(run_id, "removed_page"):
+            for row in newly_removed:
+                webhook_dispatcher.spawn_event(
+                    event_type="removed_page",
+                    run_id=run_id,
+                    source_id=source_id,
+                    extra={
+                        "page_url": row.source_url,
+                        "page_title": row.title,
+                        "article_id": str(row.id),
+                    },
+                )
 
     async def retry_escalation_run(
         self, db: AsyncSession, source_id: uuid.UUID, run_id: uuid.UUID,
@@ -1732,6 +1747,17 @@ class FirecrawlService:
         # bare ``run.id`` read attempts lazy IO and raises MissingGreenlet on the
         # async engine. We reload ``run`` from this PK before the completion path.
         run_pk = run.id
+
+        # Commit a run_start sentinel into the outbox before any article work, so
+        # this run has a COMMITTED floor in content_changes.id space from the moment
+        # it is active. The delta feed's safe-ceiling keys on active-run rows; the
+        # committed floor closes the flush→commit window where a run's first real
+        # row is assigned an id but not yet visible (which could otherwise let a
+        # concurrent run's higher-id row be served and advance the cursor past the
+        # uncommitted lower id). See services/delta_feed.py. Harmless on resume
+        # (an extra, higher-id floor that doesn't lower the run's true minimum).
+        await change_log.record_run_start(db, source_id=source_id, run_id=run_pk)
+        await db.commit()
 
         # Authenticated source: resolve an auth state dict up front. If the
         # realm needs a human login or has no usable session, fail the run
@@ -2125,6 +2151,10 @@ class FirecrawlService:
 
             # Fire extraction_complete webhook (best-effort, tracked fire-and-forget).
             if webhook_dispatcher.run_has_subscribers(run_pk, "extraction_complete"):
+                delta_counts = await change_log.run_change_counts(db, run_pk)
+                max_seq = (
+                    await db.execute(select(func.max(ContentChange.id)))
+                ).scalar() or 0
                 webhook_dispatcher.spawn_event(
                     event_type="extraction_complete",
                     run_id=run_pk,
@@ -2135,6 +2165,12 @@ class FirecrawlService:
                         "articles_updated": int(updated or 0),
                         "articles_unchanged": int(unchanged or 0),
                         "articles_resumed": int(resumed or 0),
+                        "delta": {
+                            "added": delta_counts["added"],
+                            "updated": delta_counts["updated"],
+                            "removed": delta_counts["removed"],
+                            "watermark": encode_delta_cursor(max_seq),
+                        },
                     },
                 )
             webhook_dispatcher.finish_run(run_pk)
