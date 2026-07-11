@@ -35,9 +35,13 @@ def test_large_image_is_meaningful():
 
 
 def test_tiny_dimension_rejected():
-    data = _png(40, 40)
+    # Byte-heavy (noise) so it passes the size threshold and actually reaches the
+    # dimension check — isolating the w/h < image_min_dimension rejection branch.
+    data = _noise_png(40, 40)
+    assert len(data) >= 3072
     ev = evaluate_image(data)
     assert ev.is_meaningful is False
+    assert ev.width == 40 and ev.height == 40  # dims were read, then rejected on size
 
 
 def test_sub_min_bytes_rejected():
