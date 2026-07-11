@@ -23,10 +23,19 @@ adds VLM-generated natural-language descriptions of the **meaningful** images
 - **Placement:** inline in markdown **and** structured field. The description is written
   into `content_markdown` near the image (so text RAG sees it with zero connector work)
   and also exposed as `images[].description` / `kind`.
-- **When:** **inline in the extraction pipeline**, before `content_hash` is computed —
-  chosen over a separate backfill pass so the delta feed stays honest (no phantom
-  `updated` deltas; see "Interaction with Spec 1"). Accepted trade-off: added VLM latency
-  on runs, bounded by budget + a content-hash cache.
+- **When:** a **dedicated enrichment phase at the end of the extraction run** (after
+  scraping, before the run completes), reading the images already downloaded to disk —
+  **not** inline in `process_article_result`. (Revised during planning: `content_hash` is
+  computed early in `process_article_result`, before images are downloaded, so unchanged
+  pages fast-path without any download — load-bearing for large raw-HTTP sources like
+  Rubrik's 4,240 pages. Injecting captions "before the hash" would entangle that
+  hot path and risk regressing incremental runs. A post-scrape phase keeps the
+  change-detection path untouched.) The phase updates `content_markdown` + `content_hash`
+  and writes an `updated` `content_changes` row for each enriched article, so the delta
+  feed delivers the descriptions. Accepted trade-offs: a net-new enriched article emits an
+  `added` (pre-caption) then an `updated` (captioned) row in the same run — both idempotent
+  upserts downstream; and the run's `updated` count is slightly inflated. VLM cost/latency
+  is bounded by a per-run budget + the `bytes_sha256` cache.
 
 ## Existing primitives this builds on
 
@@ -46,7 +55,9 @@ adds VLM-generated natural-language descriptions of the **meaningful** images
 ## Selection — which images are "meaningful"
 
 A layered filter, cheapest checks first, so the VLM only ever sees images worth describing.
-Applied during the existing per-page image loop in `FirecrawlService`:
+Applied in the enrichment phase over the `ArticleImage` rows of the articles touched this
+run, reading each image's bytes from disk (`media_dir/<article_id>/<local_filename>` — no
+re-download):
 
 1. **Boilerplate reject** — reuse `_BOILERPLATE_IMG_RE` (skins, ui-icons, spacers).
 2. **Dimension / size reject** — capture `width` / `height` while the bytes are in hand.
@@ -95,9 +106,9 @@ settings.image_min_bytes: int = 3072
 - Returns `None` on a service failure (so the caller's circuit breaker can distinguish a
   genuine failure from a valid description) — same contract as `escalate_segment`.
 
-`describe_article_images(...)` — the per-article driver, called inside extraction:
+`describe_article_images(...)` — the per-article driver, called by the enrichment phase:
 
-- Iterates the article's meaningful, not-yet-described images.
+- Iterates the article's meaningful, not-yet-described images (reading bytes from disk).
 - **Cache first**: look up `image_descriptions` by `bytes_sha256`; on hit, reuse (no VLM call).
 - On miss, and within `image_vlm_max_per_run` budget and the circuit breaker, call
   `describe_image`, persist to the cache, attach to the `ArticleImage` row.
@@ -138,20 +149,28 @@ description → byte-identical markdown.
 
 ## Interaction with Spec 1 — keeping the delta feed honest
 
-Injecting a caption changes `content_markdown`, hence `content_hash`, hence would look like a
-content change. Two rules prevent phantom deltas:
+Injecting a caption changes `content_markdown` and `content_hash`. The enrichment phase runs
+after scraping (so `process_article_result` has already written its `added`/`updated` row with
+pre-caption content), then, for each enriched article, updates `content_markdown` +
+`content_hash` and writes its own `updated` `content_changes` row so the descriptions reach the
+feed. Two rules keep this honest:
 
-1. **Enrichment runs before `content_hash` is computed.** In the extraction pipeline the order
-   is: assemble markdown → download images → **describe meaningful images + inject captions** →
-   compute `content_hash` → persist article + write the `content_changes` outbox row. The
-   described markdown is the canonical content, so the hash covers it and there is exactly one
-   change event for a genuine change.
-2. **Descriptions are cached by `bytes_sha256`.** On a later run, an unchanged image resolves to
-   the identical cached caption → identical markdown → identical hash → **no `updated` outbox
-   row**. VLM cost and delta churn are both paid exactly once per distinct image, ever.
+1. **The phase only acts on articles with meaningful, not-yet-described images.** An article
+   with no meaningful images, or whose meaningful images are already described (cache hit
+   yielding the identical caption), produces **byte-identical** `content_markdown` → identical
+   `content_hash` → the phase writes **no** `updated` row. So repeated runs over unchanged
+   content emit nothing.
+2. **Descriptions are cached by `bytes_sha256`** (the `image_descriptions` table), shared across
+   all articles/sources. VLM cost is paid once per distinct image, ever; a re-extracted or
+   re-used image reuses its cached caption.
+
+The phase does **not** create an `ArticleVersion` for the caption injection (captions are a
+derived enrichment, not a new source revision; the prior content — if any — was already
+snapshotted by `process_article_result` on the real change). It updates the live article in
+place and emits the outbox row.
 
 Net steady-state: incremental runs pay VLM cost only for genuinely new or changed images, and
-the feed emits `updated` only for real content changes.
+the feed emits an `updated` for an article only when its description set actually changes.
 
 ## Error handling
 
