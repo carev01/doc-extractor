@@ -33,6 +33,7 @@ Full-stack app: FastAPI backend + React/TypeScript frontend. The two are separat
 - `app/schemas/` — Pydantic request/response schemas
 - `app/routes/` — FastAPI routers (vendors, products, sources, extraction, articles, export, jobs, webhooks, auth)
 - `app/services/firecrawl.py` — core extraction engine; `app/services/exporter.py` — markdown export engine; `app/services/webhook_dispatcher.py` — outbound webhook dispatch with HMAC signing and retry
+- `app/services/change_log.py` — writes `content_changes` outbox rows (add/update/remove + per-run `run_start` floor); `app/services/delta_feed.py` — streaming JSONL delta feed (`GET /api/articles/delta`) with the gap-free safe-ceiling logic. The outbox powers programmatic incremental sync (e.g. a downstream graph-RAG indexer).
 - `app/core/auth_middleware.py` + `app/core/dependencies.py` + `app/core/security.py` — API auth (API keys + OAuth2/JWT with RBAC)
 - `exports/` — generated markdown files written here (one subdirectory per export UUID)
 
@@ -102,5 +103,6 @@ npm run lint
 - **Models must be imported before `create_all`**: `app/main.py` imports `app.models` (not individual models) at startup for this reason. Adding a new model file requires adding it to `app/models/__init__.py`.
 - **Extraction uses pre-created run IDs**: The route creates the `ExtractionRun` row and passes its `id` into the background task, so there is never a second run row created. Always pass `run_id` when calling `firecrawl_service.extract_source`.
 - **Firecrawl fast-fail**: `FirecrawlService._check_available()` uses a 5s connect timeout to fail quickly when the Firecrawl service is unavailable, instead of hanging for the 300s read timeout.
+- **Delta-feed outbox is transactional + gap-free**: every add/update/remove appends a `content_changes` row via `change_log` in the mutation's *own* transaction (never a separate commit). The feed (`delta_feed.py`) serves only below the `_safe_ceiling` (lowest `id` of any active run), and every run — including the PDF `kind="escalate"` retry in `pdf_import.py` — commits a `run_start` sentinel before touching articles. Any new path that mutates article content must also write a `content_changes` row, or that change won't reach the feed.
 - **Split never breaks articles**: `ExportEngine._split_articles` guarantees an individual article is never split across output files; a file that would exceed the limit is still written as a single-article file.
 - **Tests use synchronous DB**: `tests/` use `psycopg2` + sync `Session` to avoid asyncpg/pytest-asyncio event-loop conflicts. Async routes are tested via `httpx.AsyncClient` if needed.

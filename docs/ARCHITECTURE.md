@@ -62,6 +62,7 @@ Worker claims run from queue
     │
     ├── Updates status to "running"
     ├── Sends heartbeats
+    ├── Commits a run_start floor row into content_changes (delta-feed watermark)
     │
     ├── Phase 1: TOC Discovery
     │   ├── Detect platform (or use configured profile)
@@ -76,16 +77,20 @@ Worker claims run from queue
     │   │   ├── Download and store images locally
     │   │   ├── Compare with previous version (if exists)
     │   │   ├── Store new/updated article + version
+    │   │   ├── Append added/updated row to content_changes (same transaction)
     │   │   └── Update progress counters
+    │   ├── Reconcile removals → append removed rows to content_changes
     │   └── Handle resume from checkpoint
     │
     └── Phase 3 (PDF sources): PDF Acquire → Convert → Split → VLM Escalate
+        └── VLM escalation (incl. kind="escalate" retry) also appends
+            updated rows so improved content reaches the delta feed
     │
     ▼
 Run completes (status=completed or failed)
     │
     ▼
-Webhooks dispatched (if configured)
+Webhooks dispatched (extraction_complete carries a delta summary)
 ```
 
 ### Export Flow
@@ -122,15 +127,43 @@ When an article is re-extracted:
 4. Diff is computed on-demand (line-level, rendered in the UI)
 5. Changelog entries are generated per source
 
+### Delta Feed
+
+The delta feed (`GET /api/articles/delta`) lets a downstream consumer — for example a
+graph-RAG indexer — bootstrap from the full corpus and then incrementally apply
+additions, updates, and removals. It is backed by an **append-only outbox**,
+`content_changes`, with a `BIGSERIAL id` that is the feed's monotonic **watermark**.
+
+- **Write path**: every article add / update / remove appends one `content_changes` row
+  **in the same database transaction** as the mutation (`app/services/change_log.py`,
+  called from `firecrawl.py` and `pdf_import.py`), so the feed can never disagree with
+  the stored data.
+- **Serve path** (`app/services/delta_feed.py`): rows are streamed as JSONL ordered by
+  `id`. `added`/`updated` become content records (joined to the live article + provenance);
+  `removed` become tombstones that survive article/source hard-deletion (FKs are
+  `ON DELETE SET NULL` and `topic_key` is copied onto the row). Omitting the `since` cursor
+  yields a full bootstrap snapshot.
+- **Gap-free under concurrent runs**: ordering is by `id` alone. The feed serves only below
+  a **safe ceiling** — the lowest `id` belonging to any still-active run — so a slow run's
+  rows are withheld until it terminalizes and can't be skipped by a faster concurrent run.
+  Because a `BIGSERIAL id` is invisible until commit, each run also commits a **`run_start`
+  sentinel** row before processing any article, giving every active run a committed floor in
+  id space and closing the flush→commit window (relevant only for multi-replica workers;
+  single-replica runs never overlap).
+- **Trigger**: the `extraction_complete` webhook carries a `delta` summary (counts + watermark)
+  so a consumer knows when to pull. The feed — not the webhook — is the reliable channel, so a
+  missed delivery self-heals on the next pull.
+
 ## Database Schema
 
-17 models across the following domains:
+18 models across the following domains:
 
 | Domain | Models | Purpose |
 |--------|--------|---------|
 | Hierarchy | `Vendor`, `Product`, `DocumentationSource` | Vendor → Product → Source tree |
 | Content | `Article`, `TOCEntry`, `Image` | Extracted articles, TOC structure, images |
 | Versioning | `ArticleVersion` | Historical article versions for diffing |
+| Delta Feed | `ContentChange` | Append-only outbox (watermark) powering the delta feed |
 | Extraction | `ExtractionRun`, `TOCCheckpoint` | Run tracking and resume checkpoints |
 | Export | `ExportJob` | Export job queue |
 | Scheduling | `Job`, `JobRun` | Recurring extraction schedules |
@@ -246,6 +279,10 @@ Optional OAuth2 login for Google and Okta. Configure client ID/secret and set
   ID to the background task, so there's never a duplicate or orphaned run.
 - **Checkpoint-based resume**: TOC checkpoints allow resuming interrupted extractions
   without re-doing completed work.
+- **Transactional outbox for the delta feed**: content changes are recorded in an
+  append-only `content_changes` table written in the mutation's own transaction, rather
+  than derived at read time. A `BIGSERIAL` id gives a monotonic watermark; a safe-ceiling
+  gate plus a per-run `run_start` floor make the feed gap-free even when runs overlap.
 - **Images are canonical**: Article images live in `media_dir` (served at `/media`),
   separate from generated exports. Exports rewrite image URLs to relative paths.
 - **Export retention**: Generated export directories are purged after

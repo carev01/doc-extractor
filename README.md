@@ -12,6 +12,7 @@ DocExtractor is a full-stack application that scrapes product documentation from
 - **20+ documentation platform profiles** — Built-in adapters for Docusaurus, MkDocs, Sphinx, GitBook, ReadTheDocs, Intercom, Zendesk, Freshdesk, HelpJuice, Confluence, Document360, Flare (HTML5 + WebHelp), Oxygen WebHelp, Salesforce, Fern, RSPress, DocFX, Zoomin, and more. A generic sitemap fallback handles unrecognized platforms. An optional LLM fallback can auto-derive a profile for completely unknown sites.
 - **PDF source support** — Upload PDF manuals and convert them to Markdown via [Docling](https://github.com/docling-project/docling-serve) (with VLM escalation for complex layouts) or an in-process PyMuPDF fallback.
 - **Incremental extraction** — After the initial full run, subsequent runs only fetch changed pages. Historical versions are kept with side-by-side diff views and a consolidated changelog.
+- **Delta feed for programmatic sync** — A streaming JSONL endpoint (`GET /api/articles/delta`) lets a downstream consumer (e.g. a graph-RAG indexer) bootstrap from the full corpus and then incrementally apply additions, updates, and removals. It's driven by an append-only outbox with a gap-free watermark, and the `extraction_complete` webhook nudges consumers to pull.
 - **Scheduled extraction** — Define recurring jobs (hourly, daily, weekly, monthly, or cron expressions) to keep documentation archives up to date automatically.
 - **Flexible export** — Export full or partial documentation as Markdown or PDF. Split by article count, file size, or token budget. Articles are never split across files.
 - **Authenticated scraping** — Store login credentials/cookies for sites behind auth walls. Sessions are encrypted at rest (Fernet). Supports login scripts for complex multi-step authentication flows.
@@ -184,6 +185,7 @@ The REST API is served at `/api/*`. Key endpoints:
 | **Sources** | `GET/POST/PATCH/DELETE /api/sources` | Manage documentation sources (web or PDF) |
 | **Extraction** | `POST /api/extraction/trigger/{source_id}`, `GET /api/extraction/runs` | Trigger and monitor extraction runs |
 | **Articles** | `GET /api/articles`, `GET /api/articles/{id}` | Search and read extracted articles |
+| **Delta Feed** | `GET /api/articles/delta` | Streaming JSONL feed for programmatic incremental sync |
 | **Export** | `POST /api/export`, `GET /api/export/download/{id}` | Create and download exports |
 | **Jobs** | `GET/POST/PATCH/DELETE /api/jobs` | Schedule recurring extraction jobs |
 | **Auth** | `POST /api/auth/login`, `POST /api/auth/register`, `GET /api/auth/me` | Authentication and API key management |
@@ -295,6 +297,7 @@ alembic revision --autogenerate -m "Add new table"  # Generate a new migration
 
 - **All models must be imported in `app/models/__init__.py`** so `Base.metadata` is populated before `create_all` runs on startup.
 - **Extraction uses pre-created run IDs** — the route creates the `ExtractionRun` row and passes its ID to the background task. Never create a second run row.
+- **Delta feed is gap-free** — every add/update/remove appends a `content_changes` outbox row in the mutation's own transaction; the feed serves below a "safe ceiling" and each run commits a `run_start` floor, so a change is never skipped even when extraction runs overlap.
 - **Split never breaks articles** — `ExportEngine._split_articles` guarantees an individual article is never split across output files.
 - **Tests use sync DB** — `tests/` use `psycopg2` to avoid asyncpg/pytest-asyncio event-loop conflicts.
 
