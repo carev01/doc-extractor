@@ -47,7 +47,7 @@
 - Test: `tests/test_enrich_run_budget.py`
 
 **Interfaces:**
-- Produces: `async def enrich_run_images(db, source_id, run_id, *, describe=describe_image, max_new: int | None = None) -> int` — `max_new=None` → `settings.image_vlm_max_per_run` (unchanged default); returns the number of images newly described this run.
+- Produces: `async def enrich_run_images(db, source_id, run_id, *, describe=None, max_new: int | None = None) -> int` — `describe` resolves to `describe_image` at call time (honors monkeypatch); `max_new=None` → `settings.image_vlm_max_per_run` (unchanged default); returns the number of images newly described this run.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -88,17 +88,19 @@ Expected: FAIL — `enrich_run_images()` got an unexpected keyword `max_new` (an
 
 - [ ] **Step 3: Implement**
 
-In `app/services/image_describe.py`, change the signature and budget line, add a counter, and return it:
+In `app/services/image_describe.py`, change the signature and budget line, add a counter, and return it. **Change the `describe` default to `None` and resolve it at call time** — so a test can `monkeypatch.setattr(image_describe, "describe_image", fake)` and have `enrich_source_run` (Task 3, which doesn't pass `describe`) pick it up. A def-time `describe=describe_image` default captures the original function and would ignore the monkeypatch.
 
 ```python
 async def enrich_run_images(db: AsyncSession, source_id: uuid.UUID, run_id: uuid.UUID,
-                            *, describe=describe_image, max_new: int | None = None) -> int:
+                            *, describe=None, max_new: int | None = None) -> int:
 ```
-Replace `budget = settings.image_vlm_max_per_run` with:
+At the very top of the `try:` block, resolve `describe` and set the budget/counter:
 ```python
+        describe = describe or describe_image   # call-time lookup (honors monkeypatch)
         budget = settings.image_vlm_max_per_run if max_new is None else max_new
         described = 0
 ```
+(Callers that pass `describe=fake` explicitly are unaffected; the extraction phase passes nothing → resolves to `describe_image`.)
 Increment right after `img.description, img.kind = text, kind`:
 ```python
                 img.description, img.kind = text, kind
