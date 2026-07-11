@@ -72,6 +72,7 @@ Admin-only endpoints (user management, jobs, auth realms) require `admin`.
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/extraction/trigger/{source_id}` | Trigger an extraction run |
+| `POST` | `/api/extraction/enrich/{source_id}` | Queue an image-enrichment-only run (`kind=enrich`; describe all missing images, no re-scrape). 409 if descriptions are disabled, nothing needs describing, or a run is already active. |
 | `GET` | `/api/extraction/runs` | List runs (optional `source_id` filter) |
 | `GET` | `/api/extraction/runs/{run_id}` | Get run status |
 | `GET` | `/api/extraction/runs/{run_id}/logs` | Get run logs |
@@ -147,6 +148,8 @@ The response is RBAC-filtered to the caller's visible vendors. The **last line i
 ```
 
 `images[].description` / `kind` (also on `GET /api/articles/{id}`) carry the VLM-generated image description and its classification (`screenshot`/`diagram`/`chart`/`photo`/`other`) when image descriptions are enabled (`DOCEXTRACTOR_IMAGE_VLM_ENABLED`); they are `null` for images that weren't described (feature off, decorative image, or not yet processed).
+
+Each record's `content_hash` is the **SHA-256 of the served `content_markdown`** — so it changes whenever the served content changes (including when image captions/descriptions are injected). Consumers can safely de-dup / change-detect on it. (It is distinct from the internal raw-scrape fingerprint the pipeline uses for change detection.)
 
 **Typical consumer loop**
 
@@ -280,6 +283,7 @@ The `watermark` is informational; consumers should pull with their own stored cu
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/dashboard/sources` | Get dashboard overview (source health scores, counts) |
+| `GET` | `/api/dashboard/enrichment` | Per-source + corpus image-enrichment progress (`described`/`pending` per source, `active_run`, and an aggregate) |
 
 ---
 
