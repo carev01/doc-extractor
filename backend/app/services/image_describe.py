@@ -6,16 +6,27 @@ inject_caption  — idempotent caption injection into markdown (Task 4).
 enrich_run_images — the per-run enrichment phase (Task 5).
 """
 
+import asyncio
 import base64
 import hashlib
 import io
 import json
 import logging
+import os
+import uuid
 from dataclasses import dataclass
 
 import httpx
+from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.models.article import Article
+from app.models.image import ArticleImage
+# Aliased: the ORM cache model, distinct from the ImageDescription dataclass
+# (describe_image's return type) defined later in this module.
+from app.models.image_description import ImageDescription as ImageDescriptionCache
+from app.services import change_log
 
 logger = logging.getLogger(__name__)
 
@@ -140,3 +151,85 @@ def inject_caption(markdown: str, image_url: str, description: str) -> str:
     insert_at = idx + 1
     lines[insert_at:insert_at] = ["", block]
     return "\n".join(lines)
+
+
+def _needs_work(img: ArticleImage) -> bool:
+    return img.is_meaningful is None or (img.is_meaningful and img.description is None)
+
+
+async def enrich_run_images(db: AsyncSession, source_id, run_id, *, describe=describe_image) -> None:
+    """Enrichment phase: describe meaningful images of this source's articles, inject
+    captions, and emit an 'updated' content_changes row per enriched article. Best-effort
+    — never raises into extraction; leaves content_hash and versions untouched."""
+    if not settings.image_vlm_enabled:
+        return
+    try:
+        budget = settings.image_vlm_max_per_run
+        consecutive_failures = 0
+        media_root = os.path.abspath(settings.media_dir)
+
+        # Articles of this source with at least one image needing work.
+        need = or_(
+            ArticleImage.is_meaningful.is_(None),
+            (ArticleImage.is_meaningful.is_(True)) & (ArticleImage.description.is_(None)),
+        )
+        art_ids = (await db.execute(
+            select(Article.id)
+            .where(Article.source_id == source_id)
+            .where(Article.id.in_(select(ArticleImage.article_id).where(need)))
+        )).scalars().all()
+
+        for art_id in art_ids:
+            article = await db.get(Article, art_id)
+            if article is None:
+                continue
+            imgs = (await db.execute(
+                select(ArticleImage).where(ArticleImage.article_id == art_id, need)
+                .order_by(ArticleImage.sort_order)
+            )).scalars().all()
+            changed = False
+            for img in imgs:
+                path = os.path.join(media_root, str(art_id), img.local_filename)
+                if not os.path.isfile(path):
+                    continue
+                data = await asyncio.to_thread(_read_file, path)
+                if img.is_meaningful is None:
+                    ev = await asyncio.to_thread(evaluate_image, data)
+                    img.is_meaningful = ev.is_meaningful
+                    img.width, img.height, img.bytes_sha256 = ev.width, ev.height, ev.bytes_sha256
+                if not img.is_meaningful:
+                    continue
+                # Resolve a description: cache first, then VLM (budget + breaker).
+                cached = await db.get(ImageDescriptionCache, img.bytes_sha256)
+                if cached is not None:
+                    text, kind = cached.description, cached.kind or "other"
+                else:
+                    if budget <= 0 or consecutive_failures >= settings.image_vlm_max_consecutive_failures:
+                        continue
+                    res = await describe(data, img.alt_text)
+                    if res is None:
+                        consecutive_failures += 1
+                        continue
+                    consecutive_failures = 0
+                    budget -= 1
+                    db.add(ImageDescriptionCache(
+                        bytes_sha256=img.bytes_sha256, description=res.text,
+                        kind=res.kind, model=settings.image_vlm_model,
+                    ))
+                    text, kind = res.text, res.kind
+                img.description, img.kind = text, kind
+                article.content_markdown = inject_caption(article.content_markdown, img.local_path, text)
+                changed = True
+
+            if changed:
+                await change_log.record_change(db, article=article, change_type="updated", run_id=run_id)
+            await db.commit()
+            if consecutive_failures >= settings.image_vlm_max_consecutive_failures:
+                break
+    except Exception as exc:  # noqa: BLE001 — enrichment is best-effort
+        logger.warning("enrich_run_images failed for source %s: %s", source_id, exc)
+
+
+def _read_file(path: str) -> bytes:
+    with open(path, "rb") as fh:
+        return fh.read()
