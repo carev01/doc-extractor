@@ -113,6 +113,12 @@ Key values (see [`values.yaml`](../deploy/helm/docextractor/values.yaml) for all
 | `ingress.host` | `docextractor.k3s.home.lan` | Ingress hostname |
 | `ingress.tls.enabled` | `false` | Enable TLS |
 | `llm.fallbackEnabled` | `false` | Enable LLM profile derivation |
+| `pdfVlm.escalationEnabled` | `true` | Enable VLM escalation for complex PDF layouts |
+| `pdfVlm.apiKey` | — | OpenRouter bearer key for PDF VLM escalation |
+| `imageVlm.enabled` | `false` | Enable VLM image descriptions (worker runs the phase) |
+| `imageVlm.apiKey` | — | OpenRouter bearer key for image descriptions |
+| `imageVlm.model` | `qwen/qwen3-vl-32b-instruct` | Vision model for image descriptions |
+| `imageVlm.maxPerRun` | `100` | Max new image descriptions per run (budget) |
 
 ### Storage Notes
 

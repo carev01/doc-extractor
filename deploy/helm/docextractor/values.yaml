@@ -74,6 +74,17 @@ pdfVlm:
   # (rounded up, min 1 page). Scales the VLM allowance with document size.
   maxPagesPct: 10.0
 
+# -- Image descriptions — describe meaningful scraped images (screenshots,
+# diagrams) via an OpenAI-compatible VLM (default OpenRouter) and surface them in
+# the API + delta feed. Opt-in; the worker runs the enrichment phase. Set
+# enabled: true and apiKey to turn it on.
+imageVlm:
+  enabled: false
+  baseUrl: https://openrouter.ai/api/v1/chat/completions
+  model: qwen/qwen3-vl-32b-instruct
+  apiKey: ""                      # OpenRouter bearer key (OVERRIDE)
+  maxPerRun: 100                  # budget: max new descriptions per run
+
 # -- Master key for encrypting authenticated-source credentials/sessions at rest
 # (Fernet, urlsafe base64). REQUIRED to enable authenticated sources; the auth
 # code raises without it. Generate with:
