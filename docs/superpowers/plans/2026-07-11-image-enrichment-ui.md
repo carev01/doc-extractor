@@ -729,6 +729,49 @@ git commit -m "feat(enrich/ui): Dashboard image-enrichment rollup + backlog"
 
 ---
 
+## Task 9: Update project documentation
+
+**Files:**
+- Modify: `docs/API.md`, `docs/ARCHITECTURE.md`, `README.md`, `CLAUDE.md`
+
+**Interfaces:** none (docs only). Do this last so it reflects the shipped code.
+
+- [ ] **Step 1: API reference**
+
+In `docs/API.md`:
+- **Extraction** section table — add a row: `| POST | /api/extraction/enrich/{source_id} | Queue an image-enrichment-only run (describe all missing images; no re-scrape) |`.
+- **Dashboard** section table — add a row: `| GET | /api/dashboard/enrichment | Per-source + corpus image-enrichment progress (described/pending) |`.
+- **Delta Feed** section — update the note about `images[].description`/`kind` (already present) and add one line to the record description: "`content_hash` is the SHA-256 of the served `content_markdown` (so it changes when captions/descriptions are injected — safe for consumers to de-dup on)." If the existing Delta Feed text describes `content_hash` as a raw-scrape fingerprint, correct it here.
+
+- [ ] **Step 2: Architecture**
+
+In `docs/ARCHITECTURE.md`:
+- In the extraction-flow / run-kinds description, note the third run kind: `enrich` — a scrape-free run that only runs the image-enrichment phase, draining all of a source's missing images (alongside `extract` and the PDF `escalate`).
+- In the **Delta Feed** subsection, note that the served record's `content_hash` is `sha256(content_markdown)` (reflects served content, incl. injected captions) — distinct from the Article's internal raw-scrape `content_hash` used for change detection.
+
+- [ ] **Step 3: README**
+
+In `README.md`, extend the VLM-image-descriptions feature bullet (or add a short clause) to mention: on-demand "describe missing images" per source + enrichment-progress monitoring in the UI (Sources list + Dashboard).
+
+- [ ] **Step 4: CLAUDE.md**
+
+In `CLAUDE.md`:
+- Under the extraction/run notes, mention the `kind="enrich"` run (`enrich_source_run`, drain-all, no scrape) as the third worker dispatch branch after `extract`/`escalate`.
+- Note the delta-feed nuance: the delta record's `content_hash` is `sha256(content_markdown)` (served content), while the Article's `content_hash` remains the raw-scrape fingerprint for change detection — don't conflate them.
+
+- [ ] **Step 5: Sanity check (links/consistency)**
+
+Confirm no broken intra-doc anchors were introduced and the model/endpoint counts you cite are consistent. (Docs only — no build/tests.)
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add docs/API.md docs/ARCHITECTURE.md README.md CLAUDE.md
+git commit -m "docs: image-enrichment monitoring, on-demand enrich endpoint, served-content delta hash"
+```
+
+---
+
 ## Self-Review
 
 **Spec coverage:**
