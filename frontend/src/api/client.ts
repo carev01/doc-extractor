@@ -31,6 +31,7 @@ import type {
   ProfileOption,
   PickableSource,
   DashboardResponse,
+  DashboardOverview,
   EnrichmentSummary,
   SourceImportResult,
   AuthRealm,
@@ -516,6 +517,11 @@ export async function getDashboard(staleDays = 30): Promise<DashboardResponse> {
 
 export async function getEnrichmentStats(): Promise<EnrichmentSummary> {
   const res = await api.get("/dashboard/enrichment");
+  return res.data;
+}
+
+export async function getDashboardOverview(): Promise<DashboardOverview> {
+  const res = await api.get("/dashboard/overview");
   return res.data;
 }
 

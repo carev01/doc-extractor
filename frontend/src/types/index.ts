@@ -411,6 +411,61 @@ export interface DashboardResponse {
   sources: DashboardSourceRow[];
 }
 
+// ── Consolidated dashboard overview (/dashboard/overview) ──
+
+export interface OverviewLastRun {
+  run_id: string;
+  status: string;
+  new: number;
+  updated: number;
+  unchanged: number;
+}
+
+export interface OverviewEnrichment {
+  described: number;
+  pending: number;
+}
+
+export interface OverviewEscalation {
+  warning: boolean;
+  pending_count: number;
+  run_id: string | null;
+}
+
+export interface OverviewSourceRow {
+  id: string;
+  name: string;
+  vendor: string;
+  product: string;
+  source_type: string;
+  status: string;
+  last_extracted_at: string | null;
+  age_seconds: number | null;
+  article_count: number;
+  last_run: OverviewLastRun | null;
+  enrichment: OverviewEnrichment;
+  escalation: OverviewEscalation;
+  active_run: boolean;
+  job_id: string | null;
+  job_name: string | null;
+  next_run_at: string | null;
+}
+
+export interface OverviewAggregate {
+  total: number;
+  never_extracted: number;
+  stale: number;
+  failing: number;
+  running: number;
+  enrichment: { described: number; pending: number; sources_with_backlog: number };
+  escalation_sources_with_warning: number;
+}
+
+export interface DashboardOverview {
+  aggregate: OverviewAggregate;
+  sources: OverviewSourceRow[];
+}
+
 export interface SourceEnrichment {
   source_id: string;
   vendor: string;
