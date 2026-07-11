@@ -2,19 +2,21 @@
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import case, func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.authz import Principal, get_principal
 from app.core.database import get_db
 from app.models.article import Article
 from app.models.extraction_run import ExtractionRun, RunStatus
+from app.models.image import ArticleImage
 from app.models.job import Job
 from app.models.product import Product
 from app.models.source import DocumentationSource, SourceStatus
 from app.models.vendor import Vendor
 from app.schemas.dashboard import (
-    DashboardResponse, DashboardSourceRow, DashboardSummary,
+    DashboardEnrichmentResponse, DashboardResponse, DashboardSourceRow,
+    DashboardSummary, EnrichmentAggregate, SourceEnrichmentRow,
 )
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
@@ -122,6 +124,62 @@ async def dashboard_sources(
         summary=DashboardSummary(
             total=total, never_extracted=never, stale=stale,
             failing=failing, running=running,
+        ),
+        sources=out,
+    )
+
+
+@router.get("/enrichment", response_model=DashboardEnrichmentResponse)
+async def dashboard_enrichment(
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """Per-source and corpus-wide image-enrichment progress."""
+    visible = principal.visible_vendor_ids()
+    if visible is not None and not visible:
+        return DashboardEnrichmentResponse(
+            aggregate=EnrichmentAggregate(described=0, pending=0, sources_with_backlog=0), sources=[]
+        )
+
+    described_c = func.count().filter(ArticleImage.description.isnot(None))
+    pending_c = func.count().filter(
+        and_(ArticleImage.description.is_(None), ArticleImage.is_meaningful.isnot(False))
+    )
+    q = (
+        select(
+            DocumentationSource.id, DocumentationSource.name,
+            Vendor.name.label("vendor"), Product.name.label("product"),
+            described_c.label("described"), pending_c.label("pending"),
+        )
+        .select_from(ArticleImage)
+        .join(Article, Article.id == ArticleImage.article_id)
+        .join(DocumentationSource, DocumentationSource.id == Article.source_id)
+        .join(Product, Product.id == DocumentationSource.product_id)
+        .join(Vendor, Vendor.id == Product.vendor_id)
+        .group_by(DocumentationSource.id, DocumentationSource.name, Vendor.name, Product.name)
+    )
+    if visible is not None:
+        q = q.where(Product.vendor_id.in_(visible))
+    rows = (await db.execute(q)).all()
+
+    active = set((await db.execute(
+        select(ExtractionRun.source_id).where(
+            ExtractionRun.status.in_([RunStatus.PENDING, RunStatus.RUNNING, RunStatus.PAUSED])
+        )
+    )).scalars().all())
+
+    out = [
+        SourceEnrichmentRow(
+            source_id=r.id, vendor=r.vendor, product=r.product, name=r.name,
+            described=r.described, pending=r.pending, active_run=r.id in active,
+        )
+        for r in rows
+    ]
+    return DashboardEnrichmentResponse(
+        aggregate=EnrichmentAggregate(
+            described=sum(r.described for r in out),
+            pending=sum(r.pending for r in out),
+            sources_with_backlog=sum(1 for r in out if r.pending > 0),
         ),
         sources=out,
     )
