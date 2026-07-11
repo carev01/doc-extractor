@@ -370,6 +370,7 @@ function SourceItem({
           setRunId(null);
           await loadHistory();
           onSourceChanged();
+          onEnriched();   // refresh enrichment counts once the run terminalizes
         }
       } catch {
         stopPolling();
@@ -380,7 +381,7 @@ function SourceItem({
     poll();
     pollRef.current = setInterval(poll, 3000);
     return stopPolling;
-  }, [runId, stopPolling, loadHistory, onSourceChanged]);
+  }, [runId, stopPolling, loadHistory, onSourceChanged, onEnriched]);
 
   // Clean up any timer on unmount.
   useEffect(() => stopPolling, [stopPolling]);

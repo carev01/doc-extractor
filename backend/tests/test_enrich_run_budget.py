@@ -102,3 +102,35 @@ async def test_default_still_respects_budget(factory, monkeypatch):
     async with factory() as db:
         described = await enrich_run_images(db, src_id, run_id, describe=fake)  # max_new omitted
     assert described == 2 and calls["n"] == 2
+
+
+async def test_missing_file_image_marked_not_meaningful(factory):
+    # An ArticleImage whose bytes are missing on disk must be marked is_meaningful=False
+    # (dropped from the pending backlog), not left NULL (which would keep the source in
+    # the backlog and re-queue no-op enrich runs forever).
+    async with factory() as s:
+        v = Vendor(name="V"); s.add(v); await s.flush()
+        p = Product(name="P", vendor_id=v.id); s.add(p); await s.flush()
+        src = DocumentationSource(name="S", base_url="https://x", product_id=p.id); s.add(src); await s.flush()
+        run = ExtractionRun(source_id=src.id, status="running"); s.add(run); await s.flush()
+        art = Article(source_id=src.id, extraction_run_id=run.id, created_run_id=run.id,
+                      title="A", source_url="https://x/a", topic_key="https://x/a",
+                      content_markdown="# A", content_hash="h")
+        s.add(art); await s.flush()
+        img = ArticleImage(article_id=art.id, original_url="u", local_filename="gone.png",
+                           local_path=f"/media/{art.id}/gone.png", sort_order=0)
+        s.add(img); await s.flush()
+        img_id, src_id, run_id = img.id, src.id, run.id
+        await s.commit()
+        # (no file written to media_dir/<art.id>/gone.png)
+
+    async def boom(data, alt, **kw):
+        raise AssertionError("describe must not be called for a missing-file image")
+
+    async with factory() as db:
+        described = await enrich_run_images(db, src_id, run_id, describe=boom)
+    assert described == 0
+
+    async with factory() as s:
+        img = await s.get(ArticleImage, img_id)
+        assert img.is_meaningful is False and img.description is None

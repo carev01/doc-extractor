@@ -49,6 +49,14 @@ export default function Dashboard({
       });
   }, []);
 
+  // Keep the rollup/backlog fresh as enrich/extraction runs complete elsewhere.
+  useEffect(() => {
+    const id = setInterval(() => {
+      getEnrichmentStats().then(setEnr).catch(() => {});
+    }, 20000);
+    return () => clearInterval(id);
+  }, []);
+
   const reloadEnrichment = () => {
     getEnrichmentStats().then(setEnr).catch(() => {});
   };

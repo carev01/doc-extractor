@@ -193,6 +193,11 @@ async def enrich_run_images(db: AsyncSession, source_id: uuid.UUID, run_id: uuid
             for img in imgs:
                 path = os.path.join(media_root, str(art_id), img.local_filename)
                 if not os.path.isfile(path):
+                    # No bytes on disk → can't describe. Mark unevaluated ones
+                    # not-meaningful so they drop out of the pending backlog instead of
+                    # keeping the source perpetually "pending" and re-queuing no-op runs.
+                    if img.is_meaningful is None:
+                        img.is_meaningful = False
                     continue
                 data = await asyncio.to_thread(_read_file, path)
                 if img.is_meaningful is None:
