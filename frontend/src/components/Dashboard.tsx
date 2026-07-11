@@ -6,6 +6,7 @@ import type {
   EnrichmentSummary,
 } from "../types";
 import { getDashboard, getSource, getEnrichmentStats, enrichSource } from "../api/client";
+import { apiError } from "../api/errors";
 
 function fmtAge(seconds: number | null): string {
   if (seconds === null) return "never";
@@ -59,8 +60,8 @@ export default function Dashboard({
       await enrichSource(sourceId);
       setEnrMsg("Enrichment queued");
       reloadEnrichment();
-    } catch {
-      setEnrMsg("Failed to queue enrichment");
+    } catch (e) {
+      setEnrMsg(apiError(e, "Failed to queue enrichment"));
     } finally {
       setEnriching(null);
     }
