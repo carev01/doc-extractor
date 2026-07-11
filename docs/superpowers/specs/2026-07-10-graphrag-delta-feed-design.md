@@ -101,6 +101,15 @@ skipped once it completes. Consequences:
   sources until it finishes. This is a bounded, correct delay — the downstream simply gets the
   rest on its next pull. Acceptable for an internal tool triggered per completed run.
 
+**Run-start floor (commit-order safety).** A `BIGSERIAL` id is assigned at insert
+but a row is invisible to other sessions until its transaction commits, so a run's
+first outbox row has a brief flush→commit window where its low id is unseen. To
+keep the safe-ceiling correct across that window, every run commits a `run_start`
+sentinel row into `content_changes` before it processes any article. That gives
+each active run a committed floor in id space from the moment it is active, so the
+ceiling always reflects it and the run's later (possibly mid-commit) rows are
+withheld until the run reaches a terminal state. The feed skips sentinel rows.
+
 The opaque cursor is `base64url(json({"v": 1, "seq": <id>}))`. Absent/invalid cursors are
 handled explicitly (see endpoint).
 

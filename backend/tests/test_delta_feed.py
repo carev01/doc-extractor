@@ -154,3 +154,64 @@ async def test_invalid_cursor_422(ctx):
     c, factory = ctx
     resp = await c.get("/api/articles/delta?since=not-a-cursor!!")
     assert resp.status_code == 422
+
+
+async def test_run_start_floor_withholds_higher_rows_of_other_runs(ctx):
+    # A run_start sentinel for an ACTIVE run establishes a committed floor. A
+    # COMPLETED run's change with a HIGHER id must be withheld until the active
+    # run finishes — this is the mechanism that closes the flush→commit window.
+    c, factory = ctx
+    _, src_id, active_run = await _seed_source(factory, run_status=RunStatus.RUNNING)
+    async with factory() as s:
+        s.add(ContentChange(article_id=None, source_id=src_id, run_id=active_run,
+                            change_type="run_start", topic_key=None))
+        await s.commit()
+    # Completed run whose article change has a higher id than the sentinel.
+    async with factory() as s:
+        done = ExtractionRun(source_id=src_id, status=RunStatus.COMPLETED)
+        s.add(done); await s.flush()
+        done_id = done.id
+        await s.commit()
+    await _add_article_change(factory, src_id, done_id, url="https://x/done", title="Done")
+
+    r1 = await c.get(f"/api/articles/delta?since={encode_delta_cursor(0)}")
+    recs1, ctrl1 = _parse(r1.text)
+    assert recs1 == [] and ctrl1["count"] == 0  # withheld: sentinel floor blocks higher ids
+
+    # Complete the active run → floor lifts → the completed row is served, and the
+    # run_start sentinel is skipped (not emitted as a record).
+    async with factory() as s:
+        run = await s.get(ExtractionRun, active_run)
+        run.status = RunStatus.COMPLETED
+        await s.commit()
+    r2 = await c.get(f"/api/articles/delta?since={encode_delta_cursor(0)}")
+    recs2, _ = _parse(r2.text)
+    titles = [r.get("title") for r in recs2]
+    assert titles == ["Done"]  # exactly the real change; sentinel skipped, no gap
+
+
+async def test_content_record_run_id_is_change_run_not_article_run(ctx):
+    # The delta content record's run_id must be the CHANGE's run, not the article's
+    # latest extraction_run_id (they diverge if a later run touched the article).
+    c, factory = ctx
+    _, src_id, run_a = await _seed_source(factory)
+    async with factory() as s:
+        run_b = ExtractionRun(source_id=src_id, status=RunStatus.COMPLETED)
+        s.add(run_b); await s.flush()
+        run_b_id = run_b.id
+        art = Article(
+            source_id=src_id, extraction_run_id=run_b_id, created_run_id=run_a,
+            title="A", source_url="https://x/a", topic_key="https://x/a",
+            content_markdown="# A", content_hash="h",
+        )
+        s.add(art); await s.flush()
+        # The change belongs to run_a, but the article's latest run is run_b.
+        s.add(ContentChange(article_id=art.id, source_id=src_id, run_id=run_a,
+                            change_type="updated", content_hash="h", topic_key="https://x/a"))
+        await s.commit()
+
+    resp = await c.get(f"/api/articles/delta?since={encode_delta_cursor(0)}")
+    recs, _ = _parse(resp.text)
+    assert len(recs) == 1
+    assert recs[0]["run_id"] == str(run_a)      # the change's run
+    assert recs[0]["run_id"] != str(run_b_id)   # not the article's latest run

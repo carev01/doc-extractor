@@ -47,6 +47,28 @@ async def record_removals(
         )
 
 
+async def record_run_start(
+    db: AsyncSession, *, source_id: uuid.UUID, run_id: uuid.UUID
+) -> None:
+    """Append a ``run_start`` sentinel outbox row for a run (caller commits).
+
+    Committed before the run processes any article, this gives the run a visible
+    floor in content_changes.id space so the delta feed's safe-ceiling withholds
+    the run's later (possibly mid-commit) rows until it finishes — closing the
+    flush→commit gap under concurrent multi-replica runs. The feed skips these
+    rows (they carry no article and are not a change type it emits)."""
+    db.add(
+        ContentChange(
+            article_id=None,
+            source_id=source_id,
+            run_id=run_id,
+            change_type=ChangeType.RUN_START.value,
+            content_hash=None,
+            topic_key=None,
+        )
+    )
+
+
 async def run_change_counts(db: AsyncSession, run_id: uuid.UUID) -> dict[str, int]:
     """Return {'added': n, 'updated': n, 'removed': n} for a run's outbox rows."""
     stmt = (

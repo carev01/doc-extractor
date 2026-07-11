@@ -22,6 +22,7 @@ class ChangeType(str, Enum):
     ADDED = "added"
     UPDATED = "updated"
     REMOVED = "removed"
+    RUN_START = "run_start"
 
 
 class ContentChange(Base):

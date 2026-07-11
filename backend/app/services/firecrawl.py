@@ -1748,6 +1748,17 @@ class FirecrawlService:
         # async engine. We reload ``run`` from this PK before the completion path.
         run_pk = run.id
 
+        # Commit a run_start sentinel into the outbox before any article work, so
+        # this run has a COMMITTED floor in content_changes.id space from the moment
+        # it is active. The delta feed's safe-ceiling keys on active-run rows; the
+        # committed floor closes the flush→commit window where a run's first real
+        # row is assigned an id but not yet visible (which could otherwise let a
+        # concurrent run's higher-id row be served and advance the cursor past the
+        # uncommitted lower id). See services/delta_feed.py. Harmless on resume
+        # (an extra, higher-id floor that doesn't lower the run's true minimum).
+        await change_log.record_run_start(db, source_id=source_id, run_id=run_pk)
+        await db.commit()
+
         # Authenticated source: resolve an auth state dict up front. If the
         # realm needs a human login or has no usable session, fail the run
         # cleanly instead of proceeding and scraping a login page.

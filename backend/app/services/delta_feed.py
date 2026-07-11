@@ -2,9 +2,14 @@
 
 Ordering is by content_changes.id alone. Gap-freeness under concurrent runs is
 guaranteed by a "safe ceiling": the lowest id belonging to any still-active run.
-Because an active run's outbox rows all have id >= that run's minimum id, every
-row with id < ceiling provably belongs to a terminal run, so serving strictly
-below the ceiling never skips a slow run's not-yet-committed higher ids.
+Each run commits a ``run_start`` sentinel row before processing any article, so
+an active run always has a COMMITTED floor in id space from the moment it is
+active — this closes the flush→commit window where a run's first real row is
+assigned an id but not yet visible. Because an active run's rows (starting at its
+sentinel) all have id >= its floor, every row served with id < ceiling provably
+belongs to a terminal run, so serving strictly below the ceiling never skips a
+slow or just-started run's not-yet-committed higher ids. Sentinel rows carry no
+article and are skipped by the stream.
 """
 
 import json
@@ -108,7 +113,7 @@ def _images_payload(article: Article) -> list[dict]:
     ]
 
 
-async def _content_record(db, resolver, *, seq, change_type, article, vendor_name, product_name):
+async def _content_record(db, resolver, *, seq, change_type, article, vendor_name, product_name, run_id):
     parent_title, top_title = await resolver.resolve(db, article.source_id, article.toc_entry_id)
     return {
         "seq": seq,
@@ -126,7 +131,7 @@ async def _content_record(db, resolver, *, seq, change_type, article, vendor_nam
         "parent_chapter": parent_title,
         "top_level_chapter": top_title,
         "sort_order": article.sort_order,
-        "run_id": str(article.extraction_run_id) if article.extraction_run_id else None,
+        "run_id": str(run_id) if run_id else None,
         "content_markdown": article.content_markdown,
         "images": _images_payload(article),
     }
@@ -188,13 +193,16 @@ async def stream_delta(
             if change.change_type == "removed":
                 yield _line(_tombstone_record(change))
                 count += 1
-            elif article is not None:
+            elif change.change_type in ("added", "updated") and article is not None:
                 yield _line(await _content_record(
                     db, resolver, seq=change.id, change_type=change.change_type,
                     article=article, vendor_name=vendor_name, product_name=product_name,
+                    run_id=change.run_id,
                 ))
                 count += 1
-            # else: added/updated whose article was hard-deleted → skip.
+            # else: run_start sentinel, or added/updated whose article was
+            # hard-deleted → skip (advancing `last` past it is safe: it is
+            # permanent — below the ceiling, from a terminal run).
         if len(rows) < _BATCH:
             break
 
@@ -211,8 +219,13 @@ async def stream_delta(
 async def stream_bootstrap(
     db: AsyncSession, *, source_id, vendor_id, visible_vendor_ids
 ) -> AsyncIterator[str]:
-    # Watermark for the follow-up delta = current global max outbox id (0 if none).
+    # Watermark for the follow-up delta = current global max outbox id, but never
+    # past the safe ceiling — otherwise a change committed below max_seq by a run
+    # still active during bootstrap would be skipped by the first delta pull.
     max_seq = (await db.execute(select(func.max(ContentChange.id)))).scalar() or 0
+    ceiling = await _safe_ceiling(db)
+    if ceiling is not None:
+        max_seq = min(max_seq, ceiling - 1)
     resolver = ChapterResolver()
     last_id: uuid.UUID | None = None
     count = 0
@@ -246,6 +259,7 @@ async def stream_bootstrap(
             yield _line(await _content_record(
                 db, resolver, seq=None, change_type="added",
                 article=article, vendor_name=vendor_name, product_name=product_name,
+                run_id=article.extraction_run_id,
             ))
             count += 1
         if len(rows) < _BATCH:
