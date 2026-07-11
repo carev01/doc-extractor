@@ -154,14 +154,19 @@ def inject_caption(markdown: str, image_url: str, description: str) -> str:
     return "\n".join(lines)
 
 
-async def enrich_run_images(db: AsyncSession, source_id: uuid.UUID, run_id: uuid.UUID, *, describe=describe_image) -> None:
+async def enrich_run_images(db: AsyncSession, source_id: uuid.UUID, run_id: uuid.UUID, *,
+                            describe=None, max_new: int | None = None) -> int:
     """Enrichment phase: describe meaningful images of this source's articles, inject
     captions, and emit an 'updated' content_changes row per enriched article. Best-effort
-    — never raises into extraction; leaves content_hash and versions untouched."""
+    — never raises into extraction; leaves content_hash and versions untouched.
+
+    Returns the number of images newly described this run (0 if disabled or on error)."""
     if not settings.image_vlm_enabled:
-        return
+        return 0
     try:
-        budget = settings.image_vlm_max_per_run
+        describe = describe or describe_image   # call-time lookup (honors monkeypatch)
+        budget = settings.image_vlm_max_per_run if max_new is None else max_new
+        described = 0
         consecutive_failures = 0
         media_root = os.path.abspath(settings.media_dir)
 
@@ -218,12 +223,14 @@ async def enrich_run_images(db: AsyncSession, source_id: uuid.UUID, run_id: uuid
                 img.description, img.kind = text, kind
                 article.content_markdown = inject_caption(article.content_markdown, img.local_path, text)
                 changed = True
+                described += 1
 
             if changed:
                 await change_log.record_change(db, article=article, change_type="updated", run_id=run_id)
             await db.commit()
             if consecutive_failures >= settings.image_vlm_max_consecutive_failures:
                 break
+        return described
     except Exception as exc:  # noqa: BLE001 — enrichment is best-effort
         logger.warning("enrich_run_images failed for source %s: %s", source_id, exc)
         # Roll back so the shared session (which extract_source keeps using to
@@ -233,6 +240,7 @@ async def enrich_run_images(db: AsyncSession, source_id: uuid.UUID, run_id: uuid
             await db.rollback()
         except Exception:  # noqa: BLE001
             pass
+        return 0
 
 
 def _read_file(path: str) -> bytes:
