@@ -29,6 +29,18 @@ class ArticleImage(Base):
     file_size_bytes: Mapped[int] = mapped_column(Integer, default=0)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
+    # Populated by the VLM image-description enrichment phase (opt-in).
+    # is_meaningful: NULL = not yet evaluated; True/False = evaluated. description
+    # is set only for meaningful images that have been described.
+    is_meaningful: Mapped[bool | None] = mapped_column(nullable=True)
+    description: Mapped[str | None] = mapped_column(String(4096), nullable=True)
+    kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # SHA-256 of the image bytes — the cache key into image_descriptions and the
+    # cross-article/source dedup key.
+    bytes_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

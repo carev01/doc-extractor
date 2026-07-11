@@ -18,6 +18,7 @@ from app.models.export_job import ExportJob, ExportStatus
 from app.models.toc_checkpoint import TocCheckpoint
 from app.models.webhook import WebhookConfig, WebhookDelivery, WebhookEventType
 from app.models.content_change import ContentChange, ChangeType
+from app.models.image_description import ImageDescription
 
 __all__ = [
     "Vendor",
@@ -36,6 +37,7 @@ __all__ = [
     "Article",
     "ArticleVersion",
     "ArticleImage",
+    "ImageDescription",
     "ExtractionRun",
     "RunStatus",
     "JobRun",
