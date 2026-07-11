@@ -13,6 +13,7 @@ import {
   type DashSort,
   type Flag,
 } from "../dashboardView";
+import DashboardDrawer from "./DashboardDrawer";
 
 function fmtAge(seconds: number | null): string {
   if (seconds === null) return "never";
@@ -134,6 +135,7 @@ export default function Dashboard({
   const [flags, setFlags] = useState<Flag[]>([]);
   const [tile, setTile] = useState<string | null>(null);
   const [sort, setSort] = useState<DashSort | null>(null);
+  const [selected, setSelected] = useState<OverviewSourceRow | null>(null);
 
   const reload = () => {
     getDashboardOverview()
@@ -327,7 +329,7 @@ export default function Dashboard({
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.id} onClick={() => openSource(r.id)} className="clickable-row">
+            <tr key={r.id} onClick={() => setSelected(r)} className="clickable-row">
               <td>{[r.vendor, r.product, r.name].join(" › ")}</td>
               <td>{fmtAge(r.age_seconds)}</td>
               <td>{r.article_count}</td>
@@ -387,6 +389,19 @@ export default function Dashboard({
           </table>
         )}
       </div>
+
+      {selected && (
+        <DashboardDrawer
+          key={selected.id}
+          row={selected}
+          onClose={() => setSelected(null)}
+          onAction={reload}
+          onOpenFull={(r) => {
+            setSelected(null);
+            openSource(r.id);
+          }}
+        />
+      )}
     </div>
   );
 }
