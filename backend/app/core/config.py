@@ -128,6 +128,20 @@ class Settings(BaseSettings):
     # shared service with dozens of doomed conversions.
     pdf_vlm_max_consecutive_failures: int = 5
 
+    # ── Image VLM description (Spec 2, opt-in) ──
+    # OpenAI-compatible vision chat-completions endpoint (OpenRouter by default),
+    # kept separate from pdf_vlm_* so image and PDF budgets tune independently.
+    image_vlm_enabled: bool = False
+    image_vlm_base_url: str = "https://openrouter.ai/api/v1/chat/completions"
+    image_vlm_api_key: str = ""                 # Bearer key (env only)
+    image_vlm_model: str = "qwen/qwen3-vl-32b-instruct"
+    image_vlm_max_per_run: int = 100            # budget: max NEW descriptions per run
+    image_vlm_max_consecutive_failures: int = 5  # circuit breaker
+    image_vlm_max_tokens: int = 300
+    # Selection thresholds: images smaller than either are treated as decorative.
+    image_min_dimension: int = 100
+    image_min_bytes: int = 1024
+
     # Master key for encrypting credentials/sessions at rest (Fernet, urlsafe
     # base64, 32 bytes). Required only when auth_realm rows exist. Generate with:
     #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
