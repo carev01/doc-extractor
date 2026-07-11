@@ -31,6 +31,7 @@ import type {
   ProfileOption,
   PickableSource,
   DashboardResponse,
+  EnrichmentSummary,
   SourceImportResult,
   AuthRealm,
   AuthRealmCreate,
@@ -277,6 +278,11 @@ export async function retryEscalation(runId: string): Promise<ExtractionTrigger>
   return res.data;
 }
 
+export async function enrichSource(sourceId: string): Promise<{ run_id: string; status: string }> {
+  const res = await api.post(`/extraction/enrich/${sourceId}`);
+  return res.data;
+}
+
 /** Re-apply the current sanitizer to a source's already-stored articles. */
 export async function resanitizeSource(
   sourceId: string
@@ -505,6 +511,11 @@ export async function getDashboard(staleDays = 30): Promise<DashboardResponse> {
   const res = await api.get<DashboardResponse>("/dashboard/sources", {
     params: { stale_days: staleDays },
   });
+  return res.data;
+}
+
+export async function getEnrichmentStats(): Promise<EnrichmentSummary> {
+  const res = await api.get("/dashboard/enrichment");
   return res.data;
 }
 

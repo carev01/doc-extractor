@@ -33,3 +33,24 @@ class DashboardSourceRow(BaseModel):
 class DashboardResponse(BaseModel):
     summary: DashboardSummary
     sources: list[DashboardSourceRow]
+
+
+class SourceEnrichmentRow(BaseModel):
+    source_id: uuid.UUID
+    vendor: str
+    product: str
+    name: str
+    described: int
+    pending: int
+    active_run: bool
+
+
+class EnrichmentAggregate(BaseModel):
+    described: int
+    pending: int
+    sources_with_backlog: int
+
+
+class DashboardEnrichmentResponse(BaseModel):
+    aggregate: EnrichmentAggregate
+    sources: list[SourceEnrichmentRow]

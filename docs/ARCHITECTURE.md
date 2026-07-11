@@ -87,6 +87,12 @@ Worker claims run from queue
     └── Phase 3 (PDF sources): PDF Acquire → Convert → Split → VLM Escalate
         └── VLM escalation (incl. kind="escalate" retry) also appends
             updated rows so improved content reaches the delta feed
+
+Run kinds (worker dispatches on `run.kind`): `extract` (full scrape + enrichment),
+`escalate` (PDF VLM re-conversion retry, no scrape), and `enrich` (image-enrichment
+only — describes ALL of a source's missing images with no scrape and no per-run budget;
+the on-demand "describe missing images" action queues one). All three write a `run_start`
+floor and emit their changes as `content_changes` rows.
     │
     ▼
 Run completes (status=completed or failed)
@@ -144,7 +150,10 @@ additions, updates, and removals. It is backed by an **append-only outbox**,
   `id`. `added`/`updated` become content records (joined to the live article + provenance);
   `removed` become tombstones that survive article/source hard-deletion (FKs are
   `ON DELETE SET NULL` and `topic_key` is copied onto the row). Omitting the `since` cursor
-  yields a full bootstrap snapshot.
+  yields a full bootstrap snapshot. Each record's `content_hash` is the SHA-256 of the
+  served `content_markdown` (so it changes when captions/descriptions are injected —
+  distinct from the Article's internal raw-scrape `content_hash` used for change detection),
+  letting a consumer de-dup on it safely.
 - **Gap-free under concurrent runs**: ordering is by `id` alone. The feed serves only below
   a **safe ceiling** — the lowest `id` belonging to any still-active run — so a slow run's
   rows are withheld until it terminalizes and can't be skipped by a faster concurrent run.

@@ -153,6 +153,8 @@ async def run_one(claim_session_factory=None, work_session_factory=None) -> bool
             async with work_session_factory() as db:
                 if run_kind == "escalate":
                     await firecrawl_service.retry_escalation_run(db, source_id, run_id)
+                elif run_kind == "enrich":
+                    await firecrawl_service.enrich_source_run(db, source_id, run_id)
                 else:
                     await firecrawl_service.extract_source(db, source_id, run_id=run_id)
                 await db.commit()

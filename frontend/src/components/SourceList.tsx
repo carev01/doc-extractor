@@ -6,6 +6,7 @@ import type {
   Job,
   ProfileOption,
   AuthRealm,
+  SourceEnrichment,
 } from "../types";
 import {
   listSources,
@@ -25,6 +26,8 @@ import {
   uploadPdfSource,
   replacePdfFile,
   authRealmApi,
+  getEnrichmentStats,
+  enrichSource,
 } from "../api/client";
 import ProductVersionBar from "./ProductVersionBar";
 import { apiError } from "../api/errors";
@@ -71,6 +74,7 @@ export default function SourceList({
   const [sources, setSources] = useState<DocumentationSource[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [authRealms, setAuthRealms] = useState<AuthRealm[]>([]);
+  const [enrichment, setEnrichment] = useState<Map<string, SourceEnrichment>>(new Map());
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [addKind, setAddKind] = useState<"web" | "pdf_url" | "pdf_upload">("web");
@@ -103,6 +107,15 @@ export default function SourceList({
     }
   }, [product.id]);
 
+  const refreshEnrichment = useCallback(async () => {
+    try {
+      const data = await getEnrichmentStats();
+      setEnrichment(new Map(data.sources.map((s) => [s.source_id, s])));
+    } catch {
+      /* non-fatal: badges just stay stale/absent */
+    }
+  }, []);
+
   useEffect(() => {
     listSources(product.id)
       .then((data) => setSources(data.sources))
@@ -116,6 +129,11 @@ export default function SourceList({
       .then(setAuthRealms)
       .catch(() => {
         /* non-fatal: realm dropdown just stays empty */
+      });
+    getEnrichmentStats()
+      .then((data) => setEnrichment(new Map(data.sources.map((s) => [s.source_id, s]))))
+      .catch(() => {
+        /* non-fatal: badges just stay stale/absent */
       });
   }, [product.id]);
 
@@ -256,6 +274,8 @@ export default function SourceList({
             onSourceChanged={fetchSources}
             platformOptions={platformOptions}
             productVersion={product.version}
+            enrichment={enrichment.get(s.id)}
+            onEnriched={refreshEnrichment}
           />
         ))}
         {sources.length === 0 && (
@@ -278,6 +298,8 @@ interface SourceItemProps {
   onSourceChanged: () => void;
   platformOptions: ProfileOption[];
   productVersion: string | null;
+  enrichment?: SourceEnrichment;
+  onEnriched: () => void;
 }
 
 function SourceItem({
@@ -290,6 +312,8 @@ function SourceItem({
   onSourceChanged,
   platformOptions,
   productVersion,
+  enrichment,
+  onEnriched,
 }: SourceItemProps) {
   const [activeRun, setActiveRun] = useState<ExtractionRun | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
@@ -299,6 +323,8 @@ function SourceItem({
   const [resanitizing, setResanitizing] = useState(false);
   const [resanitizeMsg, setResanitizeMsg] = useState("");
   const [versionMsg, setVersionMsg] = useState("");
+  const [enriching, setEnriching] = useState(false);
+  const [enrichMsg, setEnrichMsg] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const isExtracting =
@@ -344,6 +370,7 @@ function SourceItem({
           setRunId(null);
           await loadHistory();
           onSourceChanged();
+          onEnriched();   // refresh enrichment counts once the run terminalizes
         }
       } catch {
         stopPolling();
@@ -354,7 +381,7 @@ function SourceItem({
     poll();
     pollRef.current = setInterval(poll, 3000);
     return stopPolling;
-  }, [runId, stopPolling, loadHistory, onSourceChanged]);
+  }, [runId, stopPolling, loadHistory, onSourceChanged, onEnriched]);
 
   // Clean up any timer on unmount.
   useEffect(() => stopPolling, [stopPolling]);
@@ -415,6 +442,22 @@ function SourceItem({
       setItemError(apiError(e, "Failed to re-sanitize"));
     } finally {
       setResanitizing(false);
+    }
+  };
+
+  const handleEnrich = async () => {
+    setItemError("");
+    setEnrichMsg("");
+    setEnriching(true);
+    try {
+      await enrichSource(source.id);
+      setEnrichMsg("Enrichment queued");
+      await loadHistory();
+      onEnriched();
+    } catch (e) {
+      setItemError(apiError(e, "Failed to queue enrichment"));
+    } finally {
+      setEnriching(false);
     }
   };
 
@@ -537,6 +580,12 @@ function SourceItem({
           {source.last_extracted_at && (
             <span className="sub">
               Last: {new Date(source.last_extracted_at).toLocaleString()}
+            </span>
+          )}
+          {enrichment && enrichment.described + enrichment.pending > 0 && (
+            <span className="kind-badge">
+              🖼 {enrichment.described}/{enrichment.described + enrichment.pending} described
+              {enrichment.pending > 0 && ` · ${enrichment.pending} pending`}
             </span>
           )}
         </div>
@@ -685,6 +734,7 @@ function SourceItem({
 
         {itemError && <div className="error">{itemError}</div>}
         {resanitizeMsg && <span className="sub run-done">{resanitizeMsg}</span>}
+        {enrichMsg && <span className="sub run-done">{enrichMsg}</span>}
         {activeRun && (
           <div className="run-status">{renderRunResult(activeRun)}</div>
         )}
@@ -743,6 +793,19 @@ function SourceItem({
         >
           {resanitizing ? "Cleaning…" : "Re-sanitize"}
         </button>
+        {enrichment && enrichment.pending > 0 && (
+          <button
+            className="btn-secondary-sm"
+            title={enrichment.active_run ? "A run is already active" : undefined}
+            disabled={enrichment.active_run || enriching}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleEnrich();
+            }}
+          >
+            {enriching ? "Queuing…" : "Describe missing images"}
+          </button>
+        )}
         <button
           className="btn-secondary-sm"
           title="Rename"

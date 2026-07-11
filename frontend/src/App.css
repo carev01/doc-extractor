@@ -524,6 +524,19 @@ a.btn-primary {
   border-color: rgba(224, 104, 95, 0.35);
 }
 
+.kind-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  vertical-align: middle;
+  color: var(--text-dim);
+  background: var(--ink-3);
+  border: 1px solid var(--line);
+}
+
 /* ============================================================
    Export panel
    ============================================================ */
@@ -2308,3 +2321,5 @@ a.btn-primary {
 .account-form-msg {
   font-size: 0.85rem;
 }
+
+.enrichment-section { margin-top: 1.5rem; }

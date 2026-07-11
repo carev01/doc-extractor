@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import type { DashboardResponse, DashboardSourceRow, DocumentationSource } from "../types";
-import { getDashboard, getSource } from "../api/client";
+import type {
+  DashboardResponse,
+  DashboardSourceRow,
+  DocumentationSource,
+  EnrichmentSummary,
+} from "../types";
+import { getDashboard, getSource, getEnrichmentStats, enrichSource } from "../api/client";
+import { apiError } from "../api/errors";
 
 function fmtAge(seconds: number | null): string {
   if (seconds === null) return "never";
@@ -27,13 +33,55 @@ export default function Dashboard({
 }) {
   const [data, setData] = useState<DashboardResponse | null>(null);
   const [error, setError] = useState("");
+  const [enr, setEnr] = useState<EnrichmentSummary | null>(null);
+  const [enrMsg, setEnrMsg] = useState("");
+  const [enriching, setEnriching] = useState<string | null>(null);
   const staleSeconds = 30 * 86400;
 
   useEffect(() => {
     getDashboard(30)
       .then(setData)
       .catch(() => setError("Failed to load dashboard"));
+    getEnrichmentStats()
+      .then(setEnr)
+      .catch(() => {
+        /* enrichment is optional; leave the section hidden on failure */
+      });
   }, []);
+
+  // Keep the rollup/backlog fresh as enrich/extraction runs complete elsewhere.
+  useEffect(() => {
+    const id = setInterval(() => {
+      getEnrichmentStats().then(setEnr).catch(() => {});
+    }, 20000);
+    return () => clearInterval(id);
+  }, []);
+
+  const reloadEnrichment = () => {
+    getEnrichmentStats().then(setEnr).catch(() => {});
+  };
+
+  const handleEnrich = async (sourceId: string) => {
+    setEnrMsg("");
+    setEnriching(sourceId);
+    try {
+      await enrichSource(sourceId);
+      setEnrMsg("Enrichment queued");
+      reloadEnrichment();
+    } catch (e) {
+      setEnrMsg(apiError(e, "Failed to queue enrichment"));
+    } finally {
+      setEnriching(null);
+    }
+  };
+
+  const backlog = useMemo(
+    () =>
+      enr
+        ? [...enr.sources].filter((s) => s.pending > 0).sort((a, b) => b.pending - a.pending)
+        : [],
+    [enr],
+  );
 
   const sorted = useMemo(() => {
     if (!data) return [];
@@ -111,6 +159,47 @@ export default function Dashboard({
           )}
         </tbody>
       </table>
+
+      {enr && (
+        <div className="enrichment-section">
+          <h3>Image enrichment</h3>
+          <p className="sub">
+            {enr.aggregate.described.toLocaleString()} /{" "}
+            {(enr.aggregate.described + enr.aggregate.pending).toLocaleString()} images described
+            {" · "}
+            {enr.aggregate.sources_with_backlog} source
+            {enr.aggregate.sources_with_backlog === 1 ? "" : "s"} with a backlog
+          </p>
+          {enrMsg && <p className="sub run-done">{enrMsg}</p>}
+          {backlog.length === 0 ? (
+            <p className="sub">All images described.</p>
+          ) : (
+            <table className="dashboard-table">
+              <thead>
+                <tr><th>Source</th><th>Pending</th><th></th></tr>
+              </thead>
+              <tbody>
+                {backlog.map((row) => (
+                  <tr key={row.source_id}>
+                    <td>{[row.vendor, row.product, row.name].join(" › ")}</td>
+                    <td>{row.pending}</td>
+                    <td>
+                      <button
+                        className="btn-secondary-sm"
+                        title={row.active_run ? "A run is already active" : undefined}
+                        disabled={row.active_run || enriching === row.source_id}
+                        onClick={() => handleEnrich(row.source_id)}
+                      >
+                        {enriching === row.source_id ? "Queuing…" : "Enrich"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
     </div>
   );
 }

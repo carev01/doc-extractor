@@ -12,6 +12,7 @@ slow or just-started run's not-yet-committed higher ids. Sentinel rows carry no
 article and are skipped by the stream.
 """
 
+import hashlib
 import json
 import uuid
 from typing import AsyncIterator
@@ -126,7 +127,10 @@ async def _content_record(db, resolver, *, seq, change_type, article, vendor_nam
         "title": article.title,
         "source_url": article.source_url,
         "last_updated_at": article.last_updated_at.isoformat() if article.last_updated_at else None,
-        "content_hash": article.content_hash,
+        # Hash of the SERVED content so a consumer can detect enrichment updates
+        # (caption injection changes content_markdown but not the Article's raw
+        # content_hash). Purely a serve-time value; the Article row is untouched.
+        "content_hash": hashlib.sha256(article.content_markdown.encode("utf-8")).hexdigest(),
         "estimated_tokens": article.estimated_tokens,
         "parent_chapter": parent_title,
         "top_level_chapter": top_title,

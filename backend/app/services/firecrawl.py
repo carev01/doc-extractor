@@ -1703,6 +1703,65 @@ class FirecrawlService:
             await db.commit()
             return run
 
+    async def enrich_source_run(
+        self, db: AsyncSession, source_id: uuid.UUID, run_id: uuid.UUID,
+    ) -> ExtractionRun:
+        """Worker entrypoint for a kind='enrich' run: describe ALL of a source's
+        missing images (no scrape, no per-run budget). Mirrors retry_escalation_run."""
+        source = (await db.execute(
+            select(DocumentationSource).where(DocumentationSource.id == source_id)
+        )).scalar_one()
+        run = (await db.execute(
+            select(ExtractionRun).where(ExtractionRun.id == run_id)
+        )).scalar_one()
+        run.current_phase = "image_enrich"
+        source.status = SourceStatus.EXTRACTING
+        await webhook_dispatcher.prepare_run(db, run_id, source_id)
+        # Committed floor so the delta feed withholds this run's mid-run rows.
+        await change_log.record_run_start(db, source_id=source_id, run_id=run_id)
+        await db.commit()
+
+        # Drain ALL missing images (max_new huge = unlimited).
+        described = await image_describe.enrich_run_images(db, source_id, run_id, max_new=10**9)
+
+        now = datetime.now(timezone.utc)
+        run = (await db.execute(
+            select(ExtractionRun).where(ExtractionRun.id == run_id)
+        )).scalar_one()
+        # Run counters reflect ARTICLES changed (one 'updated' outbox row per enriched
+        # article), consistent with the webhook's delta block. `described` is the image
+        # count — logged, not stored on the article-scoped counters.
+        counts = await change_log.run_change_counts(db, run_id)
+        run.articles_updated = counts["updated"]
+        run.articles_extracted = counts["updated"]
+        run.articles_total = counts["updated"]
+        run.status = RunStatus.COMPLETED
+        run.completed_at = now
+        source.status = SourceStatus.COMPLETED
+        source.last_extracted_at = now
+        await db.flush()
+        logger.info(
+            "enrich run %s: described %d images across %d articles",
+            run_id, described, counts["updated"],
+        )
+
+        # Nudge the downstream to pull (same delta summary as extract_source).
+        if webhook_dispatcher.run_has_subscribers(run_id, "extraction_complete"):
+            max_seq = (await db.execute(select(func.max(ContentChange.id)))).scalar() or 0
+            webhook_dispatcher.spawn_event(
+                event_type="extraction_complete", run_id=run_id, source_id=source_id,
+                extra={
+                    "status": "completed", "articles_extracted": counts["updated"],
+                    "articles_updated": counts["updated"], "articles_unchanged": 0, "articles_resumed": 0,
+                    "delta": {
+                        "added": counts["added"], "updated": counts["updated"],
+                        "removed": counts["removed"], "watermark": encode_delta_cursor(max_seq),
+                    },
+                },
+            )
+        webhook_dispatcher.finish_run(run_id)
+        return run
+
     async def extract_source(
         self,
         db: AsyncSession,
