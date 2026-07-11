@@ -11,6 +11,7 @@ import hashlib
 import io
 import json
 import logging
+import re
 from dataclasses import dataclass
 
 import httpx
@@ -105,3 +106,38 @@ async def describe_image(
     finally:
         if own:
             await c.aclose()
+
+
+def _caption_block(description: str) -> str:
+    # Single-line blockquote caption (description is already 1-3 sentences).
+    one_line = " ".join(description.split())
+    return f"> **Figure:** {one_line}"
+
+
+def inject_caption(markdown: str, image_url: str, description: str) -> str:
+    """Insert (or replace) a '> **Figure:** …' caption immediately after the first
+    markdown image reference to *image_url*. Idempotent for a given (image, text)."""
+    lines = markdown.split("\n")
+    # Find the line bearing the image reference `](image_url)`.
+    needle = f"]({image_url})"
+    idx = next((i for i, ln in enumerate(lines) if needle in ln), None)
+    if idx is None:
+        return markdown
+
+    block = _caption_block(description)
+    # Determine the insertion point: right after the image line, skipping one blank.
+    j = idx + 1
+    if j < len(lines) and lines[j].strip() == "":
+        j += 1
+    # Replace an existing caption block for this image (a run of '> ' lines) if present.
+    if j < len(lines) and lines[j].lstrip().startswith("> **Figure:**"):
+        end = j
+        while end < len(lines) and lines[end].lstrip().startswith(">"):
+            end += 1
+        lines[j:end] = [block]
+        return "\n".join(lines)
+
+    # Insert a fresh caption with a blank line on each side.
+    insert_at = idx + 1
+    lines[insert_at:insert_at] = ["", block]
+    return "\n".join(lines)
