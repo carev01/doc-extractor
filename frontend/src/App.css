@@ -1990,6 +1990,114 @@ a.btn-primary {
   display: flex; align-items: center; justify-content: space-between; gap: 1rem;
 }
 
+/* ── Dashboard tiles-as-filters ── */
+.clickable-tile { cursor: pointer; user-select: none; }
+.tile.active {
+  border-color: var(--amber);
+  box-shadow: 0 0 0 1px var(--amber), 0 8px 24px -8px rgba(0, 0, 0, 0.6);
+}
+.tile.active .tile-label { color: var(--amber-hi); }
+
+/* ── Filter bar ── */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0.6rem 0 1rem;
+}
+.filter-search {
+  padding: 8px 12px;
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  min-width: 220px;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+.filter-search:hover { border-color: var(--text-faint); background: var(--ink-3); }
+.filter-search:focus { outline: none; border-color: var(--amber); }
+
+.facet { position: relative; }
+.facet-summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 8px 12px;
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: 0.82rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+.facet-summary::-webkit-details-marker { display: none; }
+.facet-summary:hover { border-color: var(--text-faint); background: var(--ink-3); }
+.facet[open] > .facet-summary { border-color: var(--amber); color: var(--text); }
+.facet-count {
+  background: var(--amber-ghost);
+  color: var(--amber);
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+.facet-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  background: var(--panel, #1d2630);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  min-width: 200px;
+  max-height: 260px;
+  overflow-y: auto;
+  box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.facet-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 0.82rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.facet-option:hover { background: var(--ink-3); }
+.filter-clear { white-space: nowrap; }
+
+/* ── Sortable table headers ── */
+.dashboard-table th.sortable { cursor: pointer; user-select: none; }
+.dashboard-table th.sortable:hover { color: var(--text); }
+
+/* ── Flags column badges ── */
+.flag-badges { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.flag-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.flag-stale { color: var(--amber); background: var(--amber-ghost); border-color: rgba(234, 165, 61, 0.35); }
+.flag-failed { color: var(--gone); background: var(--gone-ghost); border-color: rgba(224, 104, 95, 0.35); }
+.flag-enrichment { color: var(--text-dim); background: var(--ink-3); border-color: var(--line); }
+.flag-escalation { color: var(--gone); background: var(--gone-ghost); border-color: rgba(224, 104, 95, 0.35); }
+.flag-running { color: var(--new); background: var(--new-ghost); border-color: rgba(88, 192, 138, 0.35); }
+
 /* ============================================================
    Animation utilities
    ============================================================ */
