@@ -26,6 +26,7 @@ from app.models.toc import TOCEntry
 from app.services.pdf_convert import (
     ConvertedDoc, RenderedImage, RenderedSegment, convert_pdf, split_into_segments,
 )
+from app.services import change_log
 from app.services.pdf_escalate import escalate_segment, escalate_segments
 from app.services.sanitize import sanitize_markdown
 from app.services.versioning import derive_pdf_topic_key
@@ -385,6 +386,12 @@ async def retry_escalation(service, db, source, run, run_pk,
     run.articles_extracted = 0
     run.articles_updated = 0
     source.status = SourceStatus.EXTRACTING
+    # Commit a run_start sentinel before mutating any article, so this escalate
+    # run has a committed floor in content_changes.id space (parity with
+    # extract_source, which this path bypasses). The delta feed's safe-ceiling
+    # then withholds this run's mid-run rows until it completes. See
+    # services/delta_feed.py.
+    await change_log.record_run_start(db, source_id=source.id, run_id=run_pk)
     await db.commit()
 
     if not pending:
@@ -438,6 +445,11 @@ async def retry_escalation(service, db, source, run, run_pk,
             article.estimated_tokens = len(new_md) // 4
             article.extraction_run_id = run_pk
             article.extracted_at = now
+            # Outbox: surface the VLM-improved content in the delta feed, same as
+            # the main extraction path. Committed with the run at completion.
+            await change_log.record_change(
+                db, article=article, change_type="updated", run_id=run_pk
+            )
             updated += 1
         logger.info("retry_escalation: %d/%d re-converted (%r)",
                     pos + 1, len(pending), entry["title"])
