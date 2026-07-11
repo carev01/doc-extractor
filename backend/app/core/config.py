@@ -140,7 +140,7 @@ class Settings(BaseSettings):
     image_vlm_max_tokens: int = 300
     # Selection thresholds: images smaller than either are treated as decorative.
     image_min_dimension: int = 100
-    image_min_bytes: int = 1024
+    image_min_bytes: int = 3072
 
     # Master key for encrypting credentials/sessions at rest (Fernet, urlsafe
     # base64, 32 bytes). Required only when auth_realm rows exist. Generate with:

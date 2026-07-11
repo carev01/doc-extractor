@@ -16,8 +16,18 @@ def _png(w, h, color=(120, 130, 140)):
     return buf.getvalue()
 
 
+def _noise_png(w, h):
+    # A noise image doesn't compress, so it exceeds image_min_bytes — a realistic
+    # stand-in for a screenshot/diagram (a solid-color PNG compresses to ~1 KB,
+    # unrealistically small, so it must not be used for the "meaningful" case).
+    buf = io.BytesIO()
+    Image.effect_noise((w, h), 100).convert("RGB").save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def test_large_image_is_meaningful():
-    data = _png(400, 300)
+    data = _noise_png(400, 300)
+    assert len(data) >= 3072  # genuinely above the byte threshold
     ev = evaluate_image(data)
     assert ev.is_meaningful is True
     assert ev.width == 400 and ev.height == 300
