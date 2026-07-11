@@ -5,16 +5,18 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.authz import Principal, authorize_run, authorize_source, get_principal
+from app.core.config import settings
 from app.core.database import get_db
 from app.models.article import Article
 from app.models.article_version import ArticleVersion
 from app.models.auth_realm import AuthRealm, RealmStatus
 from app.models.extraction_run import ExtractionRun, RunStatus
+from app.models.image import ArticleImage
 from app.models.product import Product
 from app.models.source import DocumentationSource
 from app.models.toc import TOCEntry
@@ -75,6 +77,48 @@ async def trigger_extraction(
         source_id=source_id,
         status="pending",
         message="Extraction queued. Poll /api/extraction/runs/{run_id} for progress.",
+    )
+
+
+@router.post("/enrich/{source_id}", response_model=ExtractionTriggerResponse)
+async def trigger_enrich(
+    source_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """Queue an image-enrichment-only run (kind='enrich') that describes all of a
+    source's missing images without re-scraping. 409 if descriptions are disabled,
+    nothing needs describing, or a run is already active for the source."""
+    await authorize_source(db, principal, source_id, write=True)
+    source = (await db.execute(
+        select(DocumentationSource).where(DocumentationSource.id == source_id)
+    )).scalar_one_or_none()
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+    if not settings.image_vlm_enabled:
+        raise HTTPException(status_code=409, detail="Image descriptions are not enabled")
+
+    pending = (await db.execute(
+        select(func.count())
+        .select_from(ArticleImage)
+        .join(Article, Article.id == ArticleImage.article_id)
+        .where(
+            Article.source_id == source_id,
+            ArticleImage.description.is_(None),
+            ArticleImage.is_meaningful.isnot(False),   # NULL or True
+        )
+    )).scalar()
+    if not pending:
+        raise HTTPException(status_code=409, detail="No images need description for this source")
+
+    try:
+        run = await enqueue_run(db, source_id, trigger="manual", kind="enrich")
+    except ActiveRunExists:
+        raise HTTPException(status_code=409, detail="Extraction already queued or running for this source")
+
+    return ExtractionTriggerResponse(
+        run_id=run.id, source_id=source_id, status="pending",
+        message="Image enrichment queued. Poll /api/extraction/runs/{run_id} for progress.",
     )
 
 
