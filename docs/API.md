@@ -89,10 +89,70 @@ Admin-only endpoints (user management, jobs, auth realms) require `admin`.
 |--------|------|-------------|
 | `GET` | `/api/articles` | Search articles (`source_id`, `q`, `offset`, `limit`) |
 | `GET` | `/api/articles/{id}` | Get article detail (with content + images) |
+| `GET` | `/api/articles/delta` | Streaming JSONL delta feed for programmatic sync (see [Delta Feed](#delta-feed)) |
 | `GET` | `/api/articles/toc/{source_id}` | Get TOC tree for a source |
 | `GET` | `/api/articles/{id}/versions` | List article versions |
 | `GET` | `/api/articles/{id}/versions/{version_id}` | Get a specific version |
 | `GET` | `/api/articles/{id}/versions/{version_id}/diff` | Diff a version against the next or current version (`against=next\|current`) |
+
+---
+
+## Delta Feed
+
+`GET /api/articles/delta` streams article changes as **JSON Lines** (`application/x-ndjson`) for a downstream consumer (e.g. a graph-RAG indexer) to bootstrap from and then keep in sync. It is the reliable, pull-based data channel; the `extraction_complete` [webhook](#webhooks) is the "wake up and pull" nudge.
+
+**Query parameters**
+
+| Param | Description |
+|-------|-------------|
+| `since` | Opaque cursor from a prior pull's control record. **Omit for a full bootstrap snapshot.** |
+| `source_id` | Optional — restrict to one source |
+| `vendor_id` | Optional — restrict to one vendor (sharding) |
+
+- **`since` omitted → bootstrap**: streams every current, visible, non-removed article as `change_type: "added"` (with `seq: null`); the control record's `next_since` is the watermark to continue from.
+- **`since` present → incremental**: streams `added`/`updated` content records and `removed` tombstones since that watermark.
+
+The response is RBAC-filtered to the caller's visible vendors. The **last line is always a control record** — `{"control":"cursor","next_since":"…","count":N}`. A truncated stream lacks it, so clients must only advance their stored cursor on a clean finish. Ordering is gap-free even when extraction runs overlap (see [Architecture → Delta Feed](ARCHITECTURE.md#delta-feed)).
+
+**Content record** (`added` / `updated`):
+
+```json
+{
+  "seq": 4811,
+  "change_type": "updated",
+  "id": "article-uuid",
+  "topic_key": "https://help.example.com/backup/proxies",
+  "source_id": "source-uuid",
+  "vendor": "Veeam",
+  "product": "Backup & Replication",
+  "title": "Backup Proxies",
+  "source_url": "https://help.example.com/backup/proxies",
+  "last_updated_at": "2026-07-01T09:12:00Z",
+  "content_hash": "…",
+  "estimated_tokens": 1234,
+  "parent_chapter": "Deployment",
+  "top_level_chapter": "Installation",
+  "sort_order": 42,
+  "run_id": "run-uuid",
+  "content_markdown": "# Backup Proxies\n\n…",
+  "images": [{ "url": "/media/…/x.png", "alt": "topology", "description": null, "kind": null }]
+}
+```
+
+**Tombstone record** (`removed`):
+
+```json
+{ "seq": 4830, "change_type": "removed", "id": "article-uuid", "topic_key": "…",
+  "source_id": "source-uuid", "removed_at": "2026-07-09T22:04:00Z", "run_id": "run-uuid" }
+```
+
+`images[].description` / `kind` are reserved for VLM-generated image descriptions and are currently `null`.
+
+**Typical consumer loop**
+
+1. Bootstrap: `GET /api/articles/delta` → apply every record, store `next_since`.
+2. Subscribe a webhook to `extraction_complete`.
+3. On each notification, `GET /api/articles/delta?since=<stored cursor>` → upsert `added`/`updated`, delete `removed`, then persist the new `next_since`. Use your own stored cursor (not the one in the webhook), so a missed delivery self-heals on the next pull.
 
 ---
 
@@ -197,6 +257,21 @@ Stored credentials for authenticated scraping.
 | `DELETE` | `/api/webhooks/{id}` | Delete a webhook |
 | `POST` | `/api/webhooks/{id}/test` | Send a test delivery |
 | `GET` | `/api/webhooks/{id}/deliveries` | List webhook deliveries |
+
+**Event types** (a webhook subscribes to any subset): `new_page`, `updated_page`, `removed_page`, `extraction_complete`. Payloads are POSTed as JSON, signed with `X-DocExtractor-Signature: sha256=…` (HMAC of the body with the webhook's secret), and retried with backoff.
+
+The `extraction_complete` payload carries a `delta` summary so a consumer knows whether to pull the [Delta Feed](#delta-feed):
+
+```json
+{
+  "event": "extraction_complete",
+  "run_id": "…", "source_id": "…",
+  "source_name": "…", "vendor_name": "…", "product_name": "…",
+  "delta": { "added": 12, "updated": 3, "removed": 1, "watermark": "eyJ2IjoxLCJzZXEiOjQ4MzB9" }
+}
+```
+
+The `watermark` is informational; consumers should pull with their own stored cursor.
 
 ---
 
