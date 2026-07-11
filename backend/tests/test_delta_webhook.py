@@ -46,3 +46,17 @@ async def test_run_change_counts_feeds_delta_block(session):
 
     counts = await change_log.run_change_counts(session, run.id)
     assert counts == {"added": 2, "updated": 1, "removed": 0}
+
+
+async def test_run_change_counts_ignores_run_start(session):
+    v = Vendor(name="V"); session.add(v); await session.flush()
+    p = Product(name="P", vendor_id=v.id); session.add(p); await session.flush()
+    src = DocumentationSource(name="S", base_url="https://x", product_id=p.id)
+    session.add(src); await session.flush()
+    run = ExtractionRun(source_id=src.id); session.add(run); await session.flush()
+    session.add(ContentChange(source_id=src.id, run_id=run.id, change_type="run_start", topic_key=None))
+    session.add(ContentChange(source_id=src.id, run_id=run.id, change_type="added", topic_key="t"))
+    await session.commit()
+
+    counts = await change_log.run_change_counts(session, run.id)
+    assert counts == {"added": 1, "updated": 0, "removed": 0}

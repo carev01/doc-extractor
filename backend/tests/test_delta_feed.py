@@ -6,6 +6,7 @@ import sys
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -17,7 +18,7 @@ from app.main import app
 from app.models import Vendor, Product, DocumentationSource, ExtractionRun, Article
 from app.models.content_change import ContentChange
 from app.models.extraction_run import RunStatus
-from app.schemas.delta import encode_delta_cursor
+from app.schemas.delta import encode_delta_cursor, decode_delta_cursor
 
 TEST_DATABASE_URL = settings.database_url.rsplit("/", 1)[0] + "/docextractor_test"
 pytestmark = pytest.mark.asyncio
@@ -215,3 +216,30 @@ async def test_content_record_run_id_is_change_run_not_article_run(ctx):
     assert len(recs) == 1
     assert recs[0]["run_id"] == str(run_a)      # the change's run
     assert recs[0]["run_id"] != str(run_b_id)   # not the article's latest run
+
+
+async def test_bootstrap_watermark_respects_active_ceiling(ctx):
+    # With an active run present, bootstrap's next_since must be clamped to
+    # (safe ceiling - 1) = (the run_start sentinel id - 1), not the global max id,
+    # so the first delta pull re-scans from before the active run's withheld rows.
+    c, factory = ctx
+    _, src_id, active_run = await _seed_source(factory, run_status=RunStatus.RUNNING)
+    async with factory() as s:
+        s.add(ContentChange(article_id=None, source_id=src_id, run_id=active_run,
+                            change_type="run_start", topic_key=None))
+        await s.commit()
+    async with factory() as s:
+        done = ExtractionRun(source_id=src_id, status=RunStatus.COMPLETED)
+        s.add(done); await s.flush()
+        done_id = done.id
+        await s.commit()
+    await _add_article_change(factory, src_id, done_id, url="https://x/a", title="A")
+
+    async with factory() as s:
+        sentinel_id = (await s.execute(
+            select(ContentChange.id).where(ContentChange.change_type == "run_start")
+        )).scalar()
+
+    resp = await c.get("/api/articles/delta")  # bootstrap
+    _, control = _parse(resp.text)
+    assert decode_delta_cursor(control["next_since"]) == sentinel_id - 1

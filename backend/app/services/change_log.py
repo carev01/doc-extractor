@@ -78,5 +78,6 @@ async def run_change_counts(db: AsyncSession, run_id: uuid.UUID) -> dict[str, in
     )
     counts = {"added": 0, "updated": 0, "removed": 0}
     for change_type, n in (await db.execute(stmt)).all():
-        counts[change_type] = n
+        if change_type in counts:
+            counts[change_type] = n
     return counts
