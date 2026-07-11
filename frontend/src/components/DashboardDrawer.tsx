@@ -35,10 +35,10 @@ export default function DashboardDrawer({ row, onClose, onAction, onOpenFull }: 
   const [runsError, setRunsError] = useState("");
 
   const [enriching, setEnriching] = useState(false);
-  const [enrMsg, setEnrMsg] = useState("");
+  const [enrMsg, setEnrMsg] = useState<{ text: string; ok: boolean } | null>(null);
 
   const [escalating, setEscalating] = useState(false);
-  const [escMsg, setEscMsg] = useState("");
+  const [escMsg, setEscMsg] = useState<{ text: string; ok: boolean } | null>(null);
 
   // Load recent runs on mount. The parent mounts a fresh instance (keyed by
   // row.id) whenever a different row is selected, so this only ever runs once
@@ -67,14 +67,14 @@ export default function DashboardDrawer({ row, onClose, onAction, onOpenFull }: 
   }, [onClose]);
 
   const handleEnrich = async () => {
-    setEnrMsg("");
+    setEnrMsg(null);
     setEnriching(true);
     try {
       await enrichSource(row.id);
-      setEnrMsg("Enrichment queued");
+      setEnrMsg({ text: "Enrichment queued", ok: true });
       onAction();
     } catch (e) {
-      setEnrMsg(apiError(e, "Failed to queue enrichment"));
+      setEnrMsg({ text: apiError(e, "Failed to queue enrichment"), ok: false });
     } finally {
       setEnriching(false);
     }
@@ -82,14 +82,14 @@ export default function DashboardDrawer({ row, onClose, onAction, onOpenFull }: 
 
   const handleRetryEscalation = async () => {
     if (!row.escalation.run_id) return;
-    setEscMsg("");
+    setEscMsg(null);
     setEscalating(true);
     try {
       await retryEscalation(row.escalation.run_id);
-      setEscMsg("Escalation retry queued");
+      setEscMsg({ text: "Escalation retry queued", ok: true });
       onAction();
     } catch (e) {
-      setEscMsg(apiError(e, "Failed to queue escalation retry"));
+      setEscMsg({ text: apiError(e, "Failed to queue escalation retry"), ok: false });
     } finally {
       setEscalating(false);
     }
@@ -150,7 +150,7 @@ export default function DashboardDrawer({ row, onClose, onAction, onOpenFull }: 
               {(row.enrichment.described + row.enrichment.pending).toLocaleString()} images
               described
             </p>
-            {enrMsg && <p className="sub run-done">{enrMsg}</p>}
+            {enrMsg && <p className={enrMsg.ok ? "sub run-done" : "error"}>{enrMsg.text}</p>}
             <button
               className="btn-secondary-sm"
               title={row.active_run ? "A run is already active" : undefined}
@@ -165,7 +165,7 @@ export default function DashboardDrawer({ row, onClose, onAction, onOpenFull }: 
             <section className="drawer-section">
               <h3>PDF escalation</h3>
               <p className="sub">{row.escalation.pending_count} segments pending</p>
-              {escMsg && <p className="sub run-done">{escMsg}</p>}
+              {escMsg && <p className={escMsg.ok ? "sub run-done" : "error"}>{escMsg.text}</p>}
               <button
                 className="btn-secondary-sm"
                 title={row.active_run ? "A run is already active" : undefined}
