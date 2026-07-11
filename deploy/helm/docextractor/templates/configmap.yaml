@@ -19,6 +19,15 @@ data:
   DOCEXTRACTOR_PDF_VLM_BASE_URL: {{ (.Values.pdfVlm | default dict).baseUrl | default "https://openrouter.ai/api/v1/chat/completions" | quote }}
   DOCEXTRACTOR_PDF_VLM_MODEL: {{ (.Values.pdfVlm | default dict).model | default "qwen/qwen3-vl-32b-instruct" | quote }}
   DOCEXTRACTOR_PDF_VLM_MAX_PAGES_PCT: {{ (.Values.pdfVlm | default dict).maxPagesPct | default 10.0 | quote }}
+  DOCEXTRACTOR_PDF_VLM_MAX_CONSECUTIVE_FAILURES: {{ (.Values.pdfVlm | default dict).maxConsecutiveFailures | default 5 | quote }}
+  DOCEXTRACTOR_IMAGE_VLM_ENABLED: {{ (.Values.imageVlm | default dict).enabled | default false | quote }}
+  DOCEXTRACTOR_IMAGE_VLM_BASE_URL: {{ (.Values.imageVlm | default dict).baseUrl | default "https://openrouter.ai/api/v1/chat/completions" | quote }}
+  DOCEXTRACTOR_IMAGE_VLM_MODEL: {{ (.Values.imageVlm | default dict).model | default "qwen/qwen3-vl-32b-instruct" | quote }}
+  DOCEXTRACTOR_IMAGE_VLM_MAX_PER_RUN: {{ (.Values.imageVlm | default dict).maxPerRun | default 100 | quote }}
+  DOCEXTRACTOR_IMAGE_VLM_MAX_CONSECUTIVE_FAILURES: {{ (.Values.imageVlm | default dict).maxConsecutiveFailures | default 5 | quote }}
+  DOCEXTRACTOR_IMAGE_VLM_MAX_TOKENS: {{ (.Values.imageVlm | default dict).maxTokens | default 300 | quote }}
+  DOCEXTRACTOR_IMAGE_MIN_DIMENSION: {{ (.Values.imageVlm | default dict).minDimension | default 100 | quote }}
+  DOCEXTRACTOR_IMAGE_MIN_BYTES: {{ (.Values.imageVlm | default dict).minBytes | default 3072 | quote }}
   DOCEXTRACTOR_EXPORT_RETENTION_DAYS: {{ .Values.export.retentionDays | quote }}
   DOCEXTRACTOR_EXPORT_MAX_TOTAL_BYTES: {{ .Values.export.maxTotalBytes | quote }}
   DOCEXTRACTOR_BROWSERLESS_URL: {{ (.Values.browserless | default dict).url | default "http://browserless.browserless.svc.cluster.local:3000" | quote }}

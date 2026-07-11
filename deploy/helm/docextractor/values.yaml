@@ -73,6 +73,25 @@ pdfVlm:
   # Per-run escalation page budget as a percentage of the document's total pages
   # (rounded up, min 1 page). Scales the VLM allowance with document size.
   maxPagesPct: 10.0
+  # Circuit breaker: stop escalating after this many consecutive VLM failures
+  # (the shared model/pipeline is likely down).
+  maxConsecutiveFailures: 5
+
+# -- Image descriptions — describe meaningful scraped images (screenshots,
+# diagrams) via an OpenAI-compatible VLM (default OpenRouter) and surface them in
+# the API + delta feed. Opt-in; the worker runs the enrichment phase. Set
+# enabled: true and apiKey to turn it on.
+imageVlm:
+  enabled: false
+  baseUrl: https://openrouter.ai/api/v1/chat/completions
+  model: qwen/qwen3-vl-32b-instruct
+  apiKey: ""                      # OpenRouter bearer key (OVERRIDE)
+  maxPerRun: 100                  # budget: max new descriptions per run
+  maxConsecutiveFailures: 5       # circuit breaker: stop after N failures in a row
+  maxTokens: 300                  # max output tokens per description
+  # Selection thresholds — images below either are treated as decorative and skipped.
+  minDimension: 100               # px (width or height)
+  minBytes: 3072                  # bytes
 
 # -- Master key for encrypting authenticated-source credentials/sessions at rest
 # (Fernet, urlsafe base64). REQUIRED to enable authenticated sources; the auth
