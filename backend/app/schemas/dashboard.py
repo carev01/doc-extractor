@@ -54,3 +54,56 @@ class EnrichmentAggregate(BaseModel):
 class DashboardEnrichmentResponse(BaseModel):
     aggregate: EnrichmentAggregate
     sources: list[SourceEnrichmentRow]
+
+
+class OverviewLastRun(BaseModel):
+    run_id: uuid.UUID
+    status: str
+    new: int
+    updated: int
+    unchanged: int
+
+
+class OverviewEnrichment(BaseModel):
+    described: int
+    pending: int
+
+
+class OverviewEscalation(BaseModel):
+    warning: bool
+    pending_count: int
+    run_id: uuid.UUID | None
+
+
+class OverviewSourceRow(BaseModel):
+    id: uuid.UUID
+    name: str
+    vendor: str
+    product: str
+    source_type: str
+    status: str
+    last_extracted_at: str | None
+    age_seconds: int | None
+    article_count: int
+    last_run: OverviewLastRun | None
+    enrichment: OverviewEnrichment
+    escalation: OverviewEscalation
+    active_run: bool
+    job_id: uuid.UUID | None
+    job_name: str | None
+    next_run_at: str | None
+
+
+class OverviewAggregate(BaseModel):
+    total: int
+    never_extracted: int
+    stale: int
+    failing: int
+    running: int
+    enrichment: EnrichmentAggregate
+    escalation_sources_with_warning: int
+
+
+class DashboardOverviewResponse(BaseModel):
+    aggregate: OverviewAggregate
+    sources: list[OverviewSourceRow]
