@@ -12,6 +12,7 @@ import hashlib
 import io
 import json
 import logging
+import mimetypes
 import os
 import uuid
 from dataclasses import dataclass
@@ -153,11 +154,7 @@ def inject_caption(markdown: str, image_url: str, description: str) -> str:
     return "\n".join(lines)
 
 
-def _needs_work(img: ArticleImage) -> bool:
-    return img.is_meaningful is None or (img.is_meaningful and img.description is None)
-
-
-async def enrich_run_images(db: AsyncSession, source_id, run_id, *, describe=describe_image) -> None:
+async def enrich_run_images(db: AsyncSession, source_id: uuid.UUID, run_id: uuid.UUID, *, describe=describe_image) -> None:
     """Enrichment phase: describe meaningful images of this source's articles, inject
     captions, and emit an 'updated' content_changes row per enriched article. Best-effort
     — never raises into extraction; leaves content_hash and versions untouched."""
@@ -206,7 +203,8 @@ async def enrich_run_images(db: AsyncSession, source_id, run_id, *, describe=des
                 else:
                     if budget <= 0 or consecutive_failures >= settings.image_vlm_max_consecutive_failures:
                         continue
-                    res = await describe(data, img.alt_text)
+                    mime = mimetypes.guess_type(img.local_filename)[0] or "image/png"
+                    res = await describe(data, img.alt_text, mime=mime)
                     if res is None:
                         consecutive_failures += 1
                         continue

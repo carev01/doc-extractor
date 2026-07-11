@@ -185,3 +185,52 @@ async def test_not_meaningful_image_no_row(factory):
 async def enrich_run_images_via(factory, src_id, run_id, describe):
     async with factory() as db:
         await enrich_run_images(db, src_id, run_id, describe=describe)
+
+
+def _noise_jpeg(w, h):
+    buf = io.BytesIO()
+    Image.effect_noise((w, h), 100).convert("RGB").save(buf, format="JPEG", quality=90)
+    return buf.getvalue()
+
+
+async def test_non_png_image_sent_with_correct_mime(factory):
+    # A .jpg image must be described with mime image/jpeg, not the default image/png.
+    src_id, art_id, run_id = await _seed_article_with_image(
+        factory, img_bytes=_noise_jpeg(400, 300), filename="pic.jpg")
+    seen = {}
+
+    async def fake(data, alt, *, mime="image/png", **kw):
+        seen["mime"] = mime
+        return Desc(text="A screenshot.", kind="screenshot")
+
+    await enrich_run_images_via(factory, src_id, run_id, fake)
+    assert seen.get("mime") == "image/jpeg"
+
+
+async def test_circuit_breaker_stops_after_consecutive_failures(factory, monkeypatch):
+    # With the failure cap at 2 and describe always returning None, the phase stops
+    # calling the VLM after 2 consecutive failures rather than trying every image.
+    monkeypatch.setattr(settings, "image_vlm_max_consecutive_failures", 2)
+    src_id, _a, run_id = await _seed_article_with_image(
+        factory, img_bytes=_noise_png(400, 300), filename="a.png")
+    # Two more articles in the same source, each with a distinct meaningful image.
+    for i, fn in enumerate(("b.png", "c.png")):
+        async with factory() as s:
+            art = Article(source_id=src_id, extraction_run_id=run_id, created_run_id=run_id,
+                          title=f"T{i}", source_url=f"https://x/{fn}", topic_key=f"https://x/{fn}",
+                          content_markdown=f"![p](/media/PH/{fn})", content_hash=f"h{i}")
+            s.add(art); await s.flush()
+            art.content_markdown = f"![p](/media/{art.id}/{fn})"
+            s.add(ArticleImage(article_id=art.id, original_url="u", local_filename=fn,
+                               local_path=f"/media/{art.id}/{fn}", sort_order=0))
+            await s.commit()
+            d = os.path.join(settings.media_dir, str(art.id)); os.makedirs(d, exist_ok=True)
+            open(os.path.join(d, fn), "wb").write(_noise_png(400, 300))
+
+    calls = {"n": 0}
+    async def failing(data, alt, **kw):
+        calls["n"] += 1
+        return None
+
+    await enrich_run_images_via(factory, src_id, run_id, failing)
+    assert calls["n"] == 2  # stopped at the consecutive-failure cap, didn't try all three
