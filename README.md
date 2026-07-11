@@ -13,6 +13,7 @@ DocExtractor is a full-stack application that scrapes product documentation from
 - **PDF source support** — Upload PDF manuals and convert them to Markdown via [Docling](https://github.com/docling-project/docling-serve) (with VLM escalation for complex layouts) or an in-process PyMuPDF fallback.
 - **Incremental extraction** — After the initial full run, subsequent runs only fetch changed pages. Historical versions are kept with side-by-side diff views and a consolidated changelog.
 - **Delta feed for programmatic sync** — A streaming JSONL endpoint (`GET /api/articles/delta`) lets a downstream consumer (e.g. a graph-RAG indexer) bootstrap from the full corpus and then incrementally apply additions, updates, and removals. It's driven by an append-only outbox with a gap-free watermark, and the `extraction_complete` webhook nudges consumers to pull.
+- **VLM image descriptions (opt-in)** — Describes meaningful scraped images (screenshots, diagrams — skipping icons/spacers) with a vision model, injects the descriptions as captions into the article markdown, and exposes them as structured fields (`images[].description`/`kind`). Descriptions are cached by image content hash (described once, ever) so a text-only RAG pipeline can "see" visual content.
 - **Scheduled extraction** — Define recurring jobs (hourly, daily, weekly, monthly, or cron expressions) to keep documentation archives up to date automatically.
 - **Flexible export** — Export full or partial documentation as Markdown or PDF. Split by article count, file size, or token budget. Articles are never split across files.
 - **Authenticated scraping** — Store login credentials/cookies for sites behind auth walls. Sessions are encrypted at rest (Fernet). Supports login scripts for complex multi-step authentication flows.
@@ -28,7 +29,8 @@ DocExtractor is a full-stack application that scrapes product documentation from
 | Layer | Technology |
 |-------|-----------|
 | Backend | FastAPI, SQLAlchemy 2 (async), PostgreSQL, Alembic, Pydantic v2 |
-| Scraping | Firecrawl, Browserless, httpx (raw HTTP), Docling (PDF) |
+| Scraping | Firecrawl, Browserless, httpx (raw HTTP), Docling (PDF), Pillow (image sizing) |
+| Vision | OpenAI-compatible VLM (OpenRouter by default) for PDF escalation + image descriptions |
 | Frontend | React 19, TypeScript, Vite, Axios |
 | Export | Markdown (markdownify), PDF (WeasyPrint) |
 | Auth | JWT (PyJWT), API keys, OAuth2 (Google, Okta), bcrypt |
@@ -171,6 +173,10 @@ All backend settings are loaded from environment variables with the `DOCEXTRACTO
 | `DOCEXTRACTOR_MEDIA_DIR` | | `media` | Where article images are stored |
 | `DOCEXTRACTOR_LLM_FALLBACK_ENABLED` | | `false` | Enable LLM-based profile derivation for unknown sites |
 | `DOCEXTRACTOR_DOCLING_SERVE_URL` | | `http://docling.home.lan` | Docling-serve URL for PDF conversion |
+| `DOCEXTRACTOR_IMAGE_VLM_ENABLED` | | `false` | Enable VLM image descriptions (requires `DOCEXTRACTOR_IMAGE_VLM_API_KEY`) |
+| `DOCEXTRACTOR_IMAGE_VLM_API_KEY` | | `""` | Bearer key for the image vision endpoint (OpenRouter by default) |
+
+See [`backend/.env.example`](backend/.env.example) for the full `DOCEXTRACTOR_IMAGE_VLM_*` / `DOCEXTRACTOR_IMAGE_MIN_*` set (model, per-run budget, selection thresholds).
 
 ---
 

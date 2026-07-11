@@ -33,6 +33,7 @@ from app.services.auth.session import session_expired
 from app.services.blockpage import is_auth_wall, is_block_page
 from app.services.notify import notify
 from app.services import change_log
+from app.services import image_describe
 from app.services import webhook_dispatcher
 from app.services.profiles import registry as profile_registry
 from app.services.profiles.base import TocEntry as ProfileTocEntry
@@ -2111,6 +2112,13 @@ class FirecrawlService:
 
             # Record removals (pages gone from the rebuilt TOC) before completing.
             await self._reconcile_removals(db, source_id, run_pk)
+
+            # Image enrichment phase (opt-in, best-effort): describe meaningful
+            # images, inject captions, emit updated content_changes rows. Runs after
+            # reconcile so removed pages are skipped; never fails the run.
+            run.current_phase = "image_enrich"
+            await db.commit()
+            await image_describe.enrich_run_images(db, source_id, run_pk)
 
             # Whole run succeeded — drop the resume checkpoint (TOC + content).
             await checkpoint.clear()

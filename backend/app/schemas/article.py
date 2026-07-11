@@ -54,6 +54,10 @@ class ArticleImageResponse(BaseModel):
     local_filename: str
     alt_text: str | None
     file_size_bytes: int
+    description: str | None = None
+    kind: str | None = None
+    width: int | None = None
+    height: int | None = None
 
 
 class ArticleListResponse(BaseModel):

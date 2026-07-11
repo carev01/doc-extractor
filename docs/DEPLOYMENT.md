@@ -224,6 +224,19 @@ DOCEXTRACTOR_PDF_VLM_API_KEY=<openrouter-key>
 DOCEXTRACTOR_PDF_VLM_MODEL=qwen/qwen3-vl-32b-instruct
 ```
 
+### Image descriptions (optional)
+
+Describes meaningful scraped images with a VLM and surfaces the descriptions in the API and delta feed (see [Architecture → Image enrichment](ARCHITECTURE.md#design-decisions)). Opt-in and best-effort; a per-run budget bounds cost.
+
+```bash
+DOCEXTRACTOR_IMAGE_VLM_ENABLED=true
+DOCEXTRACTOR_IMAGE_VLM_API_KEY=<openrouter-key>
+DOCEXTRACTOR_IMAGE_VLM_MODEL=qwen/qwen3-vl-32b-instruct
+DOCEXTRACTOR_IMAGE_VLM_MAX_PER_RUN=100   # cap new descriptions per run
+```
+
+The worker mounts the `media_data` volume (where images live), so it — not the backend — runs the enrichment phase. On first enable, a large source's backlog is described over several runs (bounded by the budget).
+
 ---
 
 ## CI/CD

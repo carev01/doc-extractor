@@ -63,6 +63,7 @@ def test_defect1_all_tables_in_metadata():
         "documentation_sources",
         "export_jobs",
         "extraction_runs",
+        "image_descriptions",
         "job_runs",
         "jobs",
         "products",
@@ -73,7 +74,7 @@ def test_defect1_all_tables_in_metadata():
         "vendors",
         "webhook_deliveries",
         "webhooks",
-    ], f"Expected 19 tables, got {len(table_names)}: {table_names}"
+    ], f"Expected 20 tables, got {len(table_names)}: {table_names}"
 
 
 def test_defect1_tables_created_on_startup(db_session):

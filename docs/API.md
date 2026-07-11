@@ -146,7 +146,7 @@ The response is RBAC-filtered to the caller's visible vendors. The **last line i
   "source_id": "source-uuid", "removed_at": "2026-07-09T22:04:00Z", "run_id": "run-uuid" }
 ```
 
-`images[].description` / `kind` are reserved for VLM-generated image descriptions and are currently `null`.
+`images[].description` / `kind` (also on `GET /api/articles/{id}`) carry the VLM-generated image description and its classification (`screenshot`/`diagram`/`chart`/`photo`/`other`) when image descriptions are enabled (`DOCEXTRACTOR_IMAGE_VLM_ENABLED`); they are `null` for images that weren't described (feature off, decorative image, or not yet processed).
 
 **Typical consumer loop**
 

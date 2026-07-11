@@ -80,6 +80,8 @@ Worker claims run from queue
     │   │   ├── Append added/updated row to content_changes (same transaction)
     │   │   └── Update progress counters
     │   ├── Reconcile removals → append removed rows to content_changes
+    │   ├── Image enrichment (opt-in): describe meaningful images (VLM),
+    │   │   inject captions, append updated rows — content_hash untouched
     │   └── Handle resume from checkpoint
     │
     └── Phase 3 (PDF sources): PDF Acquire → Convert → Split → VLM Escalate
@@ -156,14 +158,15 @@ additions, updates, and removals. It is backed by an **append-only outbox**,
 
 ## Database Schema
 
-18 models across the following domains:
+19 models across the following domains:
 
 | Domain | Models | Purpose |
 |--------|--------|---------|
 | Hierarchy | `Vendor`, `Product`, `DocumentationSource` | Vendor → Product → Source tree |
-| Content | `Article`, `TOCEntry`, `Image` | Extracted articles, TOC structure, images |
+| Content | `Article`, `TOCEntry`, `Image` | Extracted articles, TOC structure, images (with optional VLM description/kind) |
 | Versioning | `ArticleVersion` | Historical article versions for diffing |
 | Delta Feed | `ContentChange` | Append-only outbox (watermark) powering the delta feed |
+| Image descriptions | `ImageDescription` | Content-hash-keyed cache of VLM image descriptions (described once, ever) |
 | Extraction | `ExtractionRun`, `TOCCheckpoint` | Run tracking and resume checkpoints |
 | Export | `ExportJob` | Export job queue |
 | Scheduling | `Job`, `JobRun` | Recurring extraction schedules |
@@ -283,6 +286,12 @@ Optional OAuth2 login for Google and Okta. Configure client ID/secret and set
   append-only `content_changes` table written in the mutation's own transaction, rather
   than derived at read time. A `BIGSERIAL` id gives a monotonic watermark; a safe-ceiling
   gate plus a per-run `run_start` floor make the feed gap-free even when runs overlap.
+- **Image enrichment is a post-scrape phase, not inline**: VLM image descriptions run
+  after scraping (reading images already on disk), so the change-detection fast path stays
+  untouched. The phase never modifies `content_hash` (a raw-scrape fingerprint) — it edits
+  `content_markdown` + `ArticleImage` fields and emits an `updated` outbox row; no-churn is
+  enforced by only acting on images that still need a description. It is opt-in, best-effort
+  (rolls back on failure so it can never fail the run), and budget/circuit-breaker bounded.
 - **Images are canonical**: Article images live in `media_dir` (served at `/media`),
   separate from generated exports. Exports rewrite image URLs to relative paths.
 - **Export retention**: Generated export directories are purged after
