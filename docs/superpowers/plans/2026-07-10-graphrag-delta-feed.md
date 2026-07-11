@@ -1453,6 +1453,252 @@ git commit -m "feat(delta): extraction_complete webhook carries delta summary + 
 
 ---
 
+## Task 8: Close the multi-replica commit-order gap (run_start floor) + provenance/bootstrap fixes
+
+Added after the final whole-branch review. The safe-ceiling in Task 5 keys on *committed* active-run rows, but a run's **first** outbox row is assigned an id at flush and is invisible until commit; in that window a concurrent run's higher id can be served and the cursor advanced past the uncommitted lower id (a silently dropped change). Fix: every run commits a `run_start` sentinel row into `content_changes` **before** processing any article, giving each active run a committed floor in `content_changes.id` space from the moment it is active. `_safe_ceiling` already counts active-run rows, so the sentinel is picked up automatically; the stream skips sentinel rows. Also folds in two review fixes: the delta content record's `run_id` should be the change's run (not the article's latest), and `stream_bootstrap`'s watermark must respect the ceiling.
+
+**Files:**
+- Modify: `app/models/content_change.py` (add `RUN_START` enum value)
+- Modify: `app/services/change_log.py` (add `record_run_start`)
+- Modify: `app/services/firecrawl.py` (commit a run_start row at the top of `extract_source`)
+- Modify: `app/services/delta_feed.py` (skip sentinels explicitly; content record uses change's run_id; bootstrap watermark respects ceiling; docstring)
+- Modify: `docs/superpowers/specs/2026-07-10-graphrag-delta-feed-design.md` (document the sentinel floor)
+- Test: `tests/test_delta_feed.py` (append two tests)
+
+**Interfaces:**
+- Produces: `ChangeType.RUN_START = "run_start"`; `change_log.record_run_start(db, *, source_id, run_id)`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/test_delta_feed.py`:
+
+```python
+async def test_run_start_floor_withholds_higher_rows_of_other_runs(ctx):
+    # A run_start sentinel for an ACTIVE run establishes a committed floor. A
+    # COMPLETED run's change with a HIGHER id must be withheld until the active
+    # run finishes — this is the mechanism that closes the flush→commit window.
+    c, factory = ctx
+    _, src_id, active_run = await _seed_source(factory, run_status=RunStatus.RUNNING)
+    async with factory() as s:
+        s.add(ContentChange(article_id=None, source_id=src_id, run_id=active_run,
+                            change_type="run_start", topic_key=None))
+        await s.commit()
+    # Completed run whose article change has a higher id than the sentinel.
+    async with factory() as s:
+        done = ExtractionRun(source_id=src_id, status=RunStatus.COMPLETED)
+        s.add(done); await s.flush()
+        done_id = done.id
+        await s.commit()
+    await _add_article_change(factory, src_id, done_id, url="https://x/done", title="Done")
+
+    r1 = await c.get(f"/api/articles/delta?since={encode_delta_cursor(0)}")
+    recs1, ctrl1 = _parse(r1.text)
+    assert recs1 == [] and ctrl1["count"] == 0  # withheld: sentinel floor blocks higher ids
+
+    # Complete the active run → floor lifts → the completed row is served, and the
+    # run_start sentinel is skipped (not emitted as a record).
+    async with factory() as s:
+        run = await s.get(ExtractionRun, active_run)
+        run.status = RunStatus.COMPLETED
+        await s.commit()
+    r2 = await c.get(f"/api/articles/delta?since={encode_delta_cursor(0)}")
+    recs2, _ = _parse(r2.text)
+    titles = [r.get("title") for r in recs2]
+    assert titles == ["Done"]  # exactly the real change; sentinel skipped, no gap
+
+
+async def test_content_record_run_id_is_change_run_not_article_run(ctx):
+    # The delta content record's run_id must be the CHANGE's run, not the article's
+    # latest extraction_run_id (they diverge if a later run touched the article).
+    c, factory = ctx
+    _, src_id, run_a = await _seed_source(factory)
+    async with factory() as s:
+        run_b = ExtractionRun(source_id=src_id, status=RunStatus.COMPLETED)
+        s.add(run_b); await s.flush()
+        run_b_id = run_b.id
+        art = Article(
+            source_id=src_id, extraction_run_id=run_b_id, created_run_id=run_a,
+            title="A", source_url="https://x/a", topic_key="https://x/a",
+            content_markdown="# A", content_hash="h",
+        )
+        s.add(art); await s.flush()
+        # The change belongs to run_a, but the article's latest run is run_b.
+        s.add(ContentChange(article_id=art.id, source_id=src_id, run_id=run_a,
+                            change_type="updated", content_hash="h", topic_key="https://x/a"))
+        await s.commit()
+
+    resp = await c.get(f"/api/articles/delta?since={encode_delta_cursor(0)}")
+    recs, _ = _parse(resp.text)
+    assert len(recs) == 1
+    assert recs[0]["run_id"] == str(run_a)      # the change's run
+    assert recs[0]["run_id"] != str(run_b_id)   # not the article's latest run
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `pytest tests/test_delta_feed.py::test_run_start_floor_withholds_higher_rows_of_other_runs tests/test_delta_feed.py::test_content_record_run_id_is_change_run_not_article_run -v`
+Expected: FAIL — `test_content_record_...` fails because the record currently uses `article.extraction_run_id` (returns run_b). (`test_run_start_...` may already pass if the stream happens to skip the sentinel — that's fine; it locks the behavior.)
+
+- [ ] **Step 3: Add the `RUN_START` enum value**
+
+In `app/models/content_change.py`, add to `ChangeType`:
+
+```python
+class ChangeType(str, Enum):
+    ADDED = "added"
+    UPDATED = "updated"
+    REMOVED = "removed"
+    RUN_START = "run_start"
+```
+
+No migration needed — `change_type` is `String(16)`, not a DB enum, and `"run_start"` fits.
+
+- [ ] **Step 4: Add the `record_run_start` helper**
+
+In `app/services/change_log.py`, add:
+
+```python
+async def record_run_start(
+    db: AsyncSession, *, source_id: uuid.UUID, run_id: uuid.UUID
+) -> None:
+    """Append a ``run_start`` sentinel outbox row for a run (caller commits).
+
+    Committed before the run processes any article, this gives the run a visible
+    floor in content_changes.id space so the delta feed's safe-ceiling withholds
+    the run's later (possibly mid-commit) rows until it finishes — closing the
+    flush→commit gap under concurrent multi-replica runs. The feed skips these
+    rows (they carry no article and are not a change type it emits)."""
+    db.add(
+        ContentChange(
+            article_id=None,
+            source_id=source_id,
+            run_id=run_id,
+            change_type=ChangeType.RUN_START.value,
+            content_hash=None,
+            topic_key=None,
+        )
+    )
+```
+
+- [ ] **Step 5: Commit a run_start row at the top of `extract_source`**
+
+In `app/services/firecrawl.py`, immediately after `run_pk = run.id` (currently line 1749, inside `extract_source`, before the auth-resolution block and the PDF/web branch), insert:
+
+```python
+        # Commit a run_start sentinel into the outbox before any article work, so
+        # this run has a COMMITTED floor in content_changes.id space from the moment
+        # it is active. The delta feed's safe-ceiling keys on active-run rows; the
+        # committed floor closes the flush→commit window where a run's first real
+        # row is assigned an id but not yet visible (which could otherwise let a
+        # concurrent run's higher-id row be served and advance the cursor past the
+        # uncommitted lower id). See services/delta_feed.py. Harmless on resume
+        # (an extra, higher-id floor that doesn't lower the run's true minimum).
+        await change_log.record_run_start(db, source_id=source_id, run_id=run_pk)
+        await db.commit()
+```
+
+(`change_log` is already imported in `firecrawl.py` from Task 3.)
+
+- [ ] **Step 6: Update `delta_feed.py` — skip sentinels, change-run_id, bootstrap ceiling, docstring**
+
+6a. In `_content_record`, add a `run_id` parameter and use it instead of `article.extraction_run_id`:
+
+```python
+async def _content_record(db, resolver, *, seq, change_type, article, vendor_name, product_name, run_id):
+```
+and change the run_id field to:
+```python
+        "run_id": str(run_id) if run_id else None,
+```
+
+6b. In `stream_delta`, make the emit branch explicit and pass the change's run_id. Replace the per-row mapping block:
+
+```python
+        for change, article, vendor_name, product_name in rows:
+            last = change.id
+            if change.change_type == "removed":
+                yield _line(_tombstone_record(change))
+                count += 1
+            elif change.change_type in ("added", "updated") and article is not None:
+                yield _line(await _content_record(
+                    db, resolver, seq=change.id, change_type=change.change_type,
+                    article=article, vendor_name=vendor_name, product_name=product_name,
+                    run_id=change.run_id,
+                ))
+                count += 1
+            # else: run_start sentinel, or added/updated whose article was
+            # hard-deleted → skip (advancing `last` past it is safe: it is
+            # permanent — below the ceiling, from a terminal run).
+```
+
+6c. In `stream_bootstrap`, pass the article's own run and make the bootstrap watermark respect the ceiling. Change the `_content_record` call to add `run_id=article.extraction_run_id`, and change the `max_seq` computation to:
+
+```python
+    # Watermark for the follow-up delta = current global max outbox id, but never
+    # past the safe ceiling — otherwise a change committed below max_seq by a run
+    # still active during bootstrap would be skipped by the first delta pull.
+    max_seq = (await db.execute(select(func.max(ContentChange.id)))).scalar() or 0
+    ceiling = await _safe_ceiling(db)
+    if ceiling is not None:
+        max_seq = min(max_seq, ceiling - 1)
+```
+
+(The final `yield _line({"control": "cursor", "next_since": encode_delta_cursor(max_seq), ...})` line is unchanged; it already encodes `max_seq`.)
+
+6d. In the module docstring, replace the paragraph that begins `Ordering is by content_changes.id alone.` through the end of that paragraph with:
+
+```python
+"""Streaming JSONL delta feed over the content_changes outbox.
+
+Ordering is by content_changes.id alone. Gap-freeness under concurrent runs is
+guaranteed by a "safe ceiling": the lowest id belonging to any still-active run.
+Each run commits a ``run_start`` sentinel row before processing any article, so
+an active run always has a COMMITTED floor in id space from the moment it is
+active — this closes the flush→commit window where a run's first real row is
+assigned an id but not yet visible. Because an active run's rows (starting at its
+sentinel) all have id >= its floor, every row served with id < ceiling provably
+belongs to a terminal run, so serving strictly below the ceiling never skips a
+slow or just-started run's not-yet-committed higher ids. Sentinel rows carry no
+article and are skipped by the stream.
+"""
+```
+
+- [ ] **Step 7: Run the new + existing delta tests**
+
+Run: `pytest tests/test_delta_feed.py -v`
+Expected: all pass (the 5 originals + 2 new). Output pristine aside from the known global SWIG import warnings.
+
+- [ ] **Step 8: Regression**
+
+Run: `pytest tests/test_change_log.py tests/test_change_log_wiring.py tests/test_delta_webhook.py tests/test_incremental.py tests/test_integration.py tests/test_reconcile_removals.py -v`
+Expected: all pass. (`run_change_counts` ignores the `run_start` type — it only reads added/updated/removed — so webhook counts are unaffected. The wiring tests call `process_article_result`/`_reconcile_removals` directly, not `extract_source`, so no sentinel is added there.)
+
+- [ ] **Step 9: Update the spec's gap-free section**
+
+In `docs/superpowers/specs/2026-07-10-graphrag-delta-feed-design.md`, in the "Why the watermark is gap-free under concurrent runs" section, append a paragraph:
+
+```markdown
+**Run-start floor (commit-order safety).** A `BIGSERIAL` id is assigned at insert
+but a row is invisible to other sessions until its transaction commits, so a run's
+first outbox row has a brief flush→commit window where its low id is unseen. To
+keep the safe-ceiling correct across that window, every run commits a `run_start`
+sentinel row into `content_changes` before it processes any article. That gives
+each active run a committed floor in id space from the moment it is active, so the
+ceiling always reflects it and the run's later (possibly mid-commit) rows are
+withheld until the run reaches a terminal state. The feed skips sentinel rows.
+```
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add backend/app/models/content_change.py backend/app/services/change_log.py \
+        backend/app/services/firecrawl.py backend/app/services/delta_feed.py \
+        backend/tests/test_delta_feed.py docs/superpowers/specs/2026-07-10-graphrag-delta-feed-design.md
+git commit -m "fix(delta): run_start floor closes multi-replica commit-order gap; change-run_id + bootstrap ceiling"
+```
+
+---
+
 ## Self-Review
 
 **Spec coverage:**
