@@ -42,6 +42,8 @@ export interface DashSort {
 /** Maps a tile id to the flag it constrains the table to; null/unknown = no constraint. */
 function tileFlag(tile: string | null): Flag | null {
   switch (tile) {
+    case "never":
+      return "never";
     case "stale":
       return "stale";
     case "failing":

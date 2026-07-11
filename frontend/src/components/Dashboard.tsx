@@ -215,6 +215,7 @@ export default function Dashboard({
     setStatuses([]);
     setFlags([]);
     setTile(null);
+    setSort(null);
   };
 
   const toggleTile = (id: string) => {
@@ -246,6 +247,7 @@ export default function Dashboard({
   const agg = data.aggregate;
   const tiles = [
     { id: "sources", label: "Sources", count: agg.total, cls: "" },
+    { id: "never", label: "Never extracted", count: agg.never_extracted, cls: "warn" },
     { id: "stale", label: "Stale (>30d)", count: agg.stale, cls: "warn" },
     { id: "failing", label: "Failing", count: agg.failing, cls: "bad" },
     { id: "running", label: "Running", count: agg.running, cls: "" },
