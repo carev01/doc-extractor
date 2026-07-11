@@ -226,6 +226,13 @@ async def enrich_run_images(db: AsyncSession, source_id: uuid.UUID, run_id: uuid
                 break
     except Exception as exc:  # noqa: BLE001 — enrichment is best-effort
         logger.warning("enrich_run_images failed for source %s: %s", source_id, exc)
+        # Roll back so the shared session (which extract_source keeps using to
+        # finish the run) isn't left in a failed-transaction state — otherwise a
+        # best-effort failure here would poison the completion path and fail the run.
+        try:
+            await db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _read_file(path: str) -> bytes:

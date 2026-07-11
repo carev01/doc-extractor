@@ -234,3 +234,20 @@ async def test_circuit_breaker_stops_after_consecutive_failures(factory, monkeyp
 
     await enrich_run_images_via(factory, src_id, run_id, failing)
     assert calls["n"] == 2  # stopped at the consecutive-failure cap, didn't try all three
+
+
+async def test_describe_raising_does_not_poison_session(factory):
+    # A describe that RAISES (not returns None) must not fail the phase and must
+    # leave the shared session usable — extract_source keeps using this same db to
+    # finish the run, so a failed-transaction state here would fail the run.
+    src_id, art_id, run_id = await _seed_article_with_image(factory, img_bytes=_noise_png(400, 300))
+
+    async def boom(data, alt, **kw):
+        raise RuntimeError("VLM exploded")
+
+    async with factory() as db:
+        await enrich_run_images(db, src_id, run_id, describe=boom)  # must not raise
+        # The session is still usable after the best-effort rollback (a poisoned
+        # transaction would raise PendingRollbackError here).
+        got = await db.get(Article, art_id)
+        assert got is not None

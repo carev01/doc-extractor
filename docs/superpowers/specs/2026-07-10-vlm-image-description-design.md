@@ -30,9 +30,12 @@ adds VLM-generated natural-language descriptions of the **meaningful** images
   pages fast-path without any download — load-bearing for large raw-HTTP sources like
   Rubrik's 4,240 pages. Injecting captions "before the hash" would entangle that
   hot path and risk regressing incremental runs. A post-scrape phase keeps the
-  change-detection path untouched.) The phase updates `content_markdown` + `content_hash`
-  and writes an `updated` `content_changes` row for each enriched article, so the delta
-  feed delivers the descriptions. Accepted trade-offs: a net-new enriched article emits an
+  change-detection path untouched.) The phase updates `content_markdown` (and the
+  `ArticleImage` fields) and writes an `updated` `content_changes` row for each enriched
+  article, so the delta feed delivers the descriptions. **It does NOT modify `content_hash`**
+  — that is a raw-scrape fingerprint used by the change-detection fast-path; changing it
+  would reintroduce phantom deltas. No-churn is enforced by only acting on images that still
+  need work (see "Interaction with Spec 1"), not by hash comparison. Accepted trade-offs: a net-new enriched article emits an
   `added` (pre-caption) then an `updated` (captioned) row in the same run — both idempotent
   upserts downstream; and the run's `updated` count is slightly inflated. VLM cost/latency
   is bounded by a per-run budget + the `bytes_sha256` cache.
@@ -118,8 +121,11 @@ settings.image_min_bytes: int = 3072
 ## Storage
 
 `ArticleImage` gains columns: `description Text null`, `kind String(16) null`,
-`width Integer null`, `height Integer null`, `is_meaningful Boolean default false`,
-`bytes_sha256 String(64) null` (indexed).
+`width Integer null`, `height Integer null`, `is_meaningful Boolean null`,
+`bytes_sha256 String(64) null` (indexed). **`is_meaningful` is a nullable tri-state with no
+default**: `NULL` = not yet evaluated, `true`/`false` = evaluated. The enrichment candidate
+predicate keys on `NULL` to find un-evaluated images, so a `default false` would break it
+(new images would never be picked up).
 
 New table `image_descriptions` — the content-hash cache, shared across all articles/sources:
 
@@ -149,17 +155,18 @@ description → byte-identical markdown.
 
 ## Interaction with Spec 1 — keeping the delta feed honest
 
-Injecting a caption changes `content_markdown` and `content_hash`. The enrichment phase runs
-after scraping (so `process_article_result` has already written its `added`/`updated` row with
-pre-caption content), then, for each enriched article, updates `content_markdown` +
-`content_hash` and writes its own `updated` `content_changes` row so the descriptions reach the
-feed. Two rules keep this honest:
+Injecting a caption changes `content_markdown` (but **not** `content_hash`, which stays the
+raw-scrape fingerprint). The enrichment phase runs after scraping (so `process_article_result`
+has already written its `added`/`updated` row with pre-caption content), then, for each
+enriched article, updates `content_markdown` + the `ArticleImage` fields and writes its own
+`updated` `content_changes` row so the descriptions reach the feed. Two rules keep this honest:
 
-1. **The phase only acts on articles with meaningful, not-yet-described images.** An article
-   with no meaningful images, or whose meaningful images are already described (cache hit
-   yielding the identical caption), produces **byte-identical** `content_markdown` → identical
-   `content_hash` → the phase writes **no** `updated` row. So repeated runs over unchanged
-   content emit nothing.
+1. **The phase only acts on images that still need work** — the SQL candidate predicate is
+   `is_meaningful IS NULL OR (is_meaningful = true AND description IS NULL)`. An article with no
+   meaningful images, or whose meaningful images are all already described, yields **zero**
+   candidate images → the article is never mutated → **no** `updated` row. So repeated runs over
+   unchanged content emit nothing. (No-churn is enforced by this predicate, not by comparing
+   `content_hash` — which the phase never recomputes.)
 2. **Descriptions are cached by `bytes_sha256`** (the `image_descriptions` table), shared across
    all articles/sources. VLM cost is paid once per distinct image, ever; a re-extracted or
    re-used image reuses its cached caption.
@@ -195,9 +202,9 @@ the feed emits an `updated` for an article only when its description set actuall
 - Driver: budget cap honored; consecutive-failure circuit breaker trips and stops calling;
   best-effort (a raised VLM error does not propagate into extraction).
 - Cache: second occurrence of the same `bytes_sha256` hits the cache and makes **no** VLM call.
-- **Idempotence / no phantom delta**: describing an article, then re-running with unchanged
-  images, yields byte-identical `content_markdown`, identical `content_hash`, and **no**
-  `content_changes` `updated` row (the cross-spec invariant).
+- **Idempotence / no phantom delta**: describing an article, then re-running with the images
+  already described, produces no candidate images and **no** `content_changes` `updated` row;
+  `content_hash` is never touched by the phase (the cross-spec invariant).
 - Surfacing: `images[].description` / `kind` appear in `GET /api/articles/{id}` and in the
   Spec 1 JSONL delta record; the inline caption appears in `content_markdown`.
 
