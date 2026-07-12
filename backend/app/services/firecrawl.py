@@ -786,10 +786,10 @@ class FirecrawlService:
                 text(
                     "UPDATE extraction_runs SET error_message = :msg, "
                     "blocked_pending = CASE "
-                    "  WHEN blocked_pending @> :urlkey::jsonb THEN blocked_pending "
-                    "  WHEN jsonb_array_length(COALESCE(blocked_pending, '[]'::jsonb)) >= :cap "
+                    "  WHEN blocked_pending @> CAST(:urlkey AS jsonb) THEN blocked_pending "
+                    "  WHEN jsonb_array_length(COALESCE(blocked_pending, CAST('[]' AS jsonb))) >= :cap "
                     "    THEN blocked_pending "
-                    "  ELSE COALESCE(blocked_pending, '[]'::jsonb) || :item::jsonb "
+                    "  ELSE COALESCE(blocked_pending, CAST('[]' AS jsonb)) || CAST(:item AS jsonb) "
                     "END "
                     "WHERE id = :rid"
                 ),
