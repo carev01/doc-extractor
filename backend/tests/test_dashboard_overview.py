@@ -166,3 +166,27 @@ async def test_overview_shape_and_signals(ctx):
     assert agg["total"] == 3 and agg["never_extracted"] == 1
     assert agg["escalation_sources_with_warning"] == 1
     assert agg["enrichment"]["sources_with_backlog"] == 1     # only A
+
+
+async def test_running_aggregate_matches_active_run(ctx):
+    """The `running` aggregate counts the same active set as row.active_run, so
+    the Running tile count always matches the rows its filter shows. A source
+    with an in-flight run but status != EXTRACTING must still be counted."""
+    c, factory = ctx
+    async with factory() as s:
+        from app.models.source import SourceStatus
+        v = Vendor(name="V"); s.add(v); await s.flush()
+        p = Product(name="P", vendor_id=v.id); s.add(p); await s.flush()
+        src = DocumentationSource(
+            name="R", base_url="https://r", product_id=p.id,
+            source_type="web", status=SourceStatus.COMPLETED,  # not EXTRACTING
+        )
+        s.add(src); await s.flush()
+        s.add(ExtractionRun(source_id=src.id, status=RunStatus.RUNNING))
+        await s.commit()
+        sid = src.id
+
+    body = (await c.get("/api/dashboard/overview")).json()
+    row = next(r for r in body["sources"] if r["id"] == str(sid))
+    assert row["active_run"] is True
+    assert body["aggregate"]["running"] == 1

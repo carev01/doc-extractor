@@ -124,7 +124,7 @@ export default function Dashboard({
 }) {
   const [data, setData] = useState<DashboardOverview | null>(null);
   const [error, setError] = useState("");
-  const [enrMsg, setEnrMsg] = useState("");
+  const [enrMsg, setEnrMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [enriching, setEnriching] = useState<string | null>(null);
   const staleSeconds = 30 * 86400;
 
@@ -154,14 +154,14 @@ export default function Dashboard({
   }, []);
 
   const handleEnrich = async (sourceId: string) => {
-    setEnrMsg("");
+    setEnrMsg(null);
     setEnriching(sourceId);
     try {
       await enrichSource(sourceId);
-      setEnrMsg("Enrichment queued");
+      setEnrMsg({ text: "Enrichment queued", ok: true });
       reload();
     } catch (e) {
-      setEnrMsg(apiError(e, "Failed to queue enrichment"));
+      setEnrMsg({ text: apiError(e, "Failed to queue enrichment"), ok: false });
     } finally {
       setEnriching(null);
     }
@@ -360,7 +360,7 @@ export default function Dashboard({
           {agg.enrichment.sources_with_backlog} source
           {agg.enrichment.sources_with_backlog === 1 ? "" : "s"} with a backlog
         </p>
-        {enrMsg && <p className="sub run-done">{enrMsg}</p>}
+        {enrMsg && <p className={enrMsg.ok ? "sub run-done" : "error"}>{enrMsg.text}</p>}
         {backlog.length === 0 ? (
           <p className="sub">All images described.</p>
         ) : (
@@ -393,7 +393,9 @@ export default function Dashboard({
       {selected && (
         <DashboardDrawer
           key={selected.id}
-          row={selected}
+          // Prefer the freshly-polled row so post-action stats/gating update in
+          // place; the stable key keeps the drawer (and its runs list) mounted.
+          row={data.sources.find((s) => s.id === selected.id) ?? selected}
           onClose={() => setSelected(null)}
           onAction={reload}
           onOpenFull={(r) => {

@@ -270,7 +270,9 @@ async def dashboard_overview(
             stale += 1
         if src.status == SourceStatus.FAILED:
             failing += 1
-        if src.status == SourceStatus.EXTRACTING:
+        # Count the same active set the "Running" tile-filter uses (row.active_run),
+        # so the tile count always matches the number of rows the filter shows.
+        if src.id in active:
             running += 1
 
         run = latest_run.get(src.id)
