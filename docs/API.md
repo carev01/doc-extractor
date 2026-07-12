@@ -157,6 +157,41 @@ Each record's `content_hash` is the **SHA-256 of the served `content_markdown`**
 2. Subscribe a webhook to `extraction_complete`.
 3. On each notification, `GET /api/articles/delta?since=<stored cursor>` → upsert `added`/`updated`, delete `removed`, then persist the new `next_since`. Use your own stored cursor (not the one in the webhook), so a missed delivery self-heals on the next pull.
 
+### Connecting a downstream after the corpus already exists
+
+You do **not** need to re-extract anything to onboard a consumer that connects
+late (i.e. after sources have already been pulled). The bootstrap snapshot is a
+**direct scan of the live article table**, not a replay of the change outbox —
+so it returns the entire current corpus regardless of when each article was
+extracted or whether the consumer existed at extraction time. Connect it now,
+take one full snapshot, then live off incremental deltas:
+
+```bash
+# 1. Full bootstrap — every current, visible, non-removed article as `added`.
+#    Stream it to your indexer and capture next_since from the final control line.
+curl -sN -H "X-API-Key: $KEY" \
+  https://docextractor.example/api/articles/delta > snapshot.ndjson
+CURSOR=$(tail -n1 snapshot.ndjson | jq -r 'select(.control=="cursor").next_since')
+
+# 2. Thereafter, pull only what changed since your stored cursor (repeat on the
+#    extraction_complete webhook, or poll).
+curl -sN -H "X-API-Key: $KEY" \
+  "https://docextractor.example/api/articles/delta?since=$CURSOR"
+```
+
+Two guarantees make this safe:
+
+- **No gap between snapshot and first delta.** The bootstrap's `next_since` is
+  pinned to the current outbox watermark but never past the safe ceiling of any
+  still-running extraction — so a change committed *while you were streaming the
+  snapshot* is re-served by your first incremental pull rather than skipped.
+- **Enrichment updates are visible.** Because each record's `content_hash` is
+  the SHA-256 of the served markdown, a later image-description run surfaces the
+  affected pages as `updated` deltas with a changed hash — re-index just those.
+
+To shard or backfill a subset, add `?source_id=…` or `?vendor_id=…` to either
+call; both are RBAC-scoped to the API key's visible vendors.
+
 ---
 
 ## Export
