@@ -155,6 +155,8 @@ async def run_one(claim_session_factory=None, work_session_factory=None) -> bool
                     await firecrawl_service.retry_escalation_run(db, source_id, run_id)
                 elif run_kind == "enrich":
                     await firecrawl_service.enrich_source_run(db, source_id, run_id)
+                elif run_kind == "retry_blocked":
+                    await firecrawl_service.retry_blocked_run(db, source_id, run_id)
                 else:
                     await firecrawl_service.extract_source(db, source_id, run_id=run_id)
                 await db.commit()

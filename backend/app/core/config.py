@@ -87,12 +87,21 @@ class Settings(BaseSettings):
     # TOC-collapse guard — data-loss protection. If a run's rebuilt TOC has fewer
     # scrapable pages than ``toc_collapse_min_ratio`` of the source's currently-live
     # article count (and that prior count is at least ``toc_collapse_min_prior``),
-    # TOC discovery almost certainly failed (an overloaded/unavailable
-    # Firecrawl/Browserless, an upstream change, a transient empty nav). The run is
-    # aborted BEFORE the destructive TOC rebuild + removal reconcile, so good
-    # content is never wiped. A genuine large shrink then needs a human re-trigger.
+    # TOC discovery almost certainly failed (an unavailable Firecrawl/Browserless,
+    # an upstream change, a transient empty nav). The run is aborted BEFORE the
+    # destructive TOC rebuild + removal reconcile, so good content is never wiped.
+    # A genuine large shrink then needs a human re-trigger.
     toc_collapse_min_ratio: float = 0.5
     toc_collapse_min_prior: int = 20
+
+    # Bot-protection (Akamai/Cloudflare) blocked-page auto-retry. When a run
+    # finishes with some pages blocked but the blocked fraction is at or below
+    # this percentage of the total scrapable pages, the run does one in-line
+    # second pass over just the blocked URLs before completing (a fresh
+    # Firecrawl/Browserless session often clears a transient challenge). Above
+    # the threshold the run completes with a blocked warning and the pages can be
+    # retried manually. 0 disables the automatic pass (manual retry still works).
+    blocked_retry_max_pct: float = 5.0
 
     # PDF source import — uploaded PDFs live on a local volume (a PVC in k8s),
     # mirroring media_dir/export_dir. Uploads larger than the cap are rejected.

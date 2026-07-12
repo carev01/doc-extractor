@@ -80,6 +80,7 @@ Admin-only endpoints (user management, jobs, auth realms) require `admin`.
 | `POST` | `/api/extraction/runs/{run_id}/pause` | Pause a running extraction |
 | `POST` | `/api/extraction/runs/{run_id}/resume` | Resume a paused extraction |
 | `POST` | `/api/extraction/runs/{run_id}/retry-escalation` | Retry VLM escalation for failed pages |
+| `POST` | `/api/extraction/runs/{run_id}/retry-blocked` | Re-scrape only the pages a run recorded as bot-blocked (no TOC re-discovery). 409 if nothing blocked or a run is active. |
 | `POST` | `/api/extraction/resanitize/{source_id}` | Re-sanitize all articles for a source |
 
 ---

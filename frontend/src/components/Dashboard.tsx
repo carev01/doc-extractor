@@ -31,6 +31,7 @@ const FLAG_LABELS: Record<Flag, string> = {
   failed: "Failed",
   "enrichment-backlog": "Enrichment backlog",
   "escalation-warning": "Escalation warning",
+  "blocked-warning": "Blocked pages",
   running: "Running",
 };
 
@@ -40,6 +41,7 @@ const ALL_FLAGS: Flag[] = [
   "failed",
   "enrichment-backlog",
   "escalation-warning",
+  "blocked-warning",
   "running",
 ];
 
@@ -50,6 +52,7 @@ const SORT_COLUMNS: { key: string; label: string }[] = [
   { key: "last_run", label: "Last run" },
   { key: "pending", label: "Img pending" },
   { key: "escalation", label: "Escalation" },
+  { key: "blocked", label: "Blocked" },
 ];
 
 function FacetSelect({
@@ -257,6 +260,12 @@ export default function Dashboard({
       count: agg.escalation_sources_with_warning,
       cls: "bad",
     },
+    {
+      id: "blocked",
+      label: "Blocked pages",
+      count: agg.blocked_sources_with_warning,
+      cls: "bad",
+    },
   ];
 
   return (
@@ -336,6 +345,9 @@ export default function Dashboard({
               <td className={r.escalation.pending_count > 0 ? "cell-bad" : "sub"}>
                 {r.escalation.pending_count || "—"}
               </td>
+              <td className={r.blocked.pending_count > 0 ? "cell-bad" : "sub"}>
+                {r.blocked.pending_count || "—"}
+              </td>
               <td>{r.status}</td>
               <td>{r.job_name ?? "—"}</td>
               <td>
@@ -344,7 +356,7 @@ export default function Dashboard({
             </tr>
           ))}
           {rows.length === 0 && (
-            <tr><td colSpan={9} className="sub">No sources match the current filters.</td></tr>
+            <tr><td colSpan={10} className="sub">No sources match the current filters.</td></tr>
           )}
         </tbody>
       </table>

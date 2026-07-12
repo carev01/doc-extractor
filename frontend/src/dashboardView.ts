@@ -12,6 +12,7 @@ export type Flag =
   | "failed"
   | "enrichment-backlog"
   | "escalation-warning"
+  | "blocked-warning"
   | "running";
 
 export function rowFlags(row: OverviewSourceRow, staleSeconds: number): Flag[] {
@@ -21,6 +22,7 @@ export function rowFlags(row: OverviewSourceRow, staleSeconds: number): Flag[] {
   if (row.status === "failed") flags.push("failed");
   if (row.enrichment.pending > 0) flags.push("enrichment-backlog");
   if (row.escalation.warning) flags.push("escalation-warning");
+  if (row.blocked.warning) flags.push("blocked-warning");
   if (row.active_run) flags.push("running");
   return flags;
 }
@@ -54,18 +56,22 @@ function tileFlag(tile: string | null): Flag | null {
       return "enrichment-backlog";
     case "escalation":
       return "escalation-warning";
+    case "blocked":
+      return "blocked-warning";
     default:
       return null;
   }
 }
 
-// Surface problems first: never → failed → stale → escalation-warning → rest, then by name.
+// Surface problems first: never → failed → stale → escalation-warning →
+// blocked-warning → rest, then by name.
 function attentionRank(flags: Flag[]): number {
   if (flags.includes("never")) return 0;
   if (flags.includes("failed")) return 1;
   if (flags.includes("stale")) return 2;
   if (flags.includes("escalation-warning")) return 3;
-  return 4;
+  if (flags.includes("blocked-warning")) return 4;
+  return 5;
 }
 
 function sortKeyValue(row: OverviewSourceRow, key: string): string | number | null {
@@ -82,6 +88,8 @@ function sortKeyValue(row: OverviewSourceRow, key: string): string | number | nu
       return row.enrichment.pending;
     case "escalation":
       return row.escalation.pending_count;
+    case "blocked":
+      return row.blocked.pending_count;
     default:
       return null;
   }

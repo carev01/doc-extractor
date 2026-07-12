@@ -126,6 +126,9 @@ export interface ExtractionRun {
   kind?: string;
   /** Completed PDF run whose VLM escalation failed — eligible for retry. */
   escalation_warning?: boolean;
+  /** Completed run with pages blocked by bot protection — eligible for retry. */
+  blocked_warning?: boolean;
+  blocked_count?: number;
   current_phase:
     | "toc_discovery"
     | "content_scraping"
@@ -133,6 +136,7 @@ export interface ExtractionRun {
     | "pdf_convert"
     | "pdf_split"
     | "pdf_escalate"
+    | "retry_blocked"
     | null;
   firecrawl_job_id: string | null;
   articles_extracted: number;
@@ -401,6 +405,12 @@ export interface OverviewEscalation {
   run_id: string | null;
 }
 
+export interface OverviewBlocked {
+  warning: boolean;
+  pending_count: number;
+  run_id: string | null;
+}
+
 export interface OverviewSourceRow {
   id: string;
   name: string;
@@ -414,6 +424,7 @@ export interface OverviewSourceRow {
   last_run: OverviewLastRun | null;
   enrichment: OverviewEnrichment;
   escalation: OverviewEscalation;
+  blocked: OverviewBlocked;
   active_run: boolean;
   job_id: string | null;
   job_name: string | null;
@@ -428,6 +439,7 @@ export interface OverviewAggregate {
   running: number;
   enrichment: { described: number; pending: number; sources_with_backlog: number };
   escalation_sources_with_warning: number;
+  blocked_sources_with_warning: number;
 }
 
 export interface DashboardOverview {
