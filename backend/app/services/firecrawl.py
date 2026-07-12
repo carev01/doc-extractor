@@ -44,7 +44,7 @@ import app.services.profiles.llm as llm_mod
 from app.services.profiles.scraper import Scraper
 from app.services.sanitize import sanitize_markdown
 from app.services.toc_checkpoint import TocBuildCheckpoint
-from app.services.versioning import derive_topic_key
+from app.services.versioning import derive_topic_key, detect_version_token
 from app.core.database import async_session
 
 # Default content scrape options when no profile config is supplied (legacy #doc).
@@ -876,6 +876,34 @@ class FirecrawlService:
         )
         existing_article = existing_result.scalar_one_or_none()
 
+        # Fallback: match a live article by source_url when the topic_key doesn't.
+        # A stored key can differ from the freshly-derived match_key when key
+        # derivation drifted between runs (e.g. a run keyed pages by their literal
+        # version because url_template wasn't set yet, vs the version-independent
+        # {version} key). Without this, the page is re-created as a duplicate and
+        # the whole source doubles. Matching by URL updates the existing article
+        # instead and normalises its key to match_key below (self-healing). Scoped
+        # to the same source and live rows; limit(1) is defensive against any
+        # residual same-URL duplicates.
+        if existing_article is None:
+            url_matches = (
+                await db.execute(
+                    select(Article)
+                    .where(
+                        Article.source_id == source_id,
+                        Article.source_url == url,
+                        Article.removed_at.is_(None),
+                    )
+                    .limit(2)
+                )
+            ).scalars().all()
+            # Only heal by URL when it is unambiguous. A URL shared by multiple
+            # live articles (PDF outline sections that start on the same #page)
+            # must NOT be matched this way, or one section would overwrite a
+            # sibling; leave those to topic_key matching.
+            if len(url_matches) == 1:
+                existing_article = url_matches[0]
+
         # For "new" or None change_status fall back to hash comparison. "new" happens
         # on the first extraction after changeTracking was enabled (Firecrawl has no
         # prior snapshot for this tag yet, but our DB may already have the article).
@@ -891,6 +919,7 @@ class FirecrawlService:
                 # removed.
                 existing_article.extracted_at = datetime.now(timezone.utc)
                 existing_article.source_url = url
+                existing_article.topic_key = match_key  # normalise a drifted key
                 existing_article.toc_entry_id = toc_entry_id
                 existing_article.sort_order = sort_order
                 existing_article.title = title
@@ -2147,6 +2176,21 @@ class FirecrawlService:
                 )
             ).scalar_one_or_none()
             run.version = product_version
+
+            # Auto-detect the url_template during the run when it's missing but the
+            # version is known and appears in base_url. url_template is otherwise
+            # only set via the sources API, so a versioned source configured
+            # without it would key articles by their literal version — persist a
+            # detected template so keys stay version-independent going forward.
+            if product_version and not source.url_template:
+                detected = detect_version_token(source.base_url, product_version)
+                if detected:
+                    source.url_template = detected
+                    logger.info(
+                        "Auto-detected url_template for %s: %s",
+                        source.base_url, detected,
+                    )
+                    await db.commit()
 
             logger.info(
                 "Discovering TOC for %s (profile=%s)", source.base_url, profile.name
