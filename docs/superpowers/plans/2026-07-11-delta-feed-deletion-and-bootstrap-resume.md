@@ -662,9 +662,40 @@ git commit -m "feat(delta): resumable bootstrap (bootstrap_after + bootstrap_sta
 
 ---
 
+### Task 5: Documentation pass
+
+**Files:**
+- Modify: `docs/API.md` (Delta-Feed section), and `docs/ARCHITECTURE.md` if it describes the outbox/feed.
+
+**Interfaces:**
+- Consumes: the *implemented* behavior of Tasks 1–4 (documentation is written last, against the code that actually shipped, not the plan's prose).
+
+> **Note:** Tasks 3 and 4 SKIP their inline documentation sub-steps (T3 step 7, T4 step 6). All delta-feed documentation is consolidated here so it's written once against the final code.
+
+- [ ] **Step 1: Update the `docs/API.md` Delta-Feed section — deletion tombstones**
+
+Document that deleting a source/product/vendor now emits `removed` tombstones carrying the original article `id` (verified against `record_source_deletions` + the deletion routes as implemented), so a consumer that processes `removed` records drops those nodes instead of orphaning them. Note the tombstones use `run_id: null`.
+
+- [ ] **Step 2: Update the `docs/API.md` Delta-Feed section — resumable bootstrap**
+
+Document the `bootstrap_after=<article_id>` query parameter (bootstrap-mode only; ignored when `since` is set), the new first-line `{"control":"bootstrap_start","next_since":...}` record, and the resume contract: capture `next_since` from `bootstrap_start` up front; on a dropped stream resume with `?bootstrap_after=<highest id applied>` while KEEPING the original `next_since`; only begin incremental (`since=`) after the terminal `{"control":"cursor",...}` line. Match the exact param name, control type, and field names to the shipped code in `delta_feed.py`/`articles.py`.
+
+- [ ] **Step 3: Cross-check against code**
+
+Read `app/services/delta_feed.py` (`stream_bootstrap`), `app/routes/articles.py` (`article_delta_feed`), `app/services/change_log.py` (`record_source_deletions`), and the three deletion routes; confirm every param name, control-record type, and field the docs mention exists exactly as written. Fix any drift.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add docs/API.md docs/ARCHITECTURE.md
+git commit -m "docs(api): delta-feed deletion tombstones + resumable bootstrap"
+```
+
+---
+
 ## Self-Review
 
-**Spec coverage:** Part 1 §1.1 → Task 1; §1.2 → Task 2; §1.3–1.4 → Task 3; Part 2 → Task 4; docs folded into Tasks 3 & 4; every spec test bullet maps to a test step (append-only survive-delete → T1; helper live-only → T2; source/product/vendor tombstones + safe-ceiling → T3; bootstrap_start/after/missed-update → T4). Retention is spec'd out-of-scope; not planned. ✅
+**Spec coverage:** Part 1 §1.1 → Task 1; §1.2 → Task 2; §1.3–1.4 → Task 3; Part 2 → Task 4; all documentation → Task 5 (Tasks 3 & 4 skip their inline doc steps); every spec test bullet maps to a test step (append-only survive-delete → T1; helper live-only → T2; source/product/vendor tombstones + safe-ceiling → T3; bootstrap_start/after/missed-update → T4). Retention is spec'd out-of-scope; not planned. ✅
 
 **Placeholder scan:** migration `<new>` filename is the Alembic-generated name (instructed to generate it); constraint names use the PostgreSQL default with a fallback instruction. No other placeholders. ✅
 
