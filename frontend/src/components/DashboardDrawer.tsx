@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ExtractionRun, OverviewSourceRow } from "../types";
-import { listRuns, enrichSource, retryEscalation } from "../api/client";
+import { listRuns, enrichSource, retryEscalation, retryBlocked } from "../api/client";
 import { apiError } from "../api/errors";
 
 const STATUS_COLORS: Record<string, string> = {
@@ -39,6 +39,9 @@ export default function DashboardDrawer({ row, onClose, onAction, onOpenFull }: 
 
   const [escalating, setEscalating] = useState(false);
   const [escMsg, setEscMsg] = useState<{ text: string; ok: boolean } | null>(null);
+
+  const [retryingBlocked, setRetryingBlocked] = useState(false);
+  const [blockedMsg, setBlockedMsg] = useState<{ text: string; ok: boolean } | null>(null);
 
   // Load recent runs on mount. The parent mounts a fresh instance (keyed by
   // row.id) whenever a different row is selected, so this only ever runs once
@@ -95,7 +98,23 @@ export default function DashboardDrawer({ row, onClose, onAction, onOpenFull }: 
     }
   };
 
+  const handleRetryBlocked = async () => {
+    if (!row.blocked.run_id) return;
+    setBlockedMsg(null);
+    setRetryingBlocked(true);
+    try {
+      await retryBlocked(row.blocked.run_id);
+      setBlockedMsg({ text: "Blocked-page retry queued", ok: true });
+      onAction();
+    } catch (e) {
+      setBlockedMsg({ text: apiError(e, "Failed to queue blocked-page retry"), ok: false });
+    } finally {
+      setRetryingBlocked(false);
+    }
+  };
+
   const showEscalation = row.source_type === "pdf" && row.escalation.warning;
+  const showBlocked = row.blocked?.warning;
 
   return (
     <div className="drawer-backdrop" onClick={onClose}>
@@ -173,6 +192,22 @@ export default function DashboardDrawer({ row, onClose, onAction, onOpenFull }: 
                 onClick={handleRetryEscalation}
               >
                 {escalating ? "Queuing…" : "Retry escalation"}
+              </button>
+            </section>
+          )}
+
+          {showBlocked && (
+            <section className="drawer-section">
+              <h3>Blocked pages</h3>
+              <p className="sub">{row.blocked.pending_count} page(s) blocked</p>
+              {blockedMsg && <p className={blockedMsg.ok ? "sub run-done" : "error"}>{blockedMsg.text}</p>}
+              <button
+                className="btn-secondary-sm"
+                title={row.active_run ? "A run is already active" : undefined}
+                disabled={row.active_run || retryingBlocked}
+                onClick={handleRetryBlocked}
+              >
+                {retryingBlocked ? "Queuing…" : "Retry blocked pages"}
               </button>
             </section>
           )}

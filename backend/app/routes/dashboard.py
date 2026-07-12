@@ -17,7 +17,8 @@ from app.models.vendor import Vendor
 from app.schemas.dashboard import (
     DashboardEnrichmentResponse, DashboardOverviewResponse, DashboardResponse,
     DashboardSourceRow, DashboardSummary, EnrichmentAggregate, OverviewAggregate,
-    OverviewEnrichment, OverviewEscalation, OverviewLastRun, OverviewSourceRow,
+    OverviewBlocked, OverviewEnrichment, OverviewEscalation, OverviewLastRun,
+    OverviewSourceRow,
     SourceEnrichmentRow,
 )
 
@@ -201,6 +202,7 @@ async def dashboard_overview(
                 total=0, never_extracted=0, stale=0, failing=0, running=0,
                 enrichment=EnrichmentAggregate(described=0, pending=0, sources_with_backlog=0),
                 escalation_sources_with_warning=0,
+                blocked_sources_with_warning=0,
             ),
             sources=[],
         )
@@ -272,7 +274,7 @@ async def dashboard_overview(
     rows = (await db.execute(rows_q)).all()
 
     out: list[OverviewSourceRow] = []
-    total = never = stale = failing = running = esc_warn = 0
+    total = never = stale = failing = running = esc_warn = blk_warn = 0
     agg_described = agg_pending = backlog = 0
     stale_cutoff = now - timedelta(days=stale_days)
 
@@ -311,13 +313,21 @@ async def dashboard_overview(
         if esc_list:
             esc_warn += 1
 
+        blk_list = (run.blocked_pending if run else None) or []
+        blocked = OverviewBlocked(
+            warning=bool(blk_list), pending_count=len(blk_list),
+            run_id=run.id if blk_list else None,
+        )
+        if blk_list:
+            blk_warn += 1
+
         out.append(OverviewSourceRow(
             id=src.id, name=src.name, vendor=vendor, product=product,
             source_type=src.source_type, status=src.status.value,
             last_extracted_at=last.isoformat() if last else None, age_seconds=age,
             article_count=counts.get(src.id, 0), last_run=last_run,
             enrichment=OverviewEnrichment(described=d, pending=p),
-            escalation=escalation, active_run=src.id in active,
+            escalation=escalation, blocked=blocked, active_run=src.id in active,
             job_id=job_id, job_name=job_name,
             next_run_at=next_run_at.isoformat() if next_run_at else None,
         ))
@@ -328,6 +338,7 @@ async def dashboard_overview(
             enrichment=EnrichmentAggregate(
                 described=agg_described, pending=agg_pending, sources_with_backlog=backlog),
             escalation_sources_with_warning=esc_warn,
+            blocked_sources_with_warning=blk_warn,
         ),
         sources=out,
     )

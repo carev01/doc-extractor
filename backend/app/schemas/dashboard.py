@@ -75,6 +75,12 @@ class OverviewEscalation(BaseModel):
     run_id: uuid.UUID | None
 
 
+class OverviewBlocked(BaseModel):
+    warning: bool
+    pending_count: int
+    run_id: uuid.UUID | None
+
+
 class OverviewSourceRow(BaseModel):
     id: uuid.UUID
     name: str
@@ -88,6 +94,7 @@ class OverviewSourceRow(BaseModel):
     last_run: OverviewLastRun | None
     enrichment: OverviewEnrichment
     escalation: OverviewEscalation
+    blocked: OverviewBlocked
     active_run: bool
     job_id: uuid.UUID | None
     job_name: str | None
@@ -102,6 +109,7 @@ class OverviewAggregate(BaseModel):
     running: int
     enrichment: EnrichmentAggregate
     escalation_sources_with_warning: int
+    blocked_sources_with_warning: int
 
 
 class DashboardOverviewResponse(BaseModel):

@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
@@ -13,7 +14,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
-from sqlalchemy import bindparam, delete, func, select, update
+from sqlalchemy import bindparam, delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -56,6 +57,11 @@ _BLOCKED_MSG = (
     "Bot protection (e.g. Akamai/Cloudflare) blocked one or more pages; those "
     "pages were not stored. The site likely needs a warm-up/stealth profile."
 )
+# Cap on how many blocked-page descriptors we accumulate on a run's
+# blocked_pending. A partial block (the retryable case) is by definition a small
+# fraction; a fully-blocked run fails loudly and doesn't need the whole list, so
+# this bounds JSONB growth (and per-page UPDATE churn) on the pathological case.
+_BLOCKED_PENDING_CAP = 1000
 
 # Browser User-Agent so bot-gated sites (e.g. Confluence Cloud) render real
 # content instead of a JS "unsupported browser" shell.
@@ -247,6 +253,43 @@ def persisted_count(extracted: int, updated: int, unchanged: int, resumed: int) 
     """Total pages accounted for in a run: freshly processed this attempt plus
     pages carried over from a resumed checkpoint."""
     return (extracted or 0) + (updated or 0) + (unchanged or 0) + (resumed or 0)
+
+
+def _should_auto_retry_blocked(n_blocked: int, total: int, max_pct: float) -> bool:
+    """True when a partial bot-block is small enough (≤ ``max_pct`` of ``total``
+    scrapable pages) to warrant one in-run retry pass. ``max_pct`` of 0 disables
+    the automatic pass."""
+    if n_blocked <= 0 or total <= 0 or max_pct <= 0:
+        return False
+    return (100.0 * n_blocked / total) <= max_pct
+
+
+def _dedup_blocked(items: list | None) -> list[dict]:
+    """Blocked-page descriptors deduped by url, preserving first-seen order."""
+    seen: set[str] = set()
+    out: list[dict] = []
+    for it in items or []:
+        url = (it or {}).get("url")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        out.append(it)
+    return out
+
+
+class _NullCheckpoint:
+    """A no-op content checkpoint for a targeted re-scrape (blocked-page retry):
+    reports nothing as already done (so every requested URL is scraped) and never
+    persists progress, leaving the real run checkpoint untouched."""
+
+    async def load_content_done(self) -> set[str]:
+        return set()
+
+    async def add_content_done(self, urls: list[str]) -> None:
+        return None
+
+    async def clear(self) -> None:
+        return None
 
 
 def _extract_fragment(html: str, selector: str) -> str | None:
@@ -728,10 +771,35 @@ class FirecrawlService:
                 "Bot-protection/interstitial page from %s (len=%d) — not storing",
                 url, len(markdown_content),
             )
+            # Record the blocked page on the run so it can be auto-retried (small
+            # fraction) or retried manually. The append is a single row-locked
+            # statement — safe under the concurrent webhook path — deduped by url
+            # and capped (see _BLOCKED_PENDING_CAP).
+            descriptor = {
+                "url": url,
+                "title": title,
+                "toc_entry_id": str(toc_entry_id) if toc_entry_id else None,
+                "sort_order": sort_order,
+                "topic_key": topic_key,
+            }
             await db.execute(
-                update(ExtractionRun)
-                .where(ExtractionRun.id == run_id)
-                .values(error_message=_BLOCKED_MSG)
+                text(
+                    "UPDATE extraction_runs SET error_message = :msg, "
+                    "blocked_pending = CASE "
+                    "  WHEN blocked_pending @> CAST(:urlkey AS jsonb) THEN blocked_pending "
+                    "  WHEN jsonb_array_length(COALESCE(blocked_pending, CAST('[]' AS jsonb))) >= :cap "
+                    "    THEN blocked_pending "
+                    "  ELSE COALESCE(blocked_pending, CAST('[]' AS jsonb)) || CAST(:item AS jsonb) "
+                    "END "
+                    "WHERE id = :rid"
+                ),
+                {
+                    "msg": _BLOCKED_MSG,
+                    "urlkey": json.dumps([{"url": url}]),
+                    "item": json.dumps([descriptor]),
+                    "cap": _BLOCKED_PENDING_CAP,
+                    "rid": run_id,
+                },
             )
             await db.commit()
             return "blocked"
@@ -1762,6 +1830,154 @@ class FirecrawlService:
         webhook_dispatcher.finish_run(run_id)
         return run
 
+    async def _rescrape_blocked(
+        self,
+        db: AsyncSession,
+        source: "DocumentationSource",
+        run_pk: uuid.UUID,
+        items: list[dict],
+        profile,
+        content_cfg: dict | None,
+        path: str,
+        auth_cookies: list[dict] | None,
+        auth_state: dict | None,
+    ) -> None:
+        """Re-scrape a set of previously bot-blocked pages via the same engine the
+        source uses, reusing the per-engine scrapers on just those URLs with a
+        no-op checkpoint (so each is fetched fresh). ``process_article_result``
+        re-appends any page that is *still* blocked to the run's blocked_pending;
+        pages that come back clean are stored normally. Best-effort — the caller
+        treats whatever remains in blocked_pending as the still-blocked set."""
+        url_to_entry: dict[str, dict] = {}
+        for it in items:
+            url = it.get("url")
+            if not url:
+                continue
+            tid = it.get("toc_entry_id")
+            url_to_entry[url] = {
+                "url": url,
+                "title": it.get("title") or url,
+                "toc_entry_id": uuid.UUID(tid) if tid else None,
+                "sort_order": it.get("sort_order", 0),
+                "topic_key": it.get("topic_key"),
+            }
+        if not url_to_entry:
+            return
+        ckpt = _NullCheckpoint()
+        if path == "raw_http":
+            await self._scrape_via_raw_http(
+                db, source.id, run_pk, url_to_entry, profile, ckpt,
+                auth_cookies=auth_cookies,
+            )
+        elif path == "browserless":
+            spec_fn = getattr(profile, "browserless_content_spec", None)
+            content_spec = spec_fn() if callable(spec_fn) else None
+            await self._scrape_via_browserless(
+                db, source.id, run_pk, url_to_entry,
+                content_spec=content_spec, auth_state=auth_state,
+            )
+        else:
+            batch_tag = f"src-{source.id}" if self.api_key else None
+            urls = list(url_to_entry.keys())
+            for i in range(0, len(urls), self.MAX_BATCH_URLS):
+                chunk = urls[i:i + self.MAX_BATCH_URLS]
+                chunk_map = {u: url_to_entry[u] for u in chunk}
+                job_id = await self._submit_batch(
+                    chunk, source.id, content_config=content_cfg
+                )
+                await self._poll_batch_and_process(
+                    db, source.id, run_pk, chunk_map, job_id,
+                    batch_tag=batch_tag, content_config=content_cfg,
+                )
+
+    async def retry_blocked_run(
+        self, db: AsyncSession, source_id: uuid.UUID, run_id: uuid.UUID,
+    ) -> ExtractionRun:
+        """Worker entrypoint for a kind="retry_blocked" run: re-scrape only the
+        pages a prior run recorded as bot-blocked (carried on this run's
+        blocked_pending), with no TOC re-discovery. Mirrors retry_escalation_run:
+        load source, resolve auth, then re-scrape and finalize."""
+        source = (await db.execute(
+            select(DocumentationSource).where(DocumentationSource.id == source_id)
+        )).scalar_one()
+        run = (await db.execute(
+            select(ExtractionRun).where(ExtractionRun.id == run_id)
+        )).scalar_one()
+        run.status = RunStatus.RUNNING
+        run.current_phase = "retry_blocked"
+        source.status = SourceStatus.EXTRACTING
+        await webhook_dispatcher.prepare_run(db, run_id, source_id)
+        await change_log.record_run_start(db, source_id=source_id, run_id=run_id)
+        await db.commit()
+        run_pk = run.id
+
+        items = _dedup_blocked(run.blocked_pending)
+
+        auth_state: dict | None = None
+        if source.auth_realm_id is not None:
+            realm = await db.get(AuthRealm, source.auth_realm_id)
+            try:
+                if realm is None:
+                    raise NeedsLoginError("Auth realm not found for source")
+                auth_state = await realm_manager.ensure_session(db, realm)
+            except NeedsLoginError as exc:
+                run.status = RunStatus.FAILED
+                run.error_message = f"Authenticated source needs login: {exc}"
+                run.completed_at = datetime.now(timezone.utc)
+                source.status = SourceStatus.FAILED
+                source.error_message = str(exc)[:4096]
+                await db.commit()
+                return run
+
+        now = datetime.now(timezone.utc)
+        if items:
+            auth_cookies = (auth_state or {}).get("cookies")
+            await self._check_available()
+            profile = await self._resolve_profile(source, auth_cookies=auth_cookies)
+            content_cfg = profile.content_config()
+            self._content_config_by_source[source_id] = content_cfg
+            path = _select_content_path(
+                auth_state is not None,
+                _resolve_content_engine(source, profile),
+                getattr(profile, "render_engine", None),
+            )
+            # Clear the carried list; process_article_result re-appends only the
+            # pages that are still blocked after this pass.
+            run.blocked_pending = None
+            run.error_message = None
+            await db.commit()
+            try:
+                await self._rescrape_blocked(
+                    db, source, run_pk, items, profile, content_cfg, path,
+                    auth_cookies, auth_state,
+                )
+            except Exception:
+                logger.exception("Blocked-page retry scrape failed for run %s", run_pk)
+                await db.rollback()
+
+        run = (await db.execute(
+            select(ExtractionRun).where(ExtractionRun.id == run_pk)
+        )).scalar_one()
+        remaining = _dedup_blocked(run.blocked_pending)
+        run.status = RunStatus.COMPLETED
+        run.completed_at = now
+        if remaining:
+            run.error_message = _BLOCKED_MSG
+            run.blocked_pending = remaining
+        else:
+            run.blocked_pending = None
+            if run.error_message == _BLOCKED_MSG:
+                run.error_message = None
+        source.status = SourceStatus.COMPLETED
+        source.last_extracted_at = now
+        await db.flush()
+        logger.info(
+            "retry_blocked run %s: %d requested, %d still blocked",
+            run_pk, len(items), len(remaining),
+        )
+        webhook_dispatcher.finish_run(run_id)
+        return run
+
     async def extract_source(
         self,
         db: AsyncSession,
@@ -2169,6 +2385,47 @@ class FirecrawlService:
                 )
             ).scalar_one()
 
+            # Bot-protection auto-retry: if only a small fraction of pages were
+            # blocked, do one in-line second pass over just those URLs before
+            # completing — a fresh Firecrawl/Browserless session often clears a
+            # transient Akamai/Cloudflare challenge. Above the threshold (or when
+            # disabled via blocked_retry_max_pct=0) the pages are left for a manual
+            # retry. Best-effort: a failed pass just leaves the pages blocked.
+            blocked = _dedup_blocked(run.blocked_pending)
+            total = run.articles_total or 0
+            max_pct = settings.blocked_retry_max_pct
+            if _should_auto_retry_blocked(len(blocked), total, max_pct):
+                logger.info(
+                    "Auto-retrying %d blocked page(s) (%.2f%% of %d ≤ %.1f%% threshold)",
+                    len(blocked), 100.0 * len(blocked) / total, total, max_pct,
+                )
+                run.blocked_pending = None
+                await db.commit()
+                retry_ok = True
+                try:
+                    await self._rescrape_blocked(
+                        db, source, run_pk, blocked, profile, content_cfg,
+                        path, auth_cookies, auth_state,
+                    )
+                except Exception:
+                    retry_ok = False
+                    logger.exception("Blocked-page auto-retry failed for run %s", run_pk)
+                    await db.rollback()
+                run = (await db.execute(
+                    select(ExtractionRun).where(ExtractionRun.id == run_pk)
+                )).scalar_one()
+                if not retry_ok and not run.blocked_pending:
+                    # The pass errored before recording anything — keep the
+                    # original record so the pages stay retryable.
+                    run.blocked_pending = blocked
+                    await db.commit()
+            elif blocked and total > 0:
+                logger.info(
+                    "%d blocked page(s) = %.2f%% of %d exceeds %.1f%% threshold — "
+                    "leaving for manual retry",
+                    len(blocked), 100.0 * len(blocked) / total, total, max_pct,
+                )
+
             # Record removals (pages gone from the rebuilt TOC) before completing.
             await self._reconcile_removals(db, source_id, run_pk)
 
@@ -2188,7 +2445,7 @@ class FirecrawlService:
             # loudly instead of reporting a misleading COMPLETED/0. Counters are
             # bumped via SQL UPDATE in process_article_result, so re-read them
             # rather than trusting the stale in-memory run.
-            extracted, updated, unchanged, resumed, err = (
+            extracted, updated, unchanged, resumed, err, blocked_now = (
                 await db.execute(
                     select(
                         ExtractionRun.articles_extracted,
@@ -2196,13 +2453,16 @@ class FirecrawlService:
                         ExtractionRun.articles_unchanged,
                         ExtractionRun.articles_resumed,
                         ExtractionRun.error_message,
+                        ExtractionRun.blocked_pending,
                     ).where(ExtractionRun.id == run_pk)
                 )
             ).one()
             persisted = persisted_count(extracted, updated, unchanged, resumed)
+            remaining_blocked = _dedup_blocked(blocked_now)
             if persisted == 0 and err == _BLOCKED_MSG:
                 run.status = RunStatus.FAILED
                 run.error_message = err
+                run.blocked_pending = None  # fully blocked → nothing worth retrying
                 run.completed_at = now
                 source.status = SourceStatus.FAILED
                 source.last_extracted_at = now
@@ -2211,6 +2471,16 @@ class FirecrawlService:
 
             run.status = RunStatus.COMPLETED
             run.completed_at = now
+            # Blocked-page warning: keep the marker + pending list only if pages
+            # remain blocked after the auto-retry; otherwise clear the transient
+            # block state so a fully-recovered run reads clean.
+            if remaining_blocked:
+                run.error_message = _BLOCKED_MSG
+                run.blocked_pending = remaining_blocked
+            else:
+                run.blocked_pending = None
+                if err == _BLOCKED_MSG:
+                    run.error_message = None
             source.status = SourceStatus.COMPLETED
             source.last_extracted_at = now
 

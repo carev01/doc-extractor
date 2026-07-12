@@ -84,6 +84,15 @@ class Settings(BaseSettings):
     raw_http_max_failure_rate: float = 0.3
     raw_http_min_attempts: int = 10
 
+    # Bot-protection (Akamai/Cloudflare) blocked-page auto-retry. When a run
+    # finishes with some pages blocked but the blocked fraction is at or below
+    # this percentage of the total scrapable pages, the run does one in-line
+    # second pass over just the blocked URLs before completing (a fresh
+    # Firecrawl/Browserless session often clears a transient challenge). Above
+    # the threshold the run completes with a blocked warning and the pages can be
+    # retried manually. 0 disables the automatic pass (manual retry still works).
+    blocked_retry_max_pct: float = 5.0
+
     # PDF source import — uploaded PDFs live on a local volume (a PVC in k8s),
     # mirroring media_dir/export_dir. Uploads larger than the cap are rejected.
     pdf_dir: str = "pdf_uploads"
