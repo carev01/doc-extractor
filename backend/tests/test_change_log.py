@@ -5,8 +5,11 @@ import sys
 import uuid
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import create_engine, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -22,6 +25,8 @@ TEST_DATABASE_URL_SYNC = settings.database_url_sync.rsplit("/", 1)[0] + "/docext
 sync_engine = create_engine(TEST_DATABASE_URL_SYNC, echo=False)
 SyncSession = sessionmaker(sync_engine, class_=Session, expire_on_commit=False)
 
+TEST_DATABASE_URL = settings.database_url.rsplit("/", 1)[0] + "/docextractor_test"
+
 
 @pytest.fixture(scope="function")
 def db_session():
@@ -31,6 +36,17 @@ def db_session():
     yield session
     session.rollback()
     session.close()
+
+
+@pytest_asyncio.fixture
+async def factory():
+    engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+    yield session_factory
+    await engine.dispose()
 
 
 def _seed(session):
@@ -112,3 +128,38 @@ def test_record_removals_writes_rows(db_session):
     assert all(r.source_id == source.id and r.run_id == run.id for r in rows)
     assert all(r.content_hash is None for r in rows)
     assert {r.article_id for r in rows} == {removed_articles[0].id, removed_articles[1].id}
+
+
+async def test_record_source_deletions_tombstones_live_articles_only(factory):
+    from app.services import change_log
+    from app.models.content_change import ContentChange, ChangeType
+    from sqlalchemy import select
+    from datetime import datetime, timezone
+
+    async with factory() as s:
+        v = Vendor(name="V"); s.add(v); await s.flush()
+        p = Product(name="P", vendor_id=v.id); s.add(p); await s.flush()
+        src = DocumentationSource(name="S", base_url="https://s", product_id=p.id, source_type="web")
+        s.add(src); await s.flush()
+        live1 = Article(source_id=src.id, title="1", source_url="https://s/1",
+                        topic_key="https://s/1", content_markdown="#1", content_hash="h1")
+        live2 = Article(source_id=src.id, title="2", source_url="https://s/2",
+                        topic_key="https://s/2", content_markdown="#2", content_hash="h2")
+        gone = Article(source_id=src.id, title="3", source_url="https://s/3",
+                       topic_key="https://s/3", content_markdown="#3", content_hash="h3",
+                       removed_at=datetime.now(timezone.utc))
+        s.add_all([live1, live2, gone]); await s.commit()
+        sid, id1, id2 = src.id, live1.id, live2.id
+
+    async with factory() as s:
+        n = await change_log.record_source_deletions(s, source_ids=[sid])
+        await s.commit()
+        assert n == 2
+
+    async with factory() as s:
+        rows = (await s.execute(
+            select(ContentChange).where(ContentChange.change_type == ChangeType.REMOVED.value)
+        )).scalars().all()
+        assert {r.article_id for r in rows} == {id1, id2}      # the removed one excluded
+        assert all(r.run_id is None and r.source_id == sid for r in rows)
+        assert all(r.topic_key for r in rows)

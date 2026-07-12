@@ -157,12 +157,19 @@ additions, updates, and removals. It is backed by an **append-only outbox**,
   the stored data.
 - **Serve path** (`app/services/delta_feed.py`): rows are streamed as JSONL ordered by
   `id`. `added`/`updated` become content records (joined to the live article + provenance);
-  `removed` become tombstones that survive article/source hard-deletion (FKs are
-  `ON DELETE SET NULL` and `topic_key` is copied onto the row). Omitting the `since` cursor
-  yields a full bootstrap snapshot. Each record's `content_hash` is the SHA-256 of the
-  served `content_markdown` (so it changes when captions/descriptions are injected —
-  distinct from the Article's internal raw-scrape `content_hash` used for change detection),
-  letting a consumer de-dup on it safely.
+  `removed` become self-contained tombstones. Because the outbox is append-only, its
+  `article_id`/`source_id`/`run_id` columns carry **no foreign key** — a later hard delete of
+  the parent never nulls or cascades a historical row, so a tombstone keeps the real article
+  `id` (and `topic_key`, copied onto the row) even after the article is gone. Omitting the
+  `since` cursor yields a full bootstrap snapshot (led by a `bootstrap_start` control line
+  carrying the watermark up front, so a dropped snapshot can resume via `bootstrap_after`).
+  Each record's `content_hash` is the SHA-256 of the served `content_markdown` (so it changes
+  when captions/descriptions are injected — distinct from the Article's internal raw-scrape
+  `content_hash` used for change detection), letting a consumer de-dup on it safely.
+- **Deletion propagation**: deleting a source/product/vendor tombstones its live articles
+  (`change_log.record_source_deletions`, in the delete transaction) before the cascade purge.
+  These out-of-band removals carry `run_id = null` and, being append-only, are never a
+  `run_start` sentinel; the safe-ceiling join simply ignores `null` run_ids.
 - **Gap-free under concurrent runs**: ordering is by `id` alone. The feed serves only below
   a **safe ceiling** — the lowest `id` belonging to any still-active run — so a slow run's
   rows are withheld until it terminalizes and can't be skipped by a faster concurrent run.

@@ -397,26 +397,36 @@ async def article_delta_feed(
     ),
     source_id: uuid.UUID | None = Query(None),
     vendor_id: uuid.UUID | None = Query(None),
+    bootstrap_after: uuid.UUID | None = Query(
+        None, description="Bootstrap only: resume after this article id (ignored when 'since' is set)."
+    ),
     db: AsyncSession = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
     """Stream article changes as JSONL for the downstream GraphRAG pipeline.
 
     - ``since`` omitted → full bootstrap snapshot (every current, visible,
-      non-removed article as ``added``); the control record's ``next_since`` is
-      the watermark to continue from.
+      non-removed article as ``added``); the FIRST line is a control record
+      ``{"control":"bootstrap_start","next_since":"..."}`` carrying the
+      watermark up front, so a client that keeps it can resume a dropped
+      snapshot with ``?bootstrap_after=<highest article id applied>`` and still
+      anchor its first incremental pull to the ORIGINAL watermark (a watermark
+      recomputed at resume time could miss an update to an already-emitted
+      article).
     - ``since`` present → changes after that watermark (added/updated content
       records + removed tombstones), gap-free under concurrent runs.
 
     The final line is always a control record: ``{"control":"cursor",
-    "next_since": "...","count": N}``. A truncated stream lacks it — clients must
-    only advance their stored cursor on a clean finish.
+    "next_since": "...","count": N}`` — the SAME ``next_since`` as the leading
+    ``bootstrap_start`` line for a bootstrap pull. A truncated stream lacks it —
+    clients must only advance their stored cursor on a clean finish.
     """
     visible = principal.visible_vendor_ids()
 
     if since is None:
         gen = delta_feed.stream_bootstrap(
             db, source_id=source_id, vendor_id=vendor_id, visible_vendor_ids=visible,
+            bootstrap_after=bootstrap_after,
         )
     else:
         try:

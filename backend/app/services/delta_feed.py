@@ -221,7 +221,7 @@ async def stream_delta(
 
 
 async def stream_bootstrap(
-    db: AsyncSession, *, source_id, vendor_id, visible_vendor_ids
+    db: AsyncSession, *, source_id, vendor_id, visible_vendor_ids, bootstrap_after=None
 ) -> AsyncIterator[str]:
     # Watermark for the follow-up delta = current global max outbox id, but never
     # past the safe ceiling — otherwise a change committed below max_seq by a run
@@ -230,8 +230,14 @@ async def stream_bootstrap(
     ceiling = await _safe_ceiling(db)
     if ceiling is not None:
         max_seq = min(max_seq, ceiling - 1)
+    cursor = encode_delta_cursor(max_seq)
+    # Deliver the watermark up front so a consumer whose stream drops mid-bootstrap
+    # can resume (bootstrap_after) while anchoring incremental to THIS watermark —
+    # not one recomputed at resume time, which could miss an update to an
+    # already-emitted article.
+    yield _line({"control": "bootstrap_start", "next_since": cursor})
     resolver = ChapterResolver()
-    last_id: uuid.UUID | None = None
+    last_id: uuid.UUID | None = bootstrap_after
     count = 0
 
     while True:
@@ -269,4 +275,4 @@ async def stream_bootstrap(
         if len(rows) < _BATCH:
             break
 
-    yield _line({"control": "cursor", "next_since": encode_delta_cursor(max_seq), "count": count})
+    yield _line({"control": "cursor", "next_since": cursor, "count": count})

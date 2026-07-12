@@ -43,6 +43,7 @@ from app.schemas.source import (
     SourceImportResult,
 )
 from app.schemas.version import ChangelogEntry, ChangelogResponse
+from app.services import change_log
 from app.services.versioning import detect_version_token, resolve_template
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
@@ -517,6 +518,7 @@ async def delete_source(
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
 
+    await change_log.record_source_deletions(db, source_ids=[source_id])
     await db.delete(source)
     await db.commit()
 
