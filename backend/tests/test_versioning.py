@@ -44,6 +44,29 @@ def test_derive_topic_key_none_url_returns_none():
     assert derive_topic_key("", ARC, "19.0") == ""
 
 
+def test_derive_topic_key_templatizes_without_url_template():
+    # CommCell incident: a run keyed pages with a NULL url_template. As long as
+    # the version is known, the key must still be version-independent so it
+    # matches the stored {version} keys instead of duplicating the source.
+    url = "https://documentation.commvault.com/11.44/commcell-console/12345"
+    assert derive_topic_key(url, None, "11.44") == \
+        "https://documentation.commvault.com/{version}/commcell-console/12345"
+
+
+def test_derive_topic_key_same_with_or_without_template():
+    # The crucial invariant: presence/absence of url_template must NOT change the
+    # key for the same (url, version) — otherwise re-extraction duplicates.
+    tmpl = "https://documentation.commvault.com/{version}/commcell-console/index.html"
+    url = "https://documentation.commvault.com/11.44/commcell-console/12345"
+    assert derive_topic_key(url, tmpl, "11.44") == derive_topic_key(url, None, "11.44")
+
+
+def test_derive_topic_key_passthrough_when_version_absent_from_url():
+    # No template and the version doesn't appear in the URL → nothing to swap.
+    url = "https://docs.example.com/x/install.htm"
+    assert derive_topic_key(url, None, "10.0") == url
+
+
 def test_detect_version_token_builds_template():
     base = "https://www.dell.com/manuals/pp-dm_20.1_cloud.htm"
     assert detect_version_token(base, "20.1") == \

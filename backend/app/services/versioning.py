@@ -20,25 +20,35 @@ def resolve_template(template: str, version: str) -> str:
 def derive_topic_key(url: str | None, url_template: str | None, version: str | None) -> str | None:
     """Return the version-independent key for *url*.
 
-    For a templated source, replace the version token — anchored at the
-    template's placeholder offset in the shared URL prefix — with ``{version}``.
-    Non-templated sources (or a missing version) return *url* unchanged.
+    When the version is known, replace it with ``{version}`` — anchored at the
+    template's placeholder offset when a ``url_template`` is available, else by a
+    single substring replace. The result is stable regardless of whether
+    ``url_template`` is set, so a missing/misconfigured template can never
+    silently change an article's key and duplicate the whole source on
+    re-extraction (the CommCell incident: a run with a NULL ``url_template`` keyed
+    every page by its literal-version URL and re-created ~17.5k articles instead
+    of matching the stored ``{version}`` keys). Only a missing version — a
+    non-versioned source — leaves *url* untemplated.
 
     *url* may be ``None`` for a url-less structural TOC node (a Flare "book"/
     section header that carries no page, common in HelpSystem.xml/Toc chunks);
     such entries have no topic identity, so it is returned unchanged rather than
     templated.
     """
-    if not url:
+    if not url or not version:
         return url
-    if not url_template or not version or VERSION_PLACEHOLDER not in url_template:
-        return url
-    prefix = url_template.split(VERSION_PLACEHOLDER, 1)[0]
-    if url.startswith(prefix) and url[len(prefix):len(prefix) + len(version)] == version:
-        return prefix + VERSION_PLACEHOLDER + url[len(prefix) + len(version):]
-    # Version not at the expected offset — fall back to a single replace so a
-    # mildly-divergent URL still keys consistently.
-    return url.replace(version, VERSION_PLACEHOLDER, 1)
+    # Template-anchored replacement (preferred): swap exactly the version segment
+    # at the template's placeholder offset.
+    if url_template and VERSION_PLACEHOLDER in url_template:
+        prefix = url_template.split(VERSION_PLACEHOLDER, 1)[0]
+        if url.startswith(prefix) and url[len(prefix):len(prefix) + len(version)] == version:
+            return prefix + VERSION_PLACEHOLDER + url[len(prefix) + len(version):]
+    # Fallback: templatize by the version substring even without a (matching)
+    # template, so the key stays consistent when url_template is absent or the
+    # version sits at an unexpected offset. Only when the version actually occurs.
+    if version in url:
+        return url.replace(version, VERSION_PLACEHOLDER, 1)
+    return url
 
 
 def detect_version_token(base_url: str, version: str) -> str | None:

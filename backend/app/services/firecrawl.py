@@ -167,6 +167,24 @@ class RawContentScrapeError(Exception):
     """
 
 
+class TocCollapseError(Exception):
+    """Raised when a run's rebuilt TOC is drastically smaller than the source's
+    prior live-article count — TOC discovery almost certainly failed (overloaded
+    Firecrawl/Browserless, empty nav, upstream change). Raised BEFORE the
+    destructive TOC rebuild so extract_source's generic handler fails the run
+    without wiping the previously-good content.
+    """
+
+
+def _toc_collapsed(scrapable_total: int, prior_live: int, ratio: float, min_prior: int) -> bool:
+    """True when a rebuilt TOC looks catastrophically smaller than the prior
+    corpus (data-loss guard). Only engages once the source had a meaningful prior
+    corpus (``prior_live >= min_prior``); tiny/new sources never trip it."""
+    if prior_live < min_prior:
+        return False
+    return scrapable_total < prior_live * ratio
+
+
 def _cookie_header(cookies: list[dict] | None) -> str | None:
     """Build a ``Cookie`` request-header value from a realm cookie list."""
     if not cookies:
@@ -2174,6 +2192,33 @@ class FirecrawlService:
                 len(toc_entries), scrapable_total,
             )
             run.articles_total = scrapable_total
+
+            # ── TOC-collapse guard (data-loss protection) ───────────────────
+            # A drastically smaller TOC than the source's prior live corpus means
+            # discovery almost certainly failed (overloaded/unavailable
+            # Firecrawl/Browserless, an empty nav render, an upstream change). If
+            # we proceeded, Phase 1 would delete the old TOC and the completion
+            # reconcile would mark every now-absent page removed — wiping good
+            # content. Abort HERE, before any destructive write, so the prior TOC
+            # and articles are untouched and the run fails loudly for a human.
+            prior_live = (
+                await db.execute(
+                    select(func.count())
+                    .select_from(Article)
+                    .where(Article.source_id == source_id, Article.removed_at.is_(None))
+                )
+            ).scalar() or 0
+            if _toc_collapsed(
+                scrapable_total, prior_live,
+                settings.toc_collapse_min_ratio, settings.toc_collapse_min_prior,
+            ):
+                raise TocCollapseError(
+                    f"TOC discovery collapsed for '{source.name}': found "
+                    f"{scrapable_total} scrapable page(s) vs {prior_live} previously "
+                    f"live (< {settings.toc_collapse_min_ratio:.0%}). Aborting before "
+                    f"any removal to avoid wiping good content — likely a scraper or "
+                    f"upstream (Firecrawl/Browserless) failure. Re-run when healthy."
+                )
 
             # ── Persist TOC entries ─────────────────────────────────────────
             toc_db_map = await self._persist_toc(db, source_id, toc_entries)
