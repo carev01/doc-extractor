@@ -282,8 +282,9 @@ The `watermark` is informational; consumers should pull with their own stored cu
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/dashboard/sources` | Get dashboard overview (source health scores, counts) |
-| `GET` | `/api/dashboard/enrichment` | Per-source + corpus image-enrichment progress (`described`/`pending` per source, `active_run`, and an aggregate) |
+| `GET` | `/api/dashboard/overview` | Consolidated per-source overview (status, freshness, articles, last-run, enrichment, **escalation**, `active_run`, job) + aggregates; powers the Dashboard's filter/sort/drill-down |
+| `GET` | `/api/dashboard/sources` | Source health scores + counts (legacy; superseded by `/overview` for the Dashboard) |
+| `GET` | `/api/dashboard/enrichment` | Per-source + corpus image-enrichment progress (`described`/`pending` per source, `active_run`, and an aggregate); still backs the per-source badge in the Sources list |
 
 ---
 

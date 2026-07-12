@@ -44,6 +44,15 @@ every 30 seconds:
 React SPA served by nginx in production (proxies `/api/*` to the backend) or by
 Vite dev server in development (proxy to `http://localhost:8000`).
 
+**Dashboard** is attention-first: a single `GET /api/dashboard/overview` fetch
+(+20s poll) carries per-source status, freshness, articles, last-run, enrichment,
+and PDF-escalation state plus aggregates; all sorting, filtering, and drill-down
+happen client-side (pure logic in `dashboardView.ts`). Summary tiles double as
+one-click filters; a side-panel drawer (`DashboardDrawer.tsx`) consolidates a
+source's recent runs, image enrichment (with "Describe missing images"), and
+PDF-escalation **retry** without leaving the dashboard. The escalation signal is
+derived from each source's latest run's `escalation_pending`.
+
 ## Data Flow
 
 ### Extraction Flow
