@@ -44,11 +44,14 @@ async def ctx():
 
 
 def _parse(text_body):
-    """Split an NDJSON body into (records, control)."""
+    """Split an NDJSON body into (records, control). Filters out any leading
+    control line (e.g. a bootstrap's ``bootstrap_start`` watermark) as well as
+    the trailing terminal ``cursor`` control line."""
     lines = [json.loads(l) for l in text_body.splitlines() if l.strip()]
     control = lines[-1]
     assert control.get("control") == "cursor"
-    return lines[:-1], control
+    records = [l for l in lines[:-1] if "control" not in l]
+    return records, control
 
 
 async def _seed_source(factory, *, run_status=RunStatus.COMPLETED):
