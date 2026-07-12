@@ -109,11 +109,12 @@ Admin-only endpoints (user management, jobs, auth realms) require `admin`.
 | `since` | Opaque cursor from a prior pull's control record. **Omit for a full bootstrap snapshot.** |
 | `source_id` | Optional — restrict to one source |
 | `vendor_id` | Optional — restrict to one vendor (sharding) |
+| `bootstrap_after` | Optional, **bootstrap only** — resume a dropped snapshot after this article id (ignored when `since` is set). See [Resuming a dropped bootstrap](#resuming-a-dropped-bootstrap). |
 
-- **`since` omitted → bootstrap**: streams every current, visible, non-removed article as `change_type: "added"` (with `seq: null`); the control record's `next_since` is the watermark to continue from.
+- **`since` omitted → bootstrap**: the **first** line is a control record `{"control":"bootstrap_start","next_since":"…"}` carrying the watermark up front; then every current, visible, non-removed article streams as `change_type: "added"` (with `seq: null`); the terminal control record repeats the same `next_since`.
 - **`since` present → incremental**: streams `added`/`updated` content records and `removed` tombstones since that watermark.
 
-The response is RBAC-filtered to the caller's visible vendors. The **last line is always a control record** — `{"control":"cursor","next_since":"…","count":N}`. A truncated stream lacks it, so clients must only advance their stored cursor on a clean finish. Ordering is gap-free even when extraction runs overlap (see [Architecture → Delta Feed](ARCHITECTURE.md#delta-feed)).
+The response is RBAC-filtered to the caller's visible vendors. The **last line is always a control record** — `{"control":"cursor","next_since":"…","count":N}` (for a bootstrap, the same `next_since` as the leading `bootstrap_start` line). A truncated stream lacks it, so clients must only advance their stored cursor on a clean finish. Ordering is gap-free even when extraction runs overlap (see [Architecture → Delta Feed](ARCHITECTURE.md#delta-feed)).
 
 **Content record** (`added` / `updated`):
 
@@ -146,6 +147,8 @@ The response is RBAC-filtered to the caller's visible vendors. The **last line i
 { "seq": 4830, "change_type": "removed", "id": "article-uuid", "topic_key": "…",
   "source_id": "source-uuid", "removed_at": "2026-07-09T22:04:00Z", "run_id": "run-uuid" }
 ```
+
+**Deletions propagate.** Removing a source, product, or vendor emits a `removed` tombstone for every one of its live articles — carrying the original article `id` (preserved through the hard delete) — so a consumer that processes `removed` records drops those nodes instead of orphaning them. These out-of-band deletions are not part of an extraction run, so their tombstones have `"run_id": null`. They are served with the same gap-free ordering as run-driven removals.
 
 `images[].description` / `kind` (also on `GET /api/articles/{id}`) carry the VLM-generated image description and its classification (`screenshot`/`diagram`/`chart`/`photo`/`other`) when image descriptions are enabled (`DOCEXTRACTOR_IMAGE_VLM_ENABLED`); they are `null` for images that weren't described (feature off, decorative image, or not yet processed).
 
@@ -191,6 +194,34 @@ Two guarantees make this safe:
 
 To shard or backfill a subset, add `?source_id=…` or `?vendor_id=…` to either
 call; both are RBAC-scoped to the API key's visible vendors.
+
+### Resuming a dropped bootstrap
+
+For a large corpus the bootstrap snapshot can be many thousands of records; if
+the connection drops mid-stream you can resume instead of restarting, using
+`bootstrap_after` plus the up-front `bootstrap_start` watermark:
+
+1. On the **first** attempt, read `next_since` from the leading
+   `{"control":"bootstrap_start",…}` line and store it immediately. Apply the
+   `added` records, tracking the highest article `id` you have applied.
+2. If the stream ends **without** the terminal `{"control":"cursor",…}` line,
+   resume: `GET /api/articles/delta?bootstrap_after=<highest id applied>`.
+   **Keep your originally-stored `next_since`** — ignore the resumed stream's
+   own `bootstrap_start` value (it is recomputed at resume time).
+3. Repeat until you receive the terminal `cursor` line. Only then begin
+   incremental pulls with `?since=<stored next_since>`.
+
+Anchoring incremental to the **first** attempt's watermark is what keeps resume
+correct: an update to an already-emitted (lower-id) article that lands between
+your original start and the resume falls *below* that watermark's successors and
+is therefore replayed by your first incremental pull (idempotent upserts absorb
+any overlap). A watermark recomputed at resume time would skip it.
+
+```bash
+# resume after the last id you successfully applied, keeping your stored $CURSOR
+curl -sN -H "X-API-Key: $KEY" \
+  "https://docextractor.example/api/articles/delta?bootstrap_after=$LAST_ID"
+```
 
 ---
 
