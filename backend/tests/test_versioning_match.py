@@ -109,3 +109,30 @@ async def test_url_fallback_heals_drifted_literal_key(db_session):
     arts = (await db_session.execute(select(Article).where(Article.source_id == source.id))).scalars().all()
     assert len(arts) == 1               # matched by URL — no duplicate
     assert arts[0].topic_key == key     # key normalised to {version}
+
+
+async def test_url_fallback_skipped_when_url_is_ambiguous(db_session):
+    # PDF-safety: when several live articles share a source_url (outline sections
+    # on the same #page), the URL fallback must NOT fire — otherwise a section
+    # could overwrite a sibling. A drifted-key page falls through to a new row
+    # instead, leaving the existing siblings' content intact.
+    svc, source = await make_service_and_source(db_session, url_template=TMPL, version="10.0")
+    shared = "https://docs.example.com/UDP/Available/10.0/ENU/SolG/manual.pdf#page=5"
+    a = Article(source_id=source.id, title="Sec A", source_url=shared, topic_key="sec-a",
+                content_markdown="AAA", content_hash="ha")
+    b = Article(source_id=source.id, title="Sec B", source_url=shared, topic_key="sec-b",
+                content_markdown="BBB", content_hash="hb")
+    db_session.add_all([a, b]); await db_session.commit()
+
+    run = await _make_run(db_session, source)
+    await svc.process_article_result(
+        db=db_session, source_id=source.id, run_id=run.id,
+        url=shared, topic_key="sec-c-new",  # doesn't match either sibling
+        markdown_content="CCC", doc_html="", toc_entry_id=None, sort_order=0, title="Sec C",
+    )
+    # Neither sibling was overwritten; a new row was created instead.
+    got_a = (await db_session.execute(select(Article).where(Article.id == a.id))).scalar_one()
+    got_b = (await db_session.execute(select(Article).where(Article.id == b.id))).scalar_one()
+    assert got_a.content_markdown == "AAA" and got_b.content_markdown == "BBB"
+    total = (await db_session.execute(select(Article).where(Article.source_id == source.id))).scalars().all()
+    assert len(total) == 3

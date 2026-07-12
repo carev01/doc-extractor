@@ -886,7 +886,7 @@ class FirecrawlService:
         # to the same source and live rows; limit(1) is defensive against any
         # residual same-URL duplicates.
         if existing_article is None:
-            existing_article = (
+            url_matches = (
                 await db.execute(
                     select(Article)
                     .where(
@@ -894,9 +894,15 @@ class FirecrawlService:
                         Article.source_url == url,
                         Article.removed_at.is_(None),
                     )
-                    .limit(1)
+                    .limit(2)
                 )
-            ).scalar_one_or_none()
+            ).scalars().all()
+            # Only heal by URL when it is unambiguous. A URL shared by multiple
+            # live articles (PDF outline sections that start on the same #page)
+            # must NOT be matched this way, or one section would overwrite a
+            # sibling; leave those to topic_key matching.
+            if len(url_matches) == 1:
+                existing_article = url_matches[0]
 
         # For "new" or None change_status fall back to hash comparison. "new" happens
         # on the first extraction after changeTracking was enabled (Firecrawl has no
