@@ -2097,6 +2097,9 @@ a.btn-primary {
 .flag-enrichment { color: var(--text-dim); background: var(--ink-3); border-color: var(--line); }
 .flag-escalation { color: var(--gone); background: var(--gone-ghost); border-color: rgba(224, 104, 95, 0.35); }
 .flag-running { color: var(--new); background: var(--new-ghost); border-color: rgba(88, 192, 138, 0.35); }
+/* Numeric backlog/escalation table cells: colour-code when non-zero. */
+.cell-warn { color: var(--amber); font-weight: 600; }
+.cell-bad { color: var(--gone); font-weight: 600; }
 
 /* ============================================================
    Animation utilities

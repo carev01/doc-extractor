@@ -190,3 +190,55 @@ async def test_running_aggregate_matches_active_run(ctx):
     row = next(r for r in body["sources"] if r["id"] == str(sid))
     assert row["active_run"] is True
     assert body["aggregate"]["running"] == 1
+
+
+async def test_overview_rbac_scopes_to_visible_vendors(ctx):
+    """A principal restricted to one vendor sees only that vendor's source, and
+    its per-source counts are still attached — i.e. the vendor-scoped helper
+    scans don't drop counts for the visible source."""
+    c, factory = ctx
+    from app.core.authz import Principal, get_principal
+    from app.models.source import SourceStatus
+    from app.models.user import UserRole
+    from app.models.user_vendor_permission import VendorAccessLevel
+
+    async with factory() as s:
+        v1 = Vendor(name="V1"); v2 = Vendor(name="V2")
+        s.add_all([v1, v2]); await s.flush()
+        p1 = Product(name="P1", vendor_id=v1.id); p2 = Product(name="P2", vendor_id=v2.id)
+        s.add_all([p1, p2]); await s.flush()
+        s1 = DocumentationSource(name="S1", base_url="https://s1", product_id=p1.id,
+                                 source_type="web", status=SourceStatus.COMPLETED)
+        s2 = DocumentationSource(name="S2", base_url="https://s2", product_id=p2.id,
+                                 source_type="web", status=SourceStatus.COMPLETED)
+        s.add_all([s1, s2]); await s.flush()
+        art1 = Article(source_id=s1.id, title="a", source_url="https://s1/a",
+                       topic_key="https://s1/a", content_markdown="#a", content_hash="h1")
+        art2 = Article(source_id=s2.id, title="b", source_url="https://s2/b",
+                       topic_key="https://s2/b", content_markdown="#b", content_hash="h2")
+        s.add_all([art1, art2]); await s.flush()
+        s.add_all([
+            ArticleImage(article_id=art1.id, original_url="https://s1/1.png",
+                         local_filename="1.png", local_path="/tmp/1.png",
+                         description=None, is_meaningful=None),
+            ArticleImage(article_id=art2.id, original_url="https://s2/2.png",
+                         local_filename="2.png", local_path="/tmp/2.png",
+                         description=None, is_meaningful=None),
+        ])
+        await s.commit()
+        v1_id = v1.id
+
+    app.dependency_overrides[get_principal] = lambda: Principal(
+        see_all=False, role=UserRole.READ_ONLY,
+        vendor_levels={v1_id: VendorAccessLevel.READ_ONLY},
+    )
+    try:
+        body = (await c.get("/api/dashboard/overview")).json()
+    finally:
+        del app.dependency_overrides[get_principal]
+
+    assert [r["name"] for r in body["sources"]] == ["S1"]        # V2's S2 hidden
+    assert body["sources"][0]["article_count"] == 1
+    assert body["sources"][0]["enrichment"] == {"described": 0, "pending": 1}
+    assert body["aggregate"]["total"] == 1
+    assert body["aggregate"]["enrichment"]["pending"] == 1       # V2's image excluded

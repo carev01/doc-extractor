@@ -30,7 +30,6 @@ import type {
   BrowseResponse,
   ProfileOption,
   PickableSource,
-  DashboardResponse,
   DashboardOverview,
   EnrichmentSummary,
   SourceImportResult,
@@ -507,13 +506,6 @@ export async function assignSourcesToJob(
 }
 
 // ── Dashboard ──
-
-export async function getDashboard(staleDays = 30): Promise<DashboardResponse> {
-  const res = await api.get<DashboardResponse>("/dashboard/sources", {
-    params: { stale_days: staleDays },
-  });
-  return res.data;
-}
 
 export async function getEnrichmentStats(): Promise<EnrichmentSummary> {
   const res = await api.get("/dashboard/enrichment");

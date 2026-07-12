@@ -48,6 +48,8 @@ const SORT_COLUMNS: { key: string; label: string }[] = [
   { key: "freshness", label: "Last extracted" },
   { key: "articles", label: "Articles" },
   { key: "last_run", label: "Last run" },
+  { key: "pending", label: "Img pending" },
+  { key: "escalation", label: "Escalation" },
 ];
 
 function FacetSelect({
@@ -98,16 +100,6 @@ function FlagBadges({ row, staleSeconds }: { row: OverviewSourceRow; staleSecond
     <span className="flag-badges">
       {flags.includes("stale") && <span className="flag-badge flag-stale">stale</span>}
       {flags.includes("failed") && <span className="flag-badge flag-failed">failed</span>}
-      {flags.includes("enrichment-backlog") && (
-        <span className="flag-badge flag-enrichment" title="Enrichment backlog">
-          🖼{row.enrichment.pending}
-        </span>
-      )}
-      {flags.includes("escalation-warning") && (
-        <span className="flag-badge flag-escalation" title="PDF escalation warning">
-          ⚠pdf({row.escalation.pending_count})
-        </span>
-      )}
       {flags.includes("running") && (
         <span className="flag-badge flag-running" title="Extraction running">
           ▶
@@ -338,6 +330,12 @@ export default function Dashboard({
                   ? `${r.last_run.status} (${r.last_run.new ?? 0}n/${r.last_run.updated ?? 0}u/${r.last_run.unchanged ?? 0}=)`
                   : "—"}
               </td>
+              <td className={r.enrichment.pending > 0 ? "cell-warn" : "sub"}>
+                {r.enrichment.pending || "—"}
+              </td>
+              <td className={r.escalation.pending_count > 0 ? "cell-bad" : "sub"}>
+                {r.escalation.pending_count || "—"}
+              </td>
               <td>{r.status}</td>
               <td>{r.job_name ?? "—"}</td>
               <td>
@@ -346,7 +344,7 @@ export default function Dashboard({
             </tr>
           ))}
           {rows.length === 0 && (
-            <tr><td colSpan={7} className="sub">No sources match the current filters.</td></tr>
+            <tr><td colSpan={9} className="sub">No sources match the current filters.</td></tr>
           )}
         </tbody>
       </table>

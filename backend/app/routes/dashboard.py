@@ -205,21 +205,35 @@ async def dashboard_overview(
             sources=[],
         )
 
+    # Restrict the per-source helper scans to visible sources. The row set below
+    # is already vendor-scoped, so this doesn't change results — it just avoids
+    # scanning the whole corpus for principals that can only see a few vendors.
+    visible_src_subq = (
+        select(DocumentationSource.id)
+        .join(Product, DocumentationSource.product_id == Product.id)
+        .where(Product.vendor_id.in_(visible))
+    ) if visible is not None else None
+
+    def _scope(stmt, col):
+        return stmt.where(col.in_(visible_src_subq)) if visible_src_subq is not None else stmt
+
     # Article counts (active only).
     counts: dict = {}
-    for sid, n in await db.execute(
+    for sid, n in await db.execute(_scope(
         select(Article.source_id, func.count())
-        .where(Article.removed_at.is_(None)).group_by(Article.source_id)
-    ):
+        .where(Article.removed_at.is_(None)).group_by(Article.source_id),
+        Article.source_id,
+    )):
         counts[sid] = n
 
     # Latest run per source (same DISTINCT ON as /sources; PENDING de-prioritised).
     _pending_last = case((ExtractionRun.status == RunStatus.PENDING, 1), else_=0)
     latest_run: dict = {}
-    for run in (await db.execute(
+    for run in (await db.execute(_scope(
         select(ExtractionRun).distinct(ExtractionRun.source_id)
-        .order_by(ExtractionRun.source_id, _pending_last, ExtractionRun.started_at.desc())
-    )).scalars():
+        .order_by(ExtractionRun.source_id, _pending_last, ExtractionRun.started_at.desc()),
+        ExtractionRun.source_id,
+    ))).scalars():
         latest_run[run.source_id] = run
 
     # Enrichment counts per source (same predicate as /enrichment).
@@ -228,18 +242,20 @@ async def dashboard_overview(
     pending_c = func.count().filter(
         and_(ArticleImage.description.is_(None), ArticleImage.is_meaningful.isnot(False))
     )
-    for sid, d, p in await db.execute(
+    for sid, d, p in await db.execute(_scope(
         select(Article.source_id, described_c, pending_c)
         .select_from(ArticleImage).join(Article, Article.id == ArticleImage.article_id)
-        .group_by(Article.source_id)
-    ):
+        .group_by(Article.source_id),
+        Article.source_id,
+    )):
         enr[sid] = (d, p)
 
-    active = set((await db.execute(
+    active = set((await db.execute(_scope(
         select(ExtractionRun.source_id).where(
             ExtractionRun.status.in_([RunStatus.PENDING, RunStatus.RUNNING, RunStatus.PAUSED])
-        )
-    )).scalars().all())
+        ),
+        ExtractionRun.source_id,
+    ))).scalars().all())
 
     rows_q = (
         select(
