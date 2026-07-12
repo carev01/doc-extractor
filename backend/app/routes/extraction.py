@@ -172,6 +172,56 @@ async def retry_escalation(
     )
 
 
+@router.post("/runs/{run_id}/retry-blocked", response_model=ExtractionTriggerResponse)
+async def retry_blocked(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """Re-scrape the pages a prior run recorded as bot-blocked, without redoing
+    TOC discovery or re-scraping the rest of the source. Enqueues a lightweight
+    kind="retry_blocked" run that carries the blocked-page list. 409 if there is
+    nothing blocked or a run is already active for the source."""
+    await authorize_run(db, principal, run_id, write=True)
+
+    run = await db.get(ExtractionRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if not run.blocked_pending:
+        raise HTTPException(
+            status_code=409, detail="This run has no blocked pages to retry"
+        )
+    source = await db.get(DocumentationSource, run.source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    if source.auth_realm_id is not None:
+        realm = await db.get(AuthRealm, source.auth_realm_id)
+        if realm is not None and (session_expired(realm) or realm.status == RealmStatus.EXPIRED):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Auth session for realm '{realm.name}' has expired — log in first.",
+            )
+
+    try:
+        new_run = await enqueue_run(db, run.source_id, trigger="manual", kind="retry_blocked")
+    except ActiveRunExists:
+        raise HTTPException(
+            status_code=409,
+            detail="Extraction already queued or running for this source",
+        )
+    # Carry the blocked-page list onto the retry run for the worker to act on.
+    new_run.blocked_pending = run.blocked_pending
+    await db.commit()
+
+    return ExtractionTriggerResponse(
+        run_id=new_run.id,
+        source_id=run.source_id,
+        status="pending",
+        message="Blocked-page retry queued. Poll /api/extraction/runs/{run_id} for progress.",
+    )
+
+
 @router.post("/webhook/{run_id}", include_in_schema=False)
 async def firecrawl_webhook(
     run_id: uuid.UUID,
@@ -282,6 +332,10 @@ async def get_run_status(
         "status": run.status,
         "control": run.control,
         "trigger": run.trigger,
+        "kind": run.kind,
+        "escalation_warning": bool(run.escalation_pending),
+        "blocked_warning": bool(run.blocked_pending),
+        "blocked_count": len(run.blocked_pending) if run.blocked_pending else 0,
         "current_phase": run.current_phase,
         "firecrawl_job_id": run.firecrawl_job_id,
         "articles_extracted": run.articles_extracted,
@@ -354,6 +408,11 @@ async def list_runs(
                 # Completed runs whose VLM escalation failed carry a pending list;
                 # the UI shows a "warning" badge and a Retry-escalation action.
                 "escalation_warning": bool(r.escalation_pending),
+                # Runs that finished with some pages still bot-blocked (after the
+                # auto-retry) carry a pending list; the UI shows a warning badge
+                # and a Retry-blocked-pages action.
+                "blocked_warning": bool(r.blocked_pending),
+                "blocked_count": len(r.blocked_pending) if r.blocked_pending else 0,
                 "current_phase": r.current_phase,
                 "firecrawl_job_id": r.firecrawl_job_id,
                 "articles_extracted": r.articles_extracted,

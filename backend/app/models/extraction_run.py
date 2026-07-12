@@ -59,7 +59,9 @@ class ExtractionRun(Base):
     trigger: Mapped[str] = mapped_column(String(16), default="manual", server_default="manual", nullable=False)
     # Run kind: "extract" (full pipeline) | "escalate" (PDF VLM-escalation-only
     # retry — re-converts just the page ranges that failed escalation, skipping
-    # the expensive Layer-A conversion). The worker dispatches on this.
+    # the expensive Layer-A conversion) | "enrich" (image-description-only run) |
+    # "retry_blocked" (re-scrape only the pages a prior run recorded as bot-blocked,
+    # no TOC re-discovery). The worker dispatches on this.
     kind: Mapped[str] = mapped_column(String(16), default="extract", server_default="extract", nullable=False)
     claimed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     claimed_at: Mapped[datetime | None] = mapped_column(
@@ -95,6 +97,13 @@ class ExtractionRun(Base):
     # Non-empty ⇒ the run completed with an escalation *warning* (not a clean
     # green) and is eligible for a kind="escalate" retry. NULL/empty ⇒ no warning.
     escalation_pending: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # Pages that tripped bot protection (Akamai/Cloudflare) and were not stored
+    # this run: a list of {url, title, toc_entry_id, sort_order, topic_key}.
+    # Accumulated during the content phase; after the optional auto-retry pass,
+    # a non-empty list ⇒ the run completed with a bot-protection *warning* (not a
+    # clean green) and is eligible for a kind="retry_blocked" retry. NULL/empty ⇒
+    # no warning. Capped to avoid an unbounded list on a fully-blocked run.
+    blocked_pending: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     # Cooperative control signal set by the API ("cancel" | "pause"); the worker
     # observes it at batch boundaries and transitions the run accordingly, then
     # clears it. NULL = no pending control request.

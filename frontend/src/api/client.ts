@@ -278,6 +278,12 @@ export async function retryEscalation(runId: string): Promise<ExtractionTrigger>
   return res.data;
 }
 
+/** Retry just the pages that were blocked by bot protection on a completed run. */
+export async function retryBlocked(runId: string): Promise<ExtractionTrigger> {
+  const res = await api.post(`/extraction/runs/${runId}/retry-blocked`);
+  return res.data;
+}
+
 export async function enrichSource(sourceId: string): Promise<{ run_id: string; status: string }> {
   const res = await api.post(`/extraction/enrich/${sourceId}`);
   return res.data;

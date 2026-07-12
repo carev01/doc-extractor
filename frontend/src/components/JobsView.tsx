@@ -9,6 +9,7 @@ import {
   pauseRun,
   resumeRun,
   retryEscalation,
+  retryBlocked,
   listAllJobRuns,
 } from "../api/client";
 import JobsManager from "./JobsManager";
@@ -39,7 +40,7 @@ function statusBadge(status: string) {
 /** A completed run whose escalation failed shows an amber "warning" badge
  *  instead of the green "completed". */
 function runStatusBadge(run: ExtractionRun) {
-  if (run.status === "completed" && run.escalation_warning) {
+  if (run.status === "completed" && (run.escalation_warning || run.blocked_warning)) {
     return statusBadge("warning");
   }
   return statusBadge(run.status);
@@ -332,6 +333,18 @@ function RunDetail({ run, onBack }: { run: ExtractionRun; onBack: () => void }) 
     }
   };
 
+  const handleRetryBlocked = async () => {
+    setRetrying(true);
+    setRetryError("");
+    try {
+      await retryBlocked(run.id);
+      onBack(); // a new "retry_blocked" run is now queued; the list will show it
+    } catch (e) {
+      setRetryError(apiError(e, "Failed to queue blocked-page retry"));
+      setRetrying(false);
+    }
+  };
+
   const fetchLogs = useCallback(async () => {
     setLoadingLogs(true);
     try {
@@ -419,6 +432,24 @@ function RunDetail({ run, onBack }: { run: ExtractionRun; onBack: () => void }) 
                   onClick={handleRetryEscalation}
                 >
                   {retrying ? "Queuing…" : "Retry escalation"}
+                </button>
+              </div>
+              {retryError && <div className="error" style={{ marginTop: "0.5rem" }}>{retryError}</div>}
+            </div>
+          )}
+          {run.status === "completed" && run.blocked_warning && (
+            <div className="warning-box" style={{ marginTop: "0.8rem" }}>
+              <strong>⚠ {run.blocked_count} page(s) blocked by bot protection.</strong>{" "}
+              Some pages couldn't be scraped because the site's bot protection
+              blocked the request. The rest of the document was extracted
+              normally. You can retry just the blocked pages.
+              <div style={{ marginTop: "0.5rem" }}>
+                <button
+                  className="btn-primary-sm"
+                  disabled={retrying}
+                  onClick={handleRetryBlocked}
+                >
+                  {retrying ? "Queuing…" : "Retry blocked pages"}
                 </button>
               </div>
               {retryError && <div className="error" style={{ marginTop: "0.5rem" }}>{retryError}</div>}
