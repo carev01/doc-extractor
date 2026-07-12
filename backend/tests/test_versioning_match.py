@@ -77,3 +77,35 @@ async def test_bump_matches_by_topic_key_and_appends_version(db_session):
         select(ArticleVersion).where(ArticleVersion.article_id == arts[0].id)
     )).scalars().all()
     assert len(versions) == 1                 # the v10 snapshot was archived
+
+
+async def test_url_fallback_heals_drifted_literal_key(db_session):
+    # A stored article keyed by its LITERAL version (as happens when a run keyed
+    # pages before url_template was set) must NOT be duplicated when it is later
+    # re-extracted with the correct {version} key — it is matched by source_url
+    # and its key is normalised. (Regression: the CommCell/Arcserve duplication.)
+    svc, source = await make_service_and_source(db_session, url_template=TMPL, version="10.0")
+    url = TMPL.replace("{version}", "10.0")
+
+    run1 = await _make_run(db_session, source)
+    await svc.process_article_result(
+        db=db_session, source_id=source.id, run_id=run1.id,
+        url=url, topic_key=url,  # literal key (drifted)
+        markdown_content="body v1", doc_html="", toc_entry_id=None,
+        sort_order=0, title="Install",
+    )
+    art = (await db_session.execute(select(Article).where(Article.source_id == source.id))).scalar_one()
+    assert art.topic_key == url  # stored literally
+
+    key = derive_topic_key(url, TMPL, "10.0")
+    assert "{version}" in key and key != url
+    run2 = await _make_run(db_session, source)
+    await svc.process_article_result(
+        db=db_session, source_id=source.id, run_id=run2.id,
+        url=url, topic_key=key,  # correct version-independent key
+        markdown_content="body v2 changed", doc_html="", toc_entry_id=None,
+        sort_order=0, title="Install",
+    )
+    arts = (await db_session.execute(select(Article).where(Article.source_id == source.id))).scalars().all()
+    assert len(arts) == 1               # matched by URL — no duplicate
+    assert arts[0].topic_key == key     # key normalised to {version}
