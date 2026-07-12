@@ -27,6 +27,7 @@ from app.schemas.product import (
     ProductResponse,
     ProductListResponse,
 )
+from app.services import change_log
 from app.services.queue import ActiveRunExists, enqueue_run
 from app.services.versioning import detect_version_token, derive_topic_key, resolve_template
 
@@ -132,6 +133,10 @@ async def delete_product(
     ).scalar_one_or_none()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
+    source_ids = (await db.execute(
+        select(DocumentationSource.id).where(DocumentationSource.product_id == product_id)
+    )).scalars().all()
+    await change_log.record_source_deletions(db, source_ids=source_ids)
     await db.delete(product)
     await db.commit()
 

@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.authz import Principal, get_principal, require_admin, require_vendor_read
 from app.core.database import get_db
+from app.models.product import Product
+from app.models.source import DocumentationSource
 from app.models.vendor import Vendor
 from app.schemas.vendor import (
     VendorCreate,
@@ -23,6 +25,7 @@ from app.schemas.vendor import (
     VendorResponse,
     VendorListResponse,
 )
+from app.services import change_log
 
 router = APIRouter(prefix="/api/vendors", tags=["vendors"])
 
@@ -121,5 +124,11 @@ async def delete_vendor(
     vendor = result.scalar_one_or_none()
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
+    source_ids = (await db.execute(
+        select(DocumentationSource.id)
+        .join(Product, DocumentationSource.product_id == Product.id)
+        .where(Product.vendor_id == vendor_id)
+    )).scalars().all()
+    await change_log.record_source_deletions(db, source_ids=source_ids)
     await db.delete(vendor)
     await db.commit()
