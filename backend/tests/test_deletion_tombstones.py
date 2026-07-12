@@ -128,6 +128,29 @@ async def test_delete_product_and_vendor_emit_tombstones(ctx):
         assert art_ids2.issubset({row.article_id for row in rows})
 
 
+async def test_source_deletions_serialize_via_advisory_lock(ctx):
+    """Concurrent out-of-band deletions must serialize: their removals carry
+    run_id=None with no run_start floor, so if two interleave BIGSERIAL ids with
+    an inverted commit order (and no active run sets a ceiling) the feed would
+    skip the lower id forever — a lost tombstone. record_source_deletions takes a
+    transaction-scoped advisory lock so a second deletion cannot proceed until
+    the first commits."""
+    from sqlalchemy import text
+    from app.services import change_log
+    _c, factory = ctx
+    _v, _p, src_id, _ids = await _seed_two_articles(factory)
+
+    async with factory() as s1:
+        await change_log.record_source_deletions(s1, source_ids=[src_id])  # holds the lock
+        async with factory() as s2:
+            got = (await s2.execute(
+                text("SELECT pg_try_advisory_xact_lock(:k)"),
+                {"k": change_log._DELETION_LOCK_KEY},
+            )).scalar()
+            assert got is False        # a concurrent deletion is blocked
+        await s1.commit()
+
+
 async def test_deletion_removals_respect_safe_ceiling(ctx):
     """A run_id=NULL removal committed above an active run's run_start floor is
     withheld until that run finishes, then served."""

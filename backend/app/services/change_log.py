@@ -8,11 +8,20 @@ article mutation that triggered it.
 import uuid
 from collections.abc import Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.article import Article
 from app.models.content_change import ChangeType, ContentChange
+
+# Transaction-scoped advisory-lock key that serializes out-of-band deletions.
+# Their removals are written with run_id=None and no run_start sentinel, so two
+# concurrent deletions could otherwise interleave BIGSERIAL ids with an inverted
+# commit order; with no active run to set a safe ceiling, the feed would then
+# skip the lower id permanently (a lost tombstone). Serializing the deletion
+# transactions removes that id/commit-order inversion. The key is an arbitrary
+# fixed application constant.
+_DELETION_LOCK_KEY = 0x0DE1E7E5
 
 
 async def record_change(
@@ -57,6 +66,10 @@ async def record_source_deletions(
     exist. Returns the number of removed rows written."""
     if not source_ids:
         return 0
+    # Serialize concurrent out-of-band deletions so their outbox ids cannot
+    # interleave with an inverted commit order (see _DELETION_LOCK_KEY). Held
+    # until the caller's transaction ends.
+    await db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _DELETION_LOCK_KEY})
     rows = (await db.execute(
         select(Article.id, Article.source_id, Article.topic_key).where(
             Article.source_id.in_(source_ids), Article.removed_at.is_(None)
