@@ -386,6 +386,11 @@ export default async function ({ page, context }) {
       outerHtml: el ? el.outerHTML : '',
       innerHtml: el ? el.innerHTML : '',
       title: h1 ? (h1.textContent || '').trim() : '',
+      // Capped full-page text so the caller can detect a WAF/"Access Denied"
+      // shell (e.g. Akamai) when the content selector comes back empty — such a
+      // block has no article container, so without this it looks like an empty
+      // page instead of a block.
+      bodyText: ((document.body && document.body.innerText) || '').slice(0, 2000),
     };
   }, selector || null);
   return { data: out, type: 'application/json' };

@@ -1250,6 +1250,9 @@ class FirecrawlService:
                         "contentHtml": html,
                         "contentText": "",
                         "title": (data or {}).get("title", ""),
+                        # Full-page text, so an empty selector can be told apart
+                        # from a WAF "Access Denied" shell (see the persist loop).
+                        "bodyText": (data or {}).get("bodyText", ""),
                     }
                 return await browserless_client.render(url, client=client, auth_state=auth_state)
             except BrowserlessError as exc:
@@ -1277,7 +1280,30 @@ class FirecrawlService:
                     ):
                         raise NeedsLoginError(f"Auth wall detected at {url}; session may have expired")
                     if not md:
-                        logger.warning("Empty content from %s — skipping", url)
+                        # An empty content selector can be a bot-protection/WAF
+                        # shell (e.g. Akamai "Access Denied") whose block text is
+                        # in the full page, not the article container. Feed that
+                        # body text through process_article_result so is_block_page
+                        # records it as *blocked* (surfacing a bot-protection
+                        # warning + feeding the blocked-page retry) instead of
+                        # silently skipping it as an empty page.
+                        body_text = (data.get("bodyText") or "").strip()
+                        if body_text and is_block_page(body_text):
+                            try:
+                                await self.process_article_result(
+                                    db=db, source_id=source_id, run_id=run_id, url=url,
+                                    topic_key=entry.get("topic_key"),
+                                    markdown_content=body_text, doc_html="",
+                                    toc_entry_id=entry.get("toc_entry_id"),
+                                    sort_order=entry.get("sort_order", 0),
+                                    title=entry["title"], change_status=None,
+                                    auth_cookies=(auth_state or {}).get("cookies"),
+                                )
+                            except Exception as exc:
+                                logger.warning("Failed to record blocked page %s: %s", url, exc)
+                                await db.rollback()
+                        else:
+                            logger.warning("Empty content from %s — skipping", url)
                         continue
                     try:
                         await self.process_article_result(
