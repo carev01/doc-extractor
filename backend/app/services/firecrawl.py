@@ -1660,13 +1660,19 @@ class FirecrawlService:
         switch this re-link to ``topic_key`` or bumps will mis-flag survivors.
         """
         # Re-link by URL: each article points at the current TOC entry sharing its
-        # source_url, or stays NULL if its page is truly gone from the TOC.
+        # source_url, or stays NULL if its page is truly gone from the TOC. When
+        # several TOC entries share a URL — PDF outline sections that start on the
+        # same ``#page`` anchor — prefer the entry whose title matches this
+        # article's, so a section relinks to its own entry instead of an arbitrary
+        # sibling. For web sources (one TOC entry per URL) there is a single
+        # candidate, so the title ordering is a no-op.
         relink = (
             select(TOCEntry.id)
             .where(
                 TOCEntry.source_id == source_id,
                 TOCEntry.url == Article.source_url,
             )
+            .order_by((TOCEntry.title == Article.title).desc())
             .limit(1)
             .scalar_subquery()
         )
