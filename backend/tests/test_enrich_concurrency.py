@@ -94,6 +94,43 @@ async def test_article_images_described_concurrently(factory, monkeypatch):
         assert len(imgs) == 4 and all(i.description == "d" for i in imgs)
 
 
+async def test_unsupported_format_marked_not_meaningful_not_sent(factory):
+    # An image stored as .png but whose bytes are WMF (Arcserve serves these) 400s
+    # the VLM on every run. It must be dropped (is_meaningful=False), never sent.
+    async with factory() as s:
+        v = Vendor(name="Arcserve"); s.add(v); await s.flush()
+        p = Product(name="Backup", vendor_id=v.id); s.add(p); await s.flush()
+        src = DocumentationSource(name="Admin Guide", base_url="https://x", product_id=p.id)
+        s.add(src); await s.flush()
+        run = ExtractionRun(source_id=src.id, status="running"); s.add(run); await s.flush()
+        art = Article(source_id=src.id, extraction_run_id=run.id, created_run_id=run.id,
+                      title="A", source_url="https://x/a", topic_key="https://x/a",
+                      content_markdown="# A\n\n![p](/media/PLACEHOLDER/w.png)\n\n", content_hash="h")
+        s.add(art); await s.flush()
+        art.content_markdown = art.content_markdown.replace("/media/PLACEHOLDER/", f"/media/{art.id}/")
+        # is_meaningful already True (as the stuck image is), description NULL.
+        img = ArticleImage(article_id=art.id, original_url="https://x/w.png",
+                           local_filename="w.png", local_path=f"/media/{art.id}/w.png",
+                           sort_order=0, is_meaningful=True)
+        s.add(img); await s.flush()
+        img_id, src_id, run_id = img.id, src.id, run.id
+        d = os.path.join(settings.media_dir, str(art.id)); os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "w.png"), "wb") as fh:
+            fh.write(b"\xd7\xcd\xc6\x9a" + b"\x00" * 5000)  # WMF placeable header
+        await s.commit()
+
+    async def boom(data, alt, **kw):
+        raise AssertionError("describe must not be called for an unsupported-format image")
+
+    async with factory() as db:
+        described = await enrich_run_images(db, src_id, run_id, describe=boom, max_new=10**9)
+    assert described == 0
+
+    async with factory() as s:
+        img = await s.get(ArticleImage, img_id)
+        assert img.is_meaningful is False and img.description is None
+
+
 async def test_concurrency_one_is_serial(factory, monkeypatch):
     monkeypatch.setattr(settings, "image_vlm_concurrency", 1)
     src_id, run_id = await _seed_one_article_k_images(factory, 3)

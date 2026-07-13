@@ -12,7 +12,6 @@ import hashlib
 import io
 import json
 import logging
-import mimetypes
 import os
 import uuid
 from dataclasses import dataclass
@@ -40,12 +39,35 @@ class ImageEval:
     bytes_sha256: str
 
 
+# Raster formats a vision model can actually consume, mapped to their MIME.
+# Anything else (WMF/EMF/SVG/TIFF/…) — even when mislabeled .png — is rejected
+# by the VLM (400), so it is never worth describing.
+_VLM_IMAGE_FORMATS = {
+    "PNG": "image/png",
+    "JPEG": "image/jpeg",
+    "WEBP": "image/webp",
+    "GIF": "image/gif",
+}
+
+
+def _detect_format(data: bytes) -> str | None:
+    """PIL's format name for these bytes (e.g. 'PNG'), or None if unreadable.
+    Detected from content, not the file extension — Arcserve serves some WMF
+    vector images under a .png name."""
+    try:
+        from PIL import Image  # local import: Pillow is only needed here
+        with Image.open(io.BytesIO(data)) as img:
+            return (img.format or "").upper() or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def evaluate_image(data: bytes) -> ImageEval:
     """Classify raw image bytes as meaningful (worth describing) or decorative.
 
     Boilerplate (skins/ui-icons/spacers) is already filtered at download time, so
-    this only screens by size and pixel dimensions. Non-raster (e.g. SVG) or
-    corrupt bytes can't be measured → treated as not meaningful."""
+    this screens by size, pixel dimensions, and format. Non-raster (SVG/WMF),
+    unsupported, or corrupt bytes can't be sent to the VLM → not meaningful."""
     sha = hashlib.sha256(data).hexdigest()
     if len(data) < settings.image_min_bytes:
         return ImageEval(False, None, None, sha)
@@ -53,8 +75,13 @@ def evaluate_image(data: bytes) -> ImageEval:
         from PIL import Image  # local import: Pillow is only needed here
         with Image.open(io.BytesIO(data)) as img:
             w, h = img.size
+            fmt = (img.format or "").upper()
     except Exception:  # noqa: BLE001 — unreadable/non-raster → not meaningful
         return ImageEval(False, None, None, sha)
+    # WMF and friends report a header size via Image.open (lazy) but can't be
+    # decoded or sent to the VLM — exclude by format, not just by dimensions.
+    if fmt not in _VLM_IMAGE_FORMATS:
+        return ImageEval(False, w, h, sha)
     meaningful = w >= settings.image_min_dimension and h >= settings.image_min_dimension
     return ImageEval(meaningful, w, h, sha)
 
@@ -225,10 +252,18 @@ async def enrich_run_images(db: AsyncSession, source_id: uuid.UUID, run_id: uuid
                         article.content_markdown, img.local_path, cached.description)
                     changed = True
                     described += 1
-                elif budget > 0 and consecutive_failures < settings.image_vlm_max_consecutive_failures:
+                else:
+                    # Gate on the real format (from bytes, not the .png name): a
+                    # WMF/vector mislabeled .png 400s the VLM on every run. Mark it
+                    # not-meaningful so it leaves the backlog for good.
+                    fmt = _detect_format(data)
+                    if fmt not in _VLM_IMAGE_FORMATS:
+                        img.is_meaningful = False
+                        continue
+                    if budget <= 0 or consecutive_failures >= settings.image_vlm_max_consecutive_failures:
+                        continue
                     budget -= 1  # reserve; refunded below if the call fails
-                    mime = mimetypes.guess_type(img.local_filename)[0] or "image/png"
-                    pending.append((img, data, mime))
+                    pending.append((img, data, _VLM_IMAGE_FORMATS[fmt]))
 
             # Describe the queued images concurrently, then apply results serially.
             if pending:
