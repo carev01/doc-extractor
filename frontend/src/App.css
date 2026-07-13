@@ -481,6 +481,39 @@ a.btn-primary {
   align-items: center;
 }
 
+/* Source cards carry far more than a name + a couple of actions (URL, status,
+   platform/job/auth selects, progress, run history, and 5–8 action buttons).
+   As the default row layout the button block hogs the right and squeezes all
+   that into a narrow left column. Lay a source card out as a full-width column:
+   the info spans the whole card, and the actions become a wrapping footer row. */
+.item-list li.source-card {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.item-list li.source-card .item-info {
+  width: 100%;
+}
+
+/* Controls (platform / job / auth / template) flow in wrapping rows and each
+   select gets room to breathe instead of hugging its label. */
+.source-card .item-meta {
+  gap: 10px 16px;
+}
+
+.source-card .item-meta select {
+  max-width: 100%;
+}
+
+/* Action buttons: a full-width wrapping footer, visually separated. */
+.source-card .item-actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 10px;
+}
+
 /* ============================================================
    Badges & status — crisp mono tags, not candy pills
    ============================================================ */
