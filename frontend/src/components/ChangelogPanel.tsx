@@ -23,9 +23,13 @@ function dateKey(iso: string): string {
   });
 }
 
+const PAGE_SIZE = 50;
+
 export default function ChangelogPanel({ source }: Props) {
   const [entries, setEntries] = useState<ChangelogEntry[]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
 
   // Open viewer: either a side-by-side version overlay (changed) or a rendered
@@ -43,11 +47,27 @@ export default function ChangelogPanel({ source }: Props) {
     setLoading(true);
     setError("");
     /* eslint-enable react-hooks/set-state-in-effect */
-    getSourceChangelog(source.id)
-      .then((d) => setEntries(d.entries))
+    getSourceChangelog(source.id, 0, PAGE_SIZE)
+      .then((d) => {
+        setEntries(d.entries);
+        setTotal(d.total);
+      })
       .catch(() => setError("Failed to load changelog"))
       .finally(() => setLoading(false));
   }, [source.id]);
+
+  const loadMore = async () => {
+    setLoadingMore(true);
+    try {
+      const d = await getSourceChangelog(source.id, entries.length, PAGE_SIZE);
+      setEntries((prev) => [...prev, ...d.entries]);
+      setTotal(d.total);
+    } catch {
+      setError("Failed to load more changes");
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const groups = useMemo(() => {
     const m = new Map<string, ChangelogEntry[]>();
@@ -152,6 +172,14 @@ export default function ChangelogPanel({ source }: Props) {
           </div>
         );
       })}
+
+      {!loading && entries.length < total && (
+        <div style={{ textAlign: "center", margin: "1em 0" }}>
+          <button className="btn-secondary-sm" onClick={loadMore} disabled={loadingMore}>
+            {loadingMore ? "Loading…" : `Load more (${entries.length} of ${total})`}
+          </button>
+        </div>
+      )}
 
       {overlay && (
         <VersionOverlay
