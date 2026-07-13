@@ -73,9 +73,12 @@ def test_numbered_title_matches_spaced_heading():
     assert _find_heading_line(hl, "1Preface", 0) == 0
 
 
-def test_unmatched_outline_entry_not_dropped_uses_page_fallback():
-    # 'Hidden' has no heading in the markdown; page_line_starts maps page 1 → line 3
-    md = "# Intro\n\nintro body\n# Real\n\nreal body\n"
+def test_unmatched_outline_entry_grouped_not_page_fragmented():
+    # 'Hidden' has no matching heading in the converted markdown. It must NOT be
+    # turned into a page-anchored fragment (that produced garbage articles for
+    # finer-grained outlines like Dell manuals) — it's skipped, and its section's
+    # text stays under the preceding matched heading. Nothing is lost.
+    md = "# Intro\n\nintro body\n\nhidden section body\n"
     conv = ConvertedDoc(markdown=md, headings=[], page_texts=[md, "p2"],
                         table_pages=set(), images=[], engine="docling",
                         page_line_starts=[0, 3])
@@ -84,6 +87,5 @@ def test_unmatched_outline_entry_not_dropped_uses_page_fallback():
         Segment(title="Hidden", level=1, page_start=1, page_end=1, path=["Hidden"]),
     ]
     segs = split_into_segments(conv, outline)
-    titles = [s.title for s in segs]
-    assert "Hidden" in titles            # NOT dropped
-    assert len(segs) == 2
+    assert [s.title for s in segs] == ["Intro"]        # no page-anchored "Hidden"
+    assert "hidden section body" in segs[0].markdown   # its text grouped under Intro

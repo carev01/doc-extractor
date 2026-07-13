@@ -1,7 +1,9 @@
-"""split_into_segments must not drop an outline entry whose section isn't
-delimited in Docling's heading stream (outline finer-grained than detected
-headings). Such an entry now falls back to its page-range text instead of an
-empty body. Regression for the Dell-PDF "many TOC sections have no content" bug.
+"""split_into_segments must only cut on outline entries that map to a heading
+Docling actually detected. An entry with no matching heading is NOT turned into
+a page-anchored fragment (that produced garbage, unrelated-content articles for
+finer-grained outlines like Dell manuals) — its text stays within the preceding
+matched section, keeping content correct. The converted markdown holds the whole
+document's text, so nothing is lost, just grouped more coarsely.
 """
 import os
 import sys
@@ -12,14 +14,14 @@ from app.services.pdf_convert import ConvertedDoc, split_into_segments
 from app.services.pdf_import import Segment
 
 
-def test_unmatched_outline_entry_gets_page_range_text():
-    # Converted markdown has a heading for "Alpha" but NOT for "Beta"; Beta's
-    # text lives only in page 2's text.
-    lines = ["## Alpha", "alpha body text", "", ""]
+def test_unmatched_outline_entry_is_grouped_not_fragmented():
+    # Docling emitted a heading for "Alpha" but not for "Beta"; both sections'
+    # text is in the converted markdown (Docling converts the whole document).
+    lines = ["## Alpha", "alpha body text", "", "beta body text", ""]
     converted = ConvertedDoc(
         markdown="\n".join(lines),
         headings=[],
-        page_texts=["## Alpha\nalpha body text", "Beta real content from page two"],
+        page_texts=["## Alpha\nalpha body text", "beta body text"],
         table_pages=set(),
         page_line_starts=[0, 3],
     )
@@ -29,10 +31,28 @@ def test_unmatched_outline_entry_gets_page_range_text():
     ]
 
     segs = split_into_segments(converted, outline)
-    by_title = {s.title: s for s in segs}
 
-    assert "alpha body text" in by_title["Alpha"].markdown
-    # Beta had no heading + an empty line-slice → must be filled from page 2 text,
-    # not dropped as empty.
-    assert by_title["Beta"].markdown.strip() != ""
-    assert "Beta real content from page two" in by_title["Beta"].markdown
+    # Only the heading-matched entry becomes a segment — no page-anchored "Beta".
+    assert [s.title for s in segs] == ["Alpha"]
+    # Beta's text is preserved, grouped under Alpha's section (not lost).
+    assert "alpha body text" in segs[0].markdown
+    assert "beta body text" in segs[0].markdown
+
+
+def test_matched_outline_entries_get_a_segment_each():
+    # When every outline entry maps to a heading, each is its own segment with
+    # its own body (the well-structured-PDF path, unaffected by the fix).
+    lines = ["# One", "first body", "", "# Two", "second body", ""]
+    converted = ConvertedDoc(
+        markdown="\n".join(lines), headings=[],
+        page_texts=["# One\nfirst body\n# Two\nsecond body"],
+        table_pages=set(), page_line_starts=[0],
+    )
+    outline = [
+        Segment(title="One", level=1, page_start=0, page_end=0, path=["One"]),
+        Segment(title="Two", level=1, page_start=0, page_end=0, path=["Two"]),
+    ]
+    segs = split_into_segments(converted, outline)
+    assert [s.title for s in segs] == ["One", "Two"]
+    assert "first body" in segs[0].markdown and "second body" not in segs[0].markdown
+    assert "second body" in segs[1].markdown

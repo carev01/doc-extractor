@@ -320,6 +320,19 @@ async def run_pdf_extraction(service, db, source, run, run_pk,
     )).scalar_one()
     await service._reconcile_removals(db, source.id, run_pk)
 
+    # Image-enrichment phase (opt-in, best-effort): describe meaningful images and
+    # inject captions. The web path runs this at the end of extract_source, but a
+    # PDF source returns via run_pdf_extraction before reaching it — so without
+    # this, PDF images were never auto-enriched (only via the manual action).
+    run.current_phase = "image_enrich"
+    await db.commit()
+    from app.services import image_describe
+    await image_describe.enrich_run_images(db, source.id, run_pk)
+
+    run = (await db.execute(
+        select(ExtractionRun).where(ExtractionRun.id == run_pk)
+    )).scalar_one()
+
     # Record any segments whose VLM escalation failed so the run completes with a
     # warning (not a clean green) and can be retried without redoing the (often
     # >1h) Layer-A conversion. Map each failed segment back to its persisted

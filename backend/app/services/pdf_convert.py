@@ -381,17 +381,16 @@ def split_into_segments(converted: ConvertedDoc, outline: "list[Segment]") -> li
     boundaries: list[tuple[int, str, int, list[str], int, int]] = []
     if outline:
         cursor = 0
-        starts = converted.page_line_starts
         for seg in outline:
             line = _find_heading_line(heading_lines, seg.title, cursor)
             if line is None:
-                # Never drop: fall back to the page where the entry begins.
-                if starts and 0 <= seg.page_start < len(starts):
-                    line = max(starts[seg.page_start], cursor)
-                else:
-                    line = cursor
-                logger.info("split: %r not found as heading; page-fallback line %d",
-                            seg.title, line)
+                # This outline entry isn't delimited by a heading Docling detected.
+                # Some PDFs (e.g. Dell manuals) expose a far finer outline than the
+                # headings present in the converted markdown. Skip it: its text
+                # stays within the preceding matched section, keeping content
+                # correct — rather than slicing the page into unrelated fragments
+                # by a page-anchored guess (which produced garbage articles).
+                continue
             cursor = line + 1
             boundaries.append((line, seg.title, seg.level, seg.path or [seg.title],
                                seg.page_start, seg.page_end))
@@ -417,25 +416,27 @@ def split_into_segments(converted: ConvertedDoc, outline: "list[Segment]") -> li
             markdown=md.strip(), images=list(converted.images),
         )]
 
-    page_texts = converted.page_texts or []
     segs: list[RenderedSegment] = []
     for i, (line, title, level, path, p_start, p_end) in enumerate(boundaries):
         end_line = boundaries[i + 1][0] if i + 1 < len(boundaries) else len(lines)
         body = "\n".join(lines[line:end_line]).strip()
-        if not body and page_texts and 0 <= p_start < len(page_texts):
-            # The line slice between adjacent boundaries collapsed to nothing —
-            # the outline is finer-grained than the headings Docling detected, so
-            # this section wasn't delimited in the heading stream and would drop
-            # out with no content even though its pages hold text. Fall back to
-            # the entry's page-range text so the section is never empty. Siblings
-            # sharing a page repeat that page's text (distinct topic_keys, so
-            # distinct articles) — acceptable next to losing the content entirely.
-            hi = min(p_end, len(page_texts) - 1)
-            body = "\n".join(page_texts[p_start:hi + 1]).strip()
+        if not body:
+            # A heading with no content before the next boundary — no article to
+            # emit (its children, if any, are separate segments). Skipping it also
+            # keeps the TOC free of contentless nodes and the article total honest.
+            continue
         segs.append(RenderedSegment(
             title=title, level=level, path=path,
             page_start=p_start, page_end=p_end,
             markdown=body,
             images=[img for img in converted.images if img.filename in body],
         ))
+    if not segs:
+        # No heading-delimited section held content — keep the whole document as
+        # one article rather than emitting nothing.
+        return [RenderedSegment(
+            title="Document", level=1, path=[], page_start=0,
+            page_end=max(0, len(converted.page_texts) - 1),
+            markdown=md.strip(), images=list(converted.images),
+        )]
     return segs
