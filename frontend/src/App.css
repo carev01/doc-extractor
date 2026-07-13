@@ -217,7 +217,10 @@ body::before {
 
 @keyframes content-slide-in {
   from { opacity: 0; transform: translateY(12px); }
-  to { opacity: 1; transform: translateY(0); }
+  /* Rest at transform:none (not translateY(0)) — a lingering transform would
+     make .app-main a containing block for position:fixed overlays, anchoring
+     them to the (tall) content instead of the viewport. */
+  to { opacity: 1; transform: none; }
 }
 
 /* ============================================================
@@ -797,6 +800,10 @@ a.btn-primary {
   margin-bottom: 22px;
   border-bottom: 1px solid var(--line);
   overflow-x: auto;
+  /* Without an explicit overflow-y, setting overflow-x:auto computes overflow-y
+     to auto too, and the buttons' -1px bottom margin then triggers a spurious
+     vertical scrollbar. Pin it hidden so only horizontal scrolls (narrow view). */
+  overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -1074,6 +1081,38 @@ a.btn-primary {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   margin-bottom: 8px;
+}
+
+.docs-removed-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--gone);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 4px 0;
+}
+
+.docs-removed-toggle:hover { color: var(--text); }
+
+.docs-removed-caret {
+  font-size: 0.7rem;
+  width: 10px;
+  display: inline-block;
+}
+
+/* Cap the expanded list so it scrolls internally instead of pushing the page. */
+.docs-removed-list {
+  max-height: 32vh;
+  overflow-y: auto;
+  margin-top: 6px;
 }
 
 .docs-content {
@@ -1459,11 +1498,27 @@ a.btn-primary {
   }
   .source-tabs {
     overflow-x: auto;
+    overflow-y: hidden;
     -webkit-overflow-scrolling: touch;
   }
   .source-tabs button {
     white-space: nowrap;
     padding: 8px 12px;
+  }
+  /* Stack list rows on mobile: as a flex row, the actions column squeezes
+     .item-info to near-zero width and the (break-all) URL wraps one char per
+     line. Column layout gives the URL the full width to wrap normally. */
+  .item-list li {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .item-actions {
+    flex-wrap: wrap;
+  }
+  .item-info .sub {
+    overflow-wrap: anywhere;
+    word-break: normal;
   }
   .add-form input {
     min-width: 120px;
@@ -2106,7 +2161,9 @@ a.btn-primary {
    ============================================================ */
 @keyframes fade-in-up {
   from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+  /* Rest at none: these run with fill-mode:both, and a lingering transform on a
+     wrapper would trap position:fixed overlays (see content-slide-in). */
+  to { opacity: 1; transform: none; }
 }
 
 .fade-in-up {
@@ -2115,7 +2172,7 @@ a.btn-primary {
 
 @keyframes stagger {
   from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  to { opacity: 1; transform: none; }
 }
 
 /* Staggered children: use --stagger-index custom property on parent */

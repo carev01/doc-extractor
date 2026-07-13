@@ -55,6 +55,7 @@ export default function DocsBrowser({ source }: Props) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
   const [showHistory, setShowHistory] = useState(false);
+  const [removedOpen, setRemovedOpen] = useState(false);
   const [loadingArticle, setLoadingArticle] = useState(false);
   const [error, setError] = useState("");
 
@@ -255,8 +256,21 @@ export default function DocsBrowser({ source }: Props) {
 
           {removed.length > 0 && (
             <div className="docs-removed">
-              <div className="docs-removed-label">Removed pages</div>
-              <ul className="docs-toc-list">
+              {/* Collapsed by default so a source with many removed pages (e.g.
+                  1000+) doesn't bury the live TOC. A filter auto-expands it so
+                  matches are visible. */}
+              <button
+                className="docs-removed-toggle"
+                onClick={() => setRemovedOpen((v) => !v)}
+                aria-expanded={removedOpen || !!query.trim()}
+              >
+                <span className="docs-removed-caret">
+                  {removedOpen || query.trim() ? "▾" : "▸"}
+                </span>
+                Removed pages ({removed.length})
+              </button>
+              {(removedOpen || !!query.trim()) && (
+              <ul className="docs-toc-list docs-removed-list">
                 {removed.map((r) => (
                   <li key={r.article_id} className="docs-toc-item">
                     <div className="docs-toc-row">
@@ -274,6 +288,7 @@ export default function DocsBrowser({ source }: Props) {
                   </li>
                 ))}
               </ul>
+              )}
             </div>
           )}
         </nav>

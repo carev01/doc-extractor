@@ -11,6 +11,7 @@ import {
   retryEscalation,
   retryBlocked,
   listAllJobRuns,
+  getEnrichmentStats,
 } from "../api/client";
 import JobsManager from "./JobsManager";
 import { apiError } from "../api/errors";
@@ -86,11 +87,36 @@ function path(run: ExtractionRun): string {
 
 const ACTIVE = new Set(["running", "pending", "paused"]);
 
+type EnrichStat = { described: number; pending: number };
+
+/** Image-enrichment runs carry no article counts; show per-source image
+ *  progress from the enrichment stats (indeterminate until the first sample). */
+function EnrichProgress({ stat }: { stat: EnrichStat | undefined }) {
+  const total = stat ? stat.described + stat.pending : 0;
+  const pct = stat && total > 0 ? Math.round((stat.described / total) * 100) : null;
+  return (
+    <>
+      <span className="sub">
+        {stat ? `${stat.described} / ${total} images described` : "Describing images…"}
+        {pct !== null ? ` (${pct}%)` : ""}
+      </span>
+      {pct !== null ? (
+        <div className="progress-bar">
+          <div className="progress-fill" style={{ width: `${pct}%` }} />
+        </div>
+      ) : (
+        <div className="progress-bar indeterminate" />
+      )}
+    </>
+  );
+}
+
 export default function JobsView() {
   const [tab, setTab] = useState<"activity" | "jobs">("activity");
   const [runs, setRuns] = useState<ExtractionRun[]>([]);
   const [exportJobs, setExportJobs] = useState<ExportJobItem[]>([]);
   const [jobRuns, setJobRuns] = useState<JobRunItem[]>([]);
+  const [enrichStats, setEnrichStats] = useState<Record<string, EnrichStat>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState("");
 
@@ -104,6 +130,18 @@ export default function JobsView() {
       setRuns(r.runs);
       setExportJobs(e.jobs);
       setJobRuns(jr);
+      // Enrich runs report no article counts — pull per-source image progress
+      // only while one is active (cheap dashboard query, skipped otherwise).
+      if (r.runs.some((run) => run.kind === "enrich" && ACTIVE.has(run.status))) {
+        try {
+          const stats = await getEnrichmentStats();
+          const m: Record<string, EnrichStat> = {};
+          for (const s of stats.sources) {
+            m[s.source_id] = { described: s.described, pending: s.pending };
+          }
+          setEnrichStats(m);
+        } catch { /* best-effort; falls back to the indeterminate bar */ }
+      }
     } catch {
       setError("Failed to load jobs");
     }
@@ -184,14 +222,20 @@ export default function JobsView() {
                     <span className="sub">{run.trigger}</span>
                     <span className="sub">elapsed {fmtDuration(run.started_at, null)}</span>
                   </div>
-                  <span className="sub">
-                    {processed(run)} / {run.articles_total || "?"} articles
-                    {pct !== null ? ` (${pct}%)` : ""}
-                  </span>
-                  {pct !== null && (
-                    <div className="progress-bar">
-                      <div className="progress-fill" style={{ width: `${pct}%` }} />
-                    </div>
+                  {run.kind === "enrich" ? (
+                    <EnrichProgress stat={enrichStats[run.source_id]} />
+                  ) : (
+                    <>
+                      <span className="sub">
+                        {processed(run)} / {run.articles_total || "?"} articles
+                        {pct !== null ? ` (${pct}%)` : ""}
+                      </span>
+                      {pct !== null && (
+                        <div className="progress-bar">
+                          <div className="progress-fill" style={{ width: `${pct}%` }} />
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
                 <div className="item-actions" onClick={(e) => e.stopPropagation()}>
