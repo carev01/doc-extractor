@@ -192,7 +192,9 @@ async def run_pdf_extraction(service, db, source, run, run_pk,
     pdf_bytes, pdf_hash = await acquire_pdf(source, auth_cookies=(auth_state or {}).get("cookies"))
 
     # Fast path: byte-identical to the last completed run → mark all unchanged.
-    prior = await _latest_completed_hash(db, source.id)
+    # Skipped for a forced run (trigger="force"), so a conversion/segmentation
+    # fix re-applies to a PDF whose bytes haven't changed.
+    prior = None if run.trigger == "force" else await _latest_completed_hash(db, source.id)
     existing_count = (
         await db.execute(
             select(func.count()).select_from(Article).where(

@@ -37,12 +37,18 @@ router = APIRouter(prefix="/api/extraction", tags=["extraction"])
 @router.post("/trigger/{source_id}", response_model=ExtractionTriggerResponse)
 async def trigger_extraction(
     source_id: uuid.UUID,
+    force: bool = False,
     db: AsyncSession = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
     """Queue a full extraction for a source. A worker picks it up.
 
     Poll /api/extraction/runs/{run_id} for status (pending -> running -> completed).
+
+    ``force=true`` re-processes even when the source looks unchanged — for a PDF
+    source it bypasses the byte-identical fast path so the document is re-converted
+    and re-segmented (use this to re-apply a conversion/segmentation fix to a PDF
+    whose bytes haven't changed).
     """
     await authorize_source(db, principal, source_id, write=True)
 
@@ -65,7 +71,7 @@ async def trigger_extraction(
             )
 
     try:
-        run = await enqueue_run(db, source_id, trigger="manual")
+        run = await enqueue_run(db, source_id, trigger="force" if force else "manual")
     except ActiveRunExists:
         raise HTTPException(
             status_code=409,
