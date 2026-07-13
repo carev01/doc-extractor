@@ -544,3 +544,23 @@ def test_single_title_is_unchanged():
     out = sanitize_markdown(md)
     assert out.count("Only Title") == 1
     assert "Body text here." in out
+
+
+def test_strips_froala_video_marker_runs():
+    # Double-encoded Froala fr-mk marker spans (leaked around an embedded video)
+    # must be removed, leaving the heading + real content intact.
+    unit = r'\&amp;lt;span class\="fr\-mk" style\="display: none;"\&amp;gt; \&amp;lt;/span\&amp;gt;'
+    md = "# Get started\n\nHow to access D2C****" + (unit * 30) + "\n\nReal paragraph.\n"
+    out = sanitize_markdown(md)
+    assert "fr-mk" not in out and "amp;lt" not in out
+    assert "How to access D2C" in out and "Real paragraph." in out
+    # The dangling empty-bold '****' from the emptied markers is gone too.
+    assert "D2C****" not in out
+
+
+def test_froala_strip_preserves_following_text_and_legit_content():
+    unit = r'\&amp;lt;span class\="fr\-mk" style\="display: none;"\&amp;gt; \&amp;lt;/span\&amp;gt;'
+    md = "Intro.****" + unit + " Real text after.\n\nA **bold** line with a\\-hyphen.\n"
+    out = sanitize_markdown(md)
+    assert "Intro. Real text after." in out          # no gluing
+    assert "**bold**" in out and "a\\-hyphen" in out  # legit content untouched

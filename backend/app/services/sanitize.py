@@ -413,7 +413,30 @@ def _strip_duplicate_title(lines: list[str]) -> list[str]:
     return out
 
 
+# Froala editor "marker" spans (class="fr-mk", display:none) that some sources
+# (e.g. Axcient/Froala) leak into content — often around an embedded video —
+# double-HTML-encoded, so they survive as literal "&amp;lt;span class=fr-mk …
+# &amp;gt;" runs (hundreds long) in the converted markdown instead of rendering.
+# Match a run of such escaped span tokens (optionally preceded by the dangling
+# "**" of an empty bold), only stripping runs that actually contain fr-mk.
+_FROALA_MARKER_RE = re.compile(
+    r'\*{0,4}\s*'
+    r'(?:\\?&amp;lt;\s*\\?/?\s*span\b[^&]*?\\?&amp;gt;)'       # first marker span
+    r'(?:\s*\\?&amp;lt;\s*\\?/?\s*span\b[^&]*?\\?&amp;gt;)*',  # more (no trailing ws)
+    re.IGNORECASE,
+)
+_FR_MK_RE = re.compile(r'fr\\?-mk', re.IGNORECASE)
+
+
+def _strip_froala_markers(lines: list[str]) -> list[str]:
+    """Remove double-encoded Froala 'fr-mk' marker-span runs left in the markdown."""
+    def repl(m: "re.Match[str]") -> str:
+        return "" if _FR_MK_RE.search(m.group(0)) else m.group(0)
+    return [_FROALA_MARKER_RE.sub(repl, ln) for ln in lines]
+
+
 _RULES = (
+    _strip_froala_markers,
     _strip_lead_font_license,
     _strip_lead_breadcrumb,
     _strip_lead_llms_banner,
