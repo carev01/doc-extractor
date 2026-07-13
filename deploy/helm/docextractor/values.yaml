@@ -49,6 +49,27 @@ browserless:
   waitMs: 9000
   concurrency: 4
 
+# -- Raw-HTTP content engine (statically-served docs, no render). Fetch
+# concurrency and the failure-rate guard that fails a run (rather than storing a
+# partial doc set) when too large a fraction of pages fail to fetch/scope.
+rawHttp:
+  concurrency: 8
+  maxFailureRate: 0.3             # abort when > this fraction fail (after minAttempts)
+  minAttempts: 10                 # don't trip the guard on tiny sources
+
+# -- Extraction safety / behavior tuning.
+extraction:
+  # Auto-retry pages blocked by bot protection (Akamai/Cloudflare) when the
+  # blocked fraction is at or below this % of the run's total pages. 0 disables
+  # the automatic pass (manual "retry blocked pages" still works).
+  blockedRetryMaxPct: 5.0
+  # Guard against a collapsed TOC wiping good content: if the rebuilt TOC has
+  # fewer scrapable pages than this ratio of the source's current live article
+  # count, fail the run instead of mass-removing. Only enforced once a source has
+  # at least tocCollapseMinPrior live articles (so new/tiny sources aren't gated).
+  tocCollapseMinRatio: 0.5
+  tocCollapseMinPrior: 20
+
 # -- LLM fallback (off by default)
 llm:
   fallbackEnabled: false

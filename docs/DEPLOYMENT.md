@@ -119,6 +119,11 @@ Key values (see [`values.yaml`](../deploy/helm/docextractor/values.yaml) for all
 | `imageVlm.apiKey` | — | OpenRouter bearer key for image descriptions |
 | `imageVlm.model` | `qwen/qwen3-vl-32b-instruct` | Vision model for image descriptions |
 | `imageVlm.maxPerRun` | `100` | Max new image descriptions per run (budget) |
+| `extraction.blockedRetryMaxPct` | `5.0` | Auto-retry bot-blocked pages when ≤ this % of a run's pages (`0` disables) |
+| `extraction.tocCollapseMinRatio` | `0.5` | Fail a run instead of mass-removing when the rebuilt TOC drops below this ratio of the source's live articles |
+| `extraction.tocCollapseMinPrior` | `20` | Only enforce the TOC-collapse guard once a source has at least this many live articles |
+| `rawHttp.concurrency` | `8` | Fetch concurrency for the raw-HTTP (static docs) content engine |
+| `rawHttp.maxFailureRate` | `0.3` | Abort a raw-HTTP run when more than this fraction of pages fail |
 
 ### Storage Notes
 

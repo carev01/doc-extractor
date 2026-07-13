@@ -33,6 +33,18 @@ data:
   DOCEXTRACTOR_BROWSERLESS_URL: {{ (.Values.browserless | default dict).url | default "http://browserless.browserless.svc.cluster.local:3000" | quote }}
   DOCEXTRACTOR_BROWSERLESS_WAIT_MS: {{ (.Values.browserless | default dict).waitMs | default 9000 | quote }}
   DOCEXTRACTOR_BROWSERLESS_CONCURRENCY: {{ (.Values.browserless | default dict).concurrency | default 4 | quote }}
+  # Raw-HTTP content engine (statically-served docs) — fetch concurrency + the
+  # failure-rate guard that aborts a run rather than storing a partial doc set.
+  DOCEXTRACTOR_RAW_HTTP_CONCURRENCY: {{ (.Values.rawHttp | default dict).concurrency | default 8 | quote }}
+  DOCEXTRACTOR_RAW_HTTP_MAX_FAILURE_RATE: {{ (.Values.rawHttp | default dict).maxFailureRate | default 0.3 | quote }}
+  DOCEXTRACTOR_RAW_HTTP_MIN_ATTEMPTS: {{ (.Values.rawHttp | default dict).minAttempts | default 10 | quote }}
+  # Extraction safety/behavior tuning. blockedRetryMaxPct: auto-retry bot-blocked
+  # pages when at or below this % of total (0 disables). tocCollapse*: fail a run
+  # instead of mass-removing when the rebuilt TOC collapses to < ratio of the
+  # prior live article count (only guarded above minPrior prior articles).
+  DOCEXTRACTOR_BLOCKED_RETRY_MAX_PCT: {{ (.Values.extraction | default dict).blockedRetryMaxPct | default 5.0 | quote }}
+  DOCEXTRACTOR_TOC_COLLAPSE_MIN_RATIO: {{ (.Values.extraction | default dict).tocCollapseMinRatio | default 0.5 | quote }}
+  DOCEXTRACTOR_TOC_COLLAPSE_MIN_PRIOR: {{ (.Values.extraction | default dict).tocCollapseMinPrior | default 20 | quote }}
   # API authentication (non-secret settings; the JWT + OAuth client secrets live
   # in the Secret). These are inert until auth.jwtSecret is set.
   DOCEXTRACTOR_AUTH_JWT_ALGORITHM: {{ (.Values.auth | default dict).jwtAlgorithm | default "HS256" | quote }}
