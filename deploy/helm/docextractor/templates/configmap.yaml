@@ -26,6 +26,7 @@ data:
   DOCEXTRACTOR_IMAGE_VLM_MAX_PER_RUN: {{ (.Values.imageVlm | default dict).maxPerRun | default 100 | quote }}
   DOCEXTRACTOR_IMAGE_VLM_MAX_CONSECUTIVE_FAILURES: {{ (.Values.imageVlm | default dict).maxConsecutiveFailures | default 5 | quote }}
   DOCEXTRACTOR_IMAGE_VLM_MAX_TOKENS: {{ (.Values.imageVlm | default dict).maxTokens | default 300 | quote }}
+  DOCEXTRACTOR_IMAGE_VLM_CONCURRENCY: {{ (.Values.imageVlm | default dict).concurrency | default 5 | quote }}
   DOCEXTRACTOR_IMAGE_MIN_DIMENSION: {{ (.Values.imageVlm | default dict).minDimension | default 100 | quote }}
   DOCEXTRACTOR_IMAGE_MIN_BYTES: {{ (.Values.imageVlm | default dict).minBytes | default 3072 | quote }}
   DOCEXTRACTOR_EXPORT_RETENTION_DAYS: {{ .Values.export.retentionDays | quote }}

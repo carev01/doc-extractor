@@ -110,6 +110,7 @@ imageVlm:
   maxPerRun: 100                  # budget: max new descriptions per run
   maxConsecutiveFailures: 5       # circuit breaker: stop after N failures in a row
   maxTokens: 300                  # max output tokens per description
+  concurrency: 5                  # parallel describe calls per article (1 = serial)
   # Selection thresholds — images below either are treated as decorative and skipped.
   minDimension: 100               # px (width or height)
   minBytes: 3072                  # bytes

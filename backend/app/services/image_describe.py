@@ -170,6 +170,14 @@ async def enrich_run_images(db: AsyncSession, source_id: uuid.UUID, run_id: uuid
         consecutive_failures = 0
         media_root = os.path.abspath(settings.media_dir)
 
+        # VLM describe calls are network-bound and slow; run them concurrently
+        # (bounded). DB writes stay serialized on the single session below.
+        sem = asyncio.Semaphore(max(1, settings.image_vlm_concurrency))
+
+        async def _describe_bounded(data: bytes, alt: str | None, mime: str):
+            async with sem:
+                return await describe(data, alt, mime=mime)
+
         # Articles of this source with at least one image needing work.
         need = or_(
             ArticleImage.is_meaningful.is_(None),
@@ -190,6 +198,8 @@ async def enrich_run_images(db: AsyncSession, source_id: uuid.UUID, run_id: uuid
                 .order_by(ArticleImage.sort_order)
             )).scalars().all()
             changed = False
+            # (img, data, mime) for meaningful, uncached images needing a VLM call.
+            pending: list[tuple[ArticleImage, bytes, str]] = []
             for img in imgs:
                 path = os.path.join(media_root, str(art_id), img.local_filename)
                 if not os.path.isfile(path):
@@ -206,29 +216,48 @@ async def enrich_run_images(db: AsyncSession, source_id: uuid.UUID, run_id: uuid
                     img.width, img.height, img.bytes_sha256 = ev.width, ev.height, ev.bytes_sha256
                 if not img.is_meaningful:
                     continue
-                # Resolve a description: cache first, then VLM (budget + breaker).
+                # Cache hit → apply immediately (no VLM call). Otherwise queue the
+                # image for a concurrent describe, reserving budget up front.
                 cached = await db.get(ImageDescriptionCache, img.bytes_sha256)
                 if cached is not None:
-                    text, kind = cached.description, cached.kind or "other"
-                else:
-                    if budget <= 0 or consecutive_failures >= settings.image_vlm_max_consecutive_failures:
-                        continue
+                    img.description, img.kind = cached.description, cached.kind or "other"
+                    article.content_markdown = inject_caption(
+                        article.content_markdown, img.local_path, cached.description)
+                    changed = True
+                    described += 1
+                elif budget > 0 and consecutive_failures < settings.image_vlm_max_consecutive_failures:
+                    budget -= 1  # reserve; refunded below if the call fails
                     mime = mimetypes.guess_type(img.local_filename)[0] or "image/png"
-                    res = await describe(data, img.alt_text, mime=mime)
-                    if res is None:
+                    pending.append((img, data, mime))
+
+            # Describe the queued images concurrently, then apply results serially.
+            if pending:
+                results = await asyncio.gather(
+                    *[_describe_bounded(d, im.alt_text, m) for (im, d, m) in pending],
+                    return_exceptions=True,
+                )
+                seen_sha: set[str] = set()
+                for (img, _d, _m), res in zip(pending, results):
+                    if isinstance(res, Exception) or res is None:
+                        if isinstance(res, Exception):
+                            logger.warning("describe_image failed: %s", res)
                         consecutive_failures += 1
+                        budget += 1  # refund — nothing stored for this image
                         continue
                     consecutive_failures = 0
-                    budget -= 1
-                    db.add(ImageDescriptionCache(
-                        bytes_sha256=img.bytes_sha256, description=res.text,
-                        kind=res.kind, model=settings.image_vlm_model,
-                    ))
-                    text, kind = res.text, res.kind
-                img.description, img.kind = text, kind
-                article.content_markdown = inject_caption(article.content_markdown, img.local_path, text)
-                changed = True
-                described += 1
+                    # One cache row per distinct image hash (an article may repeat
+                    # an image) to avoid a duplicate-PK insert in this commit.
+                    if img.bytes_sha256 not in seen_sha:
+                        db.add(ImageDescriptionCache(
+                            bytes_sha256=img.bytes_sha256, description=res.text,
+                            kind=res.kind, model=settings.image_vlm_model,
+                        ))
+                        seen_sha.add(img.bytes_sha256)
+                    img.description, img.kind = res.text, res.kind
+                    article.content_markdown = inject_caption(
+                        article.content_markdown, img.local_path, res.text)
+                    changed = True
+                    described += 1
 
             if changed:
                 await change_log.record_change(db, article=article, change_type="updated", run_id=run_id)
