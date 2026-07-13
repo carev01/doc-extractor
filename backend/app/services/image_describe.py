@@ -153,31 +153,58 @@ def _caption_block(description: str) -> str:
 
 
 def inject_caption(markdown: str, image_url: str, description: str) -> str:
-    """Insert (or replace) a '> **Figure:** …' caption immediately after the first
-    markdown image reference to *image_url*. Idempotent for a given (image, text)."""
+    """Insert (or replace) a '> **Figure:** …' caption immediately below the first
+    markdown image reference to *image_url*.
+
+    The HTML→markdown conversion often leaves an image *inline* in a paragraph —
+    its line carries prose before and after the ``![](…)`` token. Inserting after
+    such a line drops the caption below the whole paragraph (visibly separated
+    from the image by the trailing text). So an inline image is first isolated
+    onto its own line, splitting the surrounding prose into its own paragraphs,
+    and the caption is placed directly under the image. Idempotent for a given
+    (image, text): a re-run sees the already-isolated image and just refreshes
+    the caption."""
     lines = markdown.split("\n")
-    # Find the line bearing the image reference `](image_url)`.
     needle = f"]({image_url})"
     idx = next((i for i, ln in enumerate(lines) if needle in ln), None)
     if idx is None:
         return markdown
 
     block = _caption_block(description)
-    # Determine the insertion point: right after the image line, skipping one blank.
-    j = idx + 1
-    if j < len(lines) and lines[j].strip() == "":
-        j += 1
-    # Replace an existing caption block for this image (a run of '> ' lines) if present.
-    if j < len(lines) and lines[j].lstrip().startswith("> **Figure:**"):
-        end = j
-        while end < len(lines) and lines[end].lstrip().startswith(">"):
-            end += 1
-        lines[j:end] = [block]
+    line = lines[idx]
+    p = line.find(needle)
+    istart = line.rfind("![", 0, p)
+    if istart < 0:
+        # The URL is on the line but not as an image token (e.g. a bare link) —
+        # keep the whole line and just place the caption after it.
+        before, image_tok, after = "", line, ""
+    else:
+        before = line[:istart].rstrip()
+        image_tok = line[istart:p + len(needle)]
+        after = line[p + len(needle):].strip()
+
+    # Image already alone on its line: refresh an existing caption run, else add.
+    if not before and not after:
+        j = idx + 1
+        if j < len(lines) and lines[j].strip() == "":
+            j += 1
+        if j < len(lines) and lines[j].lstrip().startswith("> **Figure:**"):
+            end = j
+            while end < len(lines) and lines[end].lstrip().startswith(">"):
+                end += 1
+            lines[idx:end] = [image_tok, "", block]
+        else:
+            lines[idx:idx + 1] = [image_tok, "", block]
         return "\n".join(lines)
 
-    # Insert a fresh caption with a blank line on each side.
-    insert_at = idx + 1
-    lines[insert_at:insert_at] = ["", block]
+    # Inline image: isolate it (with its caption) between the surrounding prose.
+    rebuilt: list[str] = []
+    if before:
+        rebuilt += [before, ""]
+    rebuilt += [image_tok, "", block]
+    if after:
+        rebuilt += ["", after]
+    lines[idx:idx + 1] = rebuilt
     return "\n".join(lines)
 
 
