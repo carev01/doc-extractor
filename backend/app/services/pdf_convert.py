@@ -417,10 +417,21 @@ def split_into_segments(converted: ConvertedDoc, outline: "list[Segment]") -> li
             markdown=md.strip(), images=list(converted.images),
         )]
 
+    page_texts = converted.page_texts or []
     segs: list[RenderedSegment] = []
     for i, (line, title, level, path, p_start, p_end) in enumerate(boundaries):
         end_line = boundaries[i + 1][0] if i + 1 < len(boundaries) else len(lines)
         body = "\n".join(lines[line:end_line]).strip()
+        if not body and page_texts and 0 <= p_start < len(page_texts):
+            # The line slice between adjacent boundaries collapsed to nothing —
+            # the outline is finer-grained than the headings Docling detected, so
+            # this section wasn't delimited in the heading stream and would drop
+            # out with no content even though its pages hold text. Fall back to
+            # the entry's page-range text so the section is never empty. Siblings
+            # sharing a page repeat that page's text (distinct topic_keys, so
+            # distinct articles) — acceptable next to losing the content entirely.
+            hi = min(p_end, len(page_texts) - 1)
+            body = "\n".join(page_texts[p_start:hi + 1]).strip()
         segs.append(RenderedSegment(
             title=title, level=level, path=path,
             page_start=p_start, page_end=p_end,
