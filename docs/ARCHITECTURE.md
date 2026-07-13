@@ -98,10 +98,11 @@ Worker claims run from queue
             updated rows so improved content reaches the delta feed
 
 Run kinds (worker dispatches on `run.kind`): `extract` (full scrape + enrichment),
-`escalate` (PDF VLM re-conversion retry, no scrape), and `enrich` (image-enrichment
+`escalate` (PDF VLM re-conversion retry, no scrape), `enrich` (image-enrichment
 only — describes ALL of a source's missing images with no scrape and no per-run budget;
-the on-demand "describe missing images" action queues one). All three write a `run_start`
-floor and emit their changes as `content_changes` rows.
+the on-demand "describe missing images" action queues one), and `retry_blocked`
+(re-scrapes only the pages a prior run recorded as bot-blocked, no TOC re-discovery).
+All write a `run_start` floor and emit their changes as `content_changes` rows.
     │
     ▼
 Run completes (status=completed or failed)
@@ -307,6 +308,20 @@ Optional OAuth2 login for Google and Okta. Configure client ID/secret and set
   ID to the background task, so there's never a duplicate or orphaned run.
 - **Checkpoint-based resume**: TOC checkpoints allow resuming interrupted extractions
   without re-doing completed work.
+- **Fail loudly rather than lose data**: a run whose rebuilt TOC collapses (a scraper or
+  upstream failure yielding a near-empty TOC) is aborted *before* the destructive TOC
+  swap when its scrapable count drops below `toc_collapse_min_ratio` of the source's live
+  articles — so a degraded scrape can never mass-remove good content. Pages blocked by bot
+  protection are recorded on the run (`blocked_pending`) and auto-retried in-line when they
+  are ≤ `blocked_retry_max_pct` of the run (or on demand via a `retry_blocked` run), rather
+  than silently stored empty or skipped.
+- **Version-independent identity via `topic_key`**: articles match across runs by a
+  `{version}`-templated `topic_key`, not raw URL, so a version bump updates in place instead
+  of duplicating. Because a run with a missing/misconfigured `url_template` once produced
+  literal-version keys (mass duplication), `derive_topic_key` now templatizes whenever the
+  version is known, and `process_article_result` falls back to matching an existing article
+  by `source_url` when the key doesn't match (skipped when a URL is shared by several live
+  articles, e.g. PDF sections) — so key drift heals instead of duplicating.
 - **Transactional outbox for the delta feed**: content changes are recorded in an
   append-only `content_changes` table written in the mutation's own transaction, rather
   than derived at read time. A `BIGSERIAL` id gives a monotonic watermark; a safe-ceiling
