@@ -56,3 +56,58 @@ def test_matched_outline_entries_get_a_segment_each():
     assert [s.title for s in segs] == ["One", "Two"]
     assert "first body" in segs[0].markdown and "second body" not in segs[0].markdown
     assert "second body" in segs[1].markdown
+
+
+def test_bold_and_plain_title_lines_become_segments():
+    # Docling emitted no ATX headings — section titles are a bold line and a bare
+    # standalone line. Both outline entries must now map to their own segment with
+    # their own body (accurate fine-grained TOC), not collapse to one.
+    lines = [
+        "**Getting started**", "",
+        "install body text", "",
+        "Configure backups", "",     # bare title line (no punctuation)
+        "configure body text", "",
+    ]
+    converted = ConvertedDoc(
+        markdown="\n".join(lines), headings=[],
+        page_texts=["\n".join(lines)], table_pages=set(), page_line_starts=[0],
+    )
+    outline = [
+        Segment(title="Getting started", level=1, page_start=0, page_end=0, path=["Getting started"]),
+        Segment(title="Configure backups", level=1, page_start=0, page_end=0, path=["Configure backups"]),
+    ]
+    segs = split_into_segments(converted, outline)
+    assert [s.title for s in segs] == ["Getting started", "Configure backups"]
+    assert "install body text" in segs[0].markdown and "configure body text" not in segs[0].markdown
+    assert "configure body text" in segs[1].markdown
+
+
+def test_numbered_outline_matches_bold_title_by_containment():
+    # Outline carries section numbering the rendered heading lacks; a *strong*
+    # (bold) line still matches via containment.
+    lines = ["**Overview**", "", "overview body", ""]
+    converted = ConvertedDoc(
+        markdown="\n".join(lines), headings=[],
+        page_texts=["\n".join(lines)], table_pages=set(), page_line_starts=[0],
+    )
+    outline = [Segment(title="1.2 Overview", level=2, page_start=0, page_end=0, path=["1.2 Overview"])]
+    segs = split_into_segments(converted, outline)
+    assert [s.title for s in segs] == ["1.2 Overview"]
+    assert "overview body" in segs[0].markdown
+
+
+def test_bare_prose_line_is_not_matched_as_a_heading():
+    # A body sentence must never be mistaken for a heading (weak lines match only
+    # by exact equality). "Beta" has no title line, so it stays grouped.
+    lines = ["## Alpha", "", "Click Save to apply the changes.", ""]
+    converted = ConvertedDoc(
+        markdown="\n".join(lines), headings=[],
+        page_texts=["\n".join(lines)], table_pages=set(), page_line_starts=[0],
+    )
+    outline = [
+        Segment(title="Alpha", level=1, page_start=0, page_end=0, path=["Alpha"]),
+        Segment(title="Save", level=2, page_start=0, page_end=0, path=["Save"]),
+    ]
+    segs = split_into_segments(converted, outline)
+    assert [s.title for s in segs] == ["Alpha"]           # "Save" not matched to the sentence
+    assert "Click Save to apply" in segs[0].markdown
