@@ -157,6 +157,9 @@ class Settings(BaseSettings):
     image_vlm_max_per_run: int = 100            # budget: max NEW descriptions per run
     image_vlm_max_consecutive_failures: int = 5  # circuit breaker
     image_vlm_max_tokens: int = 300
+    # Concurrent VLM describe calls per article (the calls are network-bound;
+    # DB writes stay serialized). 1 = the old one-at-a-time behavior.
+    image_vlm_concurrency: int = 5
     # Selection thresholds: images smaller than either are treated as decorative.
     image_min_dimension: int = 100
     image_min_bytes: int = 3072

@@ -12,7 +12,6 @@ import hashlib
 import io
 import json
 import logging
-import mimetypes
 import os
 import uuid
 from dataclasses import dataclass
@@ -40,12 +39,35 @@ class ImageEval:
     bytes_sha256: str
 
 
+# Raster formats a vision model can actually consume, mapped to their MIME.
+# Anything else (WMF/EMF/SVG/TIFF/…) — even when mislabeled .png — is rejected
+# by the VLM (400), so it is never worth describing.
+_VLM_IMAGE_FORMATS = {
+    "PNG": "image/png",
+    "JPEG": "image/jpeg",
+    "WEBP": "image/webp",
+    "GIF": "image/gif",
+}
+
+
+def _detect_format(data: bytes) -> str | None:
+    """PIL's format name for these bytes (e.g. 'PNG'), or None if unreadable.
+    Detected from content, not the file extension — Arcserve serves some WMF
+    vector images under a .png name."""
+    try:
+        from PIL import Image  # local import: Pillow is only needed here
+        with Image.open(io.BytesIO(data)) as img:
+            return (img.format or "").upper() or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def evaluate_image(data: bytes) -> ImageEval:
     """Classify raw image bytes as meaningful (worth describing) or decorative.
 
     Boilerplate (skins/ui-icons/spacers) is already filtered at download time, so
-    this only screens by size and pixel dimensions. Non-raster (e.g. SVG) or
-    corrupt bytes can't be measured → treated as not meaningful."""
+    this screens by size, pixel dimensions, and format. Non-raster (SVG/WMF),
+    unsupported, or corrupt bytes can't be sent to the VLM → not meaningful."""
     sha = hashlib.sha256(data).hexdigest()
     if len(data) < settings.image_min_bytes:
         return ImageEval(False, None, None, sha)
@@ -53,8 +75,13 @@ def evaluate_image(data: bytes) -> ImageEval:
         from PIL import Image  # local import: Pillow is only needed here
         with Image.open(io.BytesIO(data)) as img:
             w, h = img.size
+            fmt = (img.format or "").upper()
     except Exception:  # noqa: BLE001 — unreadable/non-raster → not meaningful
         return ImageEval(False, None, None, sha)
+    # WMF and friends report a header size via Image.open (lazy) but can't be
+    # decoded or sent to the VLM — exclude by format, not just by dimensions.
+    if fmt not in _VLM_IMAGE_FORMATS:
+        return ImageEval(False, w, h, sha)
     meaningful = w >= settings.image_min_dimension and h >= settings.image_min_dimension
     return ImageEval(meaningful, w, h, sha)
 
@@ -170,6 +197,14 @@ async def enrich_run_images(db: AsyncSession, source_id: uuid.UUID, run_id: uuid
         consecutive_failures = 0
         media_root = os.path.abspath(settings.media_dir)
 
+        # VLM describe calls are network-bound and slow; run them concurrently
+        # (bounded). DB writes stay serialized on the single session below.
+        sem = asyncio.Semaphore(max(1, settings.image_vlm_concurrency))
+
+        async def _describe_bounded(data: bytes, alt: str | None, mime: str):
+            async with sem:
+                return await describe(data, alt, mime=mime)
+
         # Articles of this source with at least one image needing work.
         need = or_(
             ArticleImage.is_meaningful.is_(None),
@@ -190,6 +225,8 @@ async def enrich_run_images(db: AsyncSession, source_id: uuid.UUID, run_id: uuid
                 .order_by(ArticleImage.sort_order)
             )).scalars().all()
             changed = False
+            # (img, data, mime) for meaningful, uncached images needing a VLM call.
+            pending: list[tuple[ArticleImage, bytes, str]] = []
             for img in imgs:
                 path = os.path.join(media_root, str(art_id), img.local_filename)
                 if not os.path.isfile(path):
@@ -206,29 +243,56 @@ async def enrich_run_images(db: AsyncSession, source_id: uuid.UUID, run_id: uuid
                     img.width, img.height, img.bytes_sha256 = ev.width, ev.height, ev.bytes_sha256
                 if not img.is_meaningful:
                     continue
-                # Resolve a description: cache first, then VLM (budget + breaker).
+                # Cache hit → apply immediately (no VLM call). Otherwise queue the
+                # image for a concurrent describe, reserving budget up front.
                 cached = await db.get(ImageDescriptionCache, img.bytes_sha256)
                 if cached is not None:
-                    text, kind = cached.description, cached.kind or "other"
+                    img.description, img.kind = cached.description, cached.kind or "other"
+                    article.content_markdown = inject_caption(
+                        article.content_markdown, img.local_path, cached.description)
+                    changed = True
+                    described += 1
                 else:
+                    # Gate on the real format (from bytes, not the .png name): a
+                    # WMF/vector mislabeled .png 400s the VLM on every run. Mark it
+                    # not-meaningful so it leaves the backlog for good.
+                    fmt = _detect_format(data)
+                    if fmt not in _VLM_IMAGE_FORMATS:
+                        img.is_meaningful = False
+                        continue
                     if budget <= 0 or consecutive_failures >= settings.image_vlm_max_consecutive_failures:
                         continue
-                    mime = mimetypes.guess_type(img.local_filename)[0] or "image/png"
-                    res = await describe(data, img.alt_text, mime=mime)
-                    if res is None:
+                    budget -= 1  # reserve; refunded below if the call fails
+                    pending.append((img, data, _VLM_IMAGE_FORMATS[fmt]))
+
+            # Describe the queued images concurrently, then apply results serially.
+            if pending:
+                results = await asyncio.gather(
+                    *[_describe_bounded(d, im.alt_text, m) for (im, d, m) in pending],
+                    return_exceptions=True,
+                )
+                seen_sha: set[str] = set()
+                for (img, _d, _m), res in zip(pending, results):
+                    if isinstance(res, Exception) or res is None:
+                        if isinstance(res, Exception):
+                            logger.warning("describe_image failed: %s", res)
                         consecutive_failures += 1
+                        budget += 1  # refund — nothing stored for this image
                         continue
                     consecutive_failures = 0
-                    budget -= 1
-                    db.add(ImageDescriptionCache(
-                        bytes_sha256=img.bytes_sha256, description=res.text,
-                        kind=res.kind, model=settings.image_vlm_model,
-                    ))
-                    text, kind = res.text, res.kind
-                img.description, img.kind = text, kind
-                article.content_markdown = inject_caption(article.content_markdown, img.local_path, text)
-                changed = True
-                described += 1
+                    # One cache row per distinct image hash (an article may repeat
+                    # an image) to avoid a duplicate-PK insert in this commit.
+                    if img.bytes_sha256 not in seen_sha:
+                        db.add(ImageDescriptionCache(
+                            bytes_sha256=img.bytes_sha256, description=res.text,
+                            kind=res.kind, model=settings.image_vlm_model,
+                        ))
+                        seen_sha.add(img.bytes_sha256)
+                    img.description, img.kind = res.text, res.kind
+                    article.content_markdown = inject_caption(
+                        article.content_markdown, img.local_path, res.text)
+                    changed = True
+                    described += 1
 
             if changed:
                 await change_log.record_change(db, article=article, change_type="updated", run_id=run_id)
