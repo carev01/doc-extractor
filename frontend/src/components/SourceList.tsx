@@ -568,7 +568,7 @@ function SourceItem({
 
   return (
     <li
-      className={selected ? "selected" : ""}
+      className={`source-card${selected ? " selected" : ""}`}
       onClick={() => onSelect(source)}
     >
       <div className="item-info">
@@ -629,9 +629,6 @@ function SourceItem({
               ↻ Re-derive
             </button>
           </label>
-        </div>
-
-        <div className="item-meta">
           <label className="sub" style={{ display: "flex", alignItems: "center", gap: "0.4em" }}>
             Job:
             <select
@@ -650,9 +647,6 @@ function SourceItem({
               ))}
             </select>
           </label>
-        </div>
-
-        <div className="item-meta">
           {authRealms.length > 0 && (
             <select
               value={source.auth_realm_id ?? ''}
