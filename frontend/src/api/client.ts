@@ -233,9 +233,12 @@ export async function deleteSource(id: string): Promise<void> {
 // ── Extraction ──
 
 export async function triggerExtraction(
-  sourceId: string
+  sourceId: string,
+  force = false
 ): Promise<ExtractionTrigger> {
-  const res = await api.post(`/extraction/trigger/${sourceId}`);
+  const res = await api.post(`/extraction/trigger/${sourceId}`, null, {
+    params: force ? { force: true } : undefined,
+  });
   return res.data;
 }
 

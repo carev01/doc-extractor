@@ -386,10 +386,10 @@ function SourceItem({
   // Clean up any timer on unmount.
   useEffect(() => stopPolling, [stopPolling]);
 
-  const handleExtract = async () => {
+  const handleExtract = async (force = false) => {
     setItemError("");
     try {
-      const res = await triggerExtraction(source.id);
+      const res = await triggerExtraction(source.id, force);
       setActiveRun(null);
       setRunId(res.run_id);
       onSourceChanged();
@@ -782,6 +782,19 @@ function SourceItem({
         >
           {isExtracting ? "Extracting..." : "Extract"}
         </button>
+        {source.source_type === "pdf" && (
+          <button
+            className="btn-secondary-sm"
+            title="Re-convert and re-segment the PDF even if its bytes are unchanged (applies conversion fixes)"
+            disabled={isExtracting}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleExtract(true);
+            }}
+          >
+            Force re-extract
+          </button>
+        )}
         <button
           className="btn-secondary-sm"
           title="Re-apply the current sanitizer to already-stored articles"

@@ -78,3 +78,19 @@ async def test_trigger_enqueues_pending_run(client):
 
     runs = await c.get(f"/api/extraction/runs?source_id={sid}")
     assert runs.json()["runs"][0]["trigger"] == "manual"
+
+
+async def test_trigger_force_sets_force_trigger(client):
+    c, session_factory = client
+    async with session_factory() as db:
+        v = Vendor(name="V2"); db.add(v); await db.flush()
+        prod = Product(vendor_id=v.id, name="P2"); db.add(prod); await db.flush()
+        s = DocumentationSource(product_id=prod.id, name="S2", base_url="http://x2")
+        db.add(s); await db.commit(); await db.refresh(s)
+        sid = str(s.id)
+
+    r = await c.post(f"/api/extraction/trigger/{sid}?force=true")
+    assert r.status_code == 200 and r.json()["status"] == "pending"
+
+    runs = await c.get(f"/api/extraction/runs?source_id={sid}")
+    assert runs.json()["runs"][0]["trigger"] == "force"

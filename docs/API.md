@@ -71,7 +71,7 @@ Admin-only endpoints (user management, jobs, auth realms) require `admin`.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/extraction/trigger/{source_id}` | Trigger an extraction run |
+| `POST` | `/api/extraction/trigger/{source_id}` | Trigger an extraction run (`?force=true` re-converts a PDF whose bytes are unchanged) |
 | `POST` | `/api/extraction/enrich/{source_id}` | Queue an image-enrichment-only run (`kind=enrich`; describe all missing images, no re-scrape). 409 if descriptions are disabled, nothing needs describing, or a run is already active. |
 | `GET` | `/api/extraction/runs` | List runs (optional `source_id` filter) |
 | `GET` | `/api/extraction/runs/{run_id}` | Get run status |
