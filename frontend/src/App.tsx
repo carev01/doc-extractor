@@ -1,21 +1,26 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type { Vendor, Product, DocumentationSource, AuthUser } from "./types";
 import { authApi, getAccessToken } from "./api/client";
 import { Login } from "./views/Login";
-import { ApiKeys } from "./views/ApiKeys";
-import { Admin } from "./views/Admin";
-import { Account } from "./views/Account";
 import VendorList from "./components/VendorList";
-import ProductList from "./components/ProductList";
-import SourceList from "./components/SourceList";
-import JobsView from "./components/JobsView";
-import Dashboard from "./components/Dashboard";
-import ExportPanel from "./components/ExportPanel";
-import ChangelogPanel from "./components/ChangelogPanel";
-import DocsBrowser from "./components/DocsBrowser";
-import { Logins } from "./views/Logins";
-import { Webhooks } from "./views/Webhooks";
 import "./App.css";
+
+// Code-split the non-initial views: the authed shell opens on the Vendors list,
+// so everything else — including the heavy markdown/diff path (DocsBrowser,
+// ChangelogPanel, ExportPanel) — is loaded on demand, keeping the initial bundle
+// to the shell + vendor list.
+const ProductList = lazy(() => import("./components/ProductList"));
+const SourceList = lazy(() => import("./components/SourceList"));
+const JobsView = lazy(() => import("./components/JobsView"));
+const Dashboard = lazy(() => import("./components/Dashboard"));
+const ExportPanel = lazy(() => import("./components/ExportPanel"));
+const ChangelogPanel = lazy(() => import("./components/ChangelogPanel"));
+const DocsBrowser = lazy(() => import("./components/DocsBrowser"));
+const ApiKeys = lazy(() => import("./views/ApiKeys").then((m) => ({ default: m.ApiKeys })));
+const Admin = lazy(() => import("./views/Admin").then((m) => ({ default: m.Admin })));
+const Account = lazy(() => import("./views/Account").then((m) => ({ default: m.Account })));
+const Logins = lazy(() => import("./views/Logins").then((m) => ({ default: m.Logins })));
+const Webhooks = lazy(() => import("./views/Webhooks").then((m) => ({ default: m.Webhooks })));
 
 type View =
   | "vendors"
@@ -280,6 +285,7 @@ export default function App() {
       </header>
 
       <main className="app-main fade-in-up">
+        <Suspense fallback={<div className="hint" style={{ padding: "1em" }}>Loading…</div>}>
         {view === "jobs" && <JobsView />}
 
         {view === "logins" && <Logins />}
@@ -342,6 +348,7 @@ export default function App() {
               )}
             </>
           )}
+        </Suspense>
       </main>
     </div>
   );
