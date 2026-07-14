@@ -349,6 +349,42 @@ def _heading_lines(lines: list[str]) -> list[tuple[int, str]]:
     return out
 
 
+# A line that is entirely bold (optionally behind a list marker): "**Title**",
+# "__Title__", "- **Title**". Docling renders many PDF section headings this way
+# rather than as ATX '#' headings.
+_BOLD_ONLY_RE = re.compile(r"^(?:[-*+]\s+)?(?:\*\*|__)(.+?)(?:\*\*|__)$")
+# Max visible length for a bare line to be considered a title candidate (keeps
+# body sentences out of the candidate set).
+_TITLE_LINE_MAX = 120
+
+
+def _title_candidate_lines(lines: list[str]) -> list[tuple[int, str, bool]]:
+    """Lines that could delimit a section, as (index, title_text, strong).
+
+    ``strong`` = an ATX heading or a fully-bold line (a confident heading, so it
+    is eligible for looser containment matching). Bare short lines are ``weak``:
+    matched only by exact normalized equality, so body prose can't be mistaken
+    for a heading. This widens boundary detection well beyond ATX headings —
+    essential for PDFs (e.g. Dell manuals) whose outline is far finer than the
+    ATX headings Docling emits, most titles landing as bold or plain lines."""
+    out: list[tuple[int, str, bool]] = []
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if not s:
+            continue
+        m = _ATX_RE.match(s)
+        if m:
+            out.append((i, m.group(2).strip(), True)); continue
+        mb = _BOLD_ONLY_RE.match(s)
+        if mb:
+            out.append((i, mb.group(1).strip(), True)); continue
+        # A short standalone line with no sentence-ending punctuation reads as a
+        # heading Docling left unstyled; only exact matches use it (weak).
+        if len(s) <= _TITLE_LINE_MAX and s[-1] not in ".:;,!?" and s[0] not in "|>![":
+            out.append((i, s, False))
+    return out
+
+
 def _norm_core(s: str) -> str:
     """Match key: unescape entities, casefold, strip all non-alphanumerics.
     Makes '1Preface' == '1 Preface' and "What's" == 'What's'."""
@@ -372,6 +408,26 @@ def _find_heading_line(headings: list[tuple[int, str]], title: str, start: int) 
     return None
 
 
+def _find_boundary(candidates: list[tuple[int, str, bool]], title: str, start: int) -> "int | None":
+    """Locate the line delimiting *title* at or after *start*. Exact normalized
+    match against any candidate first (safe for weak/bare lines); then containment
+    against *strong* candidates only (handles section numbering, e.g. outline
+    '1.2 Foo' vs a heading 'Foo'), never against bare prose lines."""
+    t = _norm_core(title)
+    if not t:
+        return None
+    for idx, text, _strong in candidates:
+        if idx >= start and _norm_core(text) == t:
+            return idx
+    for idx, text, strong in candidates:
+        if idx < start or not strong:
+            continue
+        h = _norm_core(text)
+        if h and (t in h or h in t):
+            return idx
+    return None
+
+
 def split_into_segments(converted: ConvertedDoc, outline: "list[Segment]") -> list[RenderedSegment]:
     md = converted.markdown
     lines = md.split("\n")
@@ -380,18 +436,21 @@ def split_into_segments(converted: ConvertedDoc, outline: "list[Segment]") -> li
     # boundary tuples: (line_index, title, level, path, page_start, page_end)
     boundaries: list[tuple[int, str, int, list[str], int, int]] = []
     if outline:
+        # Match outline titles against ATX headings, bold lines, AND bare title
+        # lines — not just '#' headings — so a fine-grained outline (Dell manuals)
+        # maps accurately instead of collapsing to the few ATX-headed sections.
+        candidates = _title_candidate_lines(lines)
         cursor = 0
-        starts = converted.page_line_starts
         for seg in outline:
-            line = _find_heading_line(heading_lines, seg.title, cursor)
+            line = _find_boundary(candidates, seg.title, cursor)
             if line is None:
-                # Never drop: fall back to the page where the entry begins.
-                if starts and 0 <= seg.page_start < len(starts):
-                    line = max(starts[seg.page_start], cursor)
-                else:
-                    line = cursor
-                logger.info("split: %r not found as heading; page-fallback line %d",
-                            seg.title, line)
+                # This outline entry isn't delimited by a heading Docling detected.
+                # Some PDFs (e.g. Dell manuals) expose a far finer outline than the
+                # headings present in the converted markdown. Skip it: its text
+                # stays within the preceding matched section, keeping content
+                # correct — rather than slicing the page into unrelated fragments
+                # by a page-anchored guess (which produced garbage articles).
+                continue
             cursor = line + 1
             boundaries.append((line, seg.title, seg.level, seg.path or [seg.title],
                                seg.page_start, seg.page_end))
@@ -417,25 +476,27 @@ def split_into_segments(converted: ConvertedDoc, outline: "list[Segment]") -> li
             markdown=md.strip(), images=list(converted.images),
         )]
 
-    page_texts = converted.page_texts or []
     segs: list[RenderedSegment] = []
     for i, (line, title, level, path, p_start, p_end) in enumerate(boundaries):
         end_line = boundaries[i + 1][0] if i + 1 < len(boundaries) else len(lines)
         body = "\n".join(lines[line:end_line]).strip()
-        if not body and page_texts and 0 <= p_start < len(page_texts):
-            # The line slice between adjacent boundaries collapsed to nothing —
-            # the outline is finer-grained than the headings Docling detected, so
-            # this section wasn't delimited in the heading stream and would drop
-            # out with no content even though its pages hold text. Fall back to
-            # the entry's page-range text so the section is never empty. Siblings
-            # sharing a page repeat that page's text (distinct topic_keys, so
-            # distinct articles) — acceptable next to losing the content entirely.
-            hi = min(p_end, len(page_texts) - 1)
-            body = "\n".join(page_texts[p_start:hi + 1]).strip()
+        if not body:
+            # A heading with no content before the next boundary — no article to
+            # emit (its children, if any, are separate segments). Skipping it also
+            # keeps the TOC free of contentless nodes and the article total honest.
+            continue
         segs.append(RenderedSegment(
             title=title, level=level, path=path,
             page_start=p_start, page_end=p_end,
             markdown=body,
             images=[img for img in converted.images if img.filename in body],
         ))
+    if not segs:
+        # No heading-delimited section held content — keep the whole document as
+        # one article rather than emitting nothing.
+        return [RenderedSegment(
+            title="Document", level=1, path=[], page_start=0,
+            page_end=max(0, len(converted.page_texts) - 1),
+            markdown=md.strip(), images=list(converted.images),
+        )]
     return segs
