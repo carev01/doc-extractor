@@ -111,3 +111,42 @@ def test_bare_prose_line_is_not_matched_as_a_heading():
     segs = split_into_segments(converted, outline)
     assert [s.title for s in segs] == ["Alpha"]           # "Save" not matched to the sentence
     assert "Click Save to apply" in segs[0].markdown
+
+
+def test_unmatched_entry_does_not_cascade_to_a_distant_heading():
+    # THE regression that collapsed the Avamar guide: an early outline entry with
+    # no heading on its own page ("Preface") must NOT match a same-word heading
+    # many pages away ("## Preface conventions" on page 8). Doing so dragged the
+    # monotonic cursor to the end and orphaned every page in between. Page-anchored
+    # matching bounds each title to a window around its bookmark page, so the
+    # unmatched entry is simply skipped and the later, correctly-placed entries
+    # ("Overview" on page 0, "Preface conventions" on page 8) each get a segment.
+    lines = [
+        "## Overview", "overview body", "",          # page 0  (lines 0-2)
+        "filler p1", "",                              # page 1  (3-4)
+        "filler p2", "",                              # page 2  (5-6)
+        "filler p3", "",                              # page 3  (7-8)
+        "filler p4", "",                              # page 4  (9-10)
+        "filler p5", "",                              # page 5  (11-12)
+        "filler p6", "",                              # page 6  (13-14)
+        "filler p7", "",                              # page 7  (15-16)
+        "## Preface conventions", "preface body", "", # page 8  (17-19)
+    ]
+    converted = ConvertedDoc(
+        markdown="\n".join(lines), headings=[],
+        page_texts=["\n".join(lines)], table_pages=set(),
+        page_line_starts=[0, 3, 5, 7, 9, 11, 13, 15, 17],
+    )
+    outline = [
+        Segment(title="Preface", level=1, page_start=0, page_end=0, path=["Preface"]),
+        Segment(title="Overview", level=1, page_start=0, page_end=0, path=["Overview"]),
+        Segment(title="Preface conventions", level=2, page_start=8, page_end=8,
+                path=["Preface conventions"]),
+    ]
+    segs = split_into_segments(converted, outline)
+    # "Preface" (no page-0 heading) is skipped — NOT matched to the page-8 heading.
+    assert [s.title for s in segs] == ["Overview", "Preface conventions"]
+    # No orphaned content: pages 0-7 land under Overview, page 8 under its own entry.
+    assert "filler p7" in segs[0].markdown
+    assert "preface body" in segs[1].markdown
+    assert "overview body" not in segs[1].markdown
