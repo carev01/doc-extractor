@@ -295,11 +295,23 @@ async def run_pdf_extraction(service, db, source, run, run_pk,
     seg_by_outline: dict[int, RenderedSegment] = {
         seg.outline_index: seg for seg in rendered_segments if seg.outline_index >= 0
     }
+    # An article-start's URL must be UNIQUE, not just "#page=N": several outline
+    # sections routinely start on the same page (Data server / MCS / EMT all begin
+    # on page 25). source_url is an article identity key for both the URL-healing
+    # fallback in process_article_result and _reconcile_removals — a shared #page
+    # anchor makes same-page sections collapse into one article (each is processed
+    # in turn, sees the one running survivor at that URL, and overwrites it). The
+    # "#page=N" fragment still deep-links the PDF page; "&s=<idx>" disambiguates the
+    # section (viewers ignore it). Non-article TOC entries keep the plain page
+    # anchor — they carry no article and link via the covering article at serve time.
+    def _page_url(page_start: int) -> str:
+        return f"{source.base_url}#page={page_start + 1}"
+
     if outline and seg_by_outline:
         for idx, o in enumerate(outline):
             parent_id = _parent_of(o.level)
             seg = seg_by_outline.get(idx)
-            url = f"{source.base_url}#page={o.page_start + 1}"
+            url = f"{_page_url(o.page_start)}&s={idx}" if seg is not None else _page_url(o.page_start)
             toc = TOCEntry(
                 source_id=source.id, title=o.title, url=url,
                 level=o.level, sort_order=idx,
@@ -318,7 +330,7 @@ async def run_pdf_extraction(service, db, source, run, run_pk,
         for i, seg in enumerate(rendered_segments):
             parent_id = _parent_of(seg.level)
             topic_key = _topic_key(seg.path, seg.title)
-            url = f"{source.base_url}#page={seg.page_start + 1}"
+            url = f"{_page_url(seg.page_start)}&s={i}"
             toc = TOCEntry(
                 source_id=source.id, title=seg.title, url=url,
                 level=seg.level, sort_order=i, is_article=True, parent_id=parent_id,
