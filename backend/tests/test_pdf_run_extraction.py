@@ -225,9 +225,10 @@ async def test_page_shift_unchanged_section_not_removed(factory, tmp_path):
         )).scalars().all()
         assert [a.title for a in arts] == ["Chapter 1", "Chapter 2"]
         # The crux: neither section is flagged removed, and each points at its
-        # new page-anchored URL.
+        # new page-anchored URL (with the per-section "&s=" disambiguator).
         assert all(a.removed_at is None for a in arts)
-        assert all(a.source_url.endswith(("#page=2", "#page=3")) for a in arts)
+        assert "#page=2&s=" in arts[0].source_url
+        assert "#page=3&s=" in arts[1].source_url
 
 
 def _pdf_duplicate_titles() -> bytes:
