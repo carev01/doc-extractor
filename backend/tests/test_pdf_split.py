@@ -73,11 +73,12 @@ def test_numbered_title_matches_spaced_heading():
     assert _find_heading_line(hl, "1Preface", 0) == 0
 
 
-def test_unmatched_outline_entry_grouped_not_page_fragmented():
-    # 'Hidden' has no matching heading in the converted markdown. It must NOT be
-    # turned into a page-anchored fragment (that produced garbage articles for
-    # finer-grained outlines like Dell manuals) — it's skipped, and its section's
-    # text stays under the preceding matched heading. Nothing is lost.
+def test_unmatched_entry_on_own_page_gets_page_anchored_article():
+    # 'Hidden' has no matching heading in the converted markdown, but it is a
+    # distinct outline entry on its own page (page 1). It becomes its own article
+    # anchored at that page — the PDF's bookmark page numbers are authoritative, so
+    # every TOC item gets its real content instead of being dropped and absorbed
+    # into a neighbour (the bug that left Dell TOC items pointing nowhere).
     md = "# Intro\n\nintro body\n\nhidden section body\n"
     conv = ConvertedDoc(markdown=md, headings=[], page_texts=[md, "p2"],
                         table_pages=set(), images=[], engine="docling",
@@ -87,5 +88,7 @@ def test_unmatched_outline_entry_grouped_not_page_fragmented():
         Segment(title="Hidden", level=1, page_start=1, page_end=1, path=["Hidden"]),
     ]
     segs = split_into_segments(conv, outline)
-    assert [s.title for s in segs] == ["Intro"]        # no page-anchored "Hidden"
-    assert "hidden section body" in segs[0].markdown   # its text grouped under Intro
+    assert [s.title for s in segs] == ["Intro", "Hidden"]
+    assert "intro body" in segs[0].markdown
+    assert "hidden section body" not in segs[0].markdown
+    assert "hidden section body" in segs[1].markdown

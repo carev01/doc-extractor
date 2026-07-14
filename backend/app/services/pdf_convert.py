@@ -429,46 +429,38 @@ def _find_heading_line(headings: list[tuple[int, str]], title: str, start: int) 
 
 _PAGE_WINDOW = 4          # accept a heading within N pages of its bookmark page
 _FALLBACK_WINDOW = 600    # …or within N lines of the cursor when page offsets are absent
+_ANCHOR_BACK = 3          # a heading may render a few lines above its page's top offset
 
 
-def _find_boundary(
+def _match_in_window(
     candidates: list[tuple[int, str, bool]],
     title: str,
-    cursor: int,
-    page_line_starts: "list[int] | None",
-    page_start: int,
+    lo: int,
+    hi: int,
+    anchor: int,
 ) -> "int | None":
-    """Locate the line delimiting *title*, anchored to the entry's PDF page.
+    """Return the line of the heading matching *title* within ``[lo, hi]``, or None.
 
-    Crucially bounded: an entry is matched only to a candidate *near its own
-    page* (or, without page offsets, within a fixed line window of the cursor).
-    This prevents a title with no heading on its page from matching a distant
-    mention and dragging the monotonic cursor to the end of the document — the
-    cascade that collapsed a whole PDF into one segment. Within the window, an
-    exact normalized match wins over containment (strong ATX/bold lines only, to
-    absorb section numbering like '1.2 Foo' ↔ 'Foo'); ties break by proximity to
-    the page anchor. Never matches before *cursor*, so boundaries stay ordered."""
+    An exact normalized match wins over containment; ties break by proximity to
+    *anchor*. Containment is restricted to the SAFE direction — the heading is a
+    substring of the title (``h in t``), which absorbs section numbering the
+    heading lacks (outline '1.2 Foo' ↔ heading 'Foo'), and only for *strong*
+    (ATX/bold) lines. The reverse (title ⊆ heading) is intentionally rejected: it
+    matched a longer *sub*-heading (outline 'Avamar server' → heading 'Avamar
+    server functional blocks'), pointing the article at the wrong place."""
     t = _norm_core(title)
     if not t:
         return None
-    if page_line_starts and 0 <= page_start < len(page_line_starts):
-        anchor = page_line_starts[page_start]
-        lo = max(cursor, anchor - 3)
-        end_page = min(page_start + _PAGE_WINDOW, len(page_line_starts) - 1)
-        hi = page_line_starts[end_page]
-        if hi <= lo:                       # last pages / degenerate offsets
-            hi = anchor + _FALLBACK_WINDOW
-    else:
-        anchor = cursor
-        lo, hi = cursor, cursor + _FALLBACK_WINDOW
     best: "int | None" = None
     best_key: "tuple[int, int] | None" = None
     for idx, text, strong in candidates:
         if idx < lo or idx > hi:
             continue
         h = _norm_core(text)
+        if not h:
+            continue
         exact = h == t
-        contained = strong and bool(h) and (t in h or h in t)
+        contained = strong and (h in t)
         if not (exact or contained):
             continue
         key = (0 if exact else 1, abs(idx - anchor))
@@ -485,21 +477,54 @@ def split_into_segments(converted: ConvertedDoc, outline: "list[Segment]") -> li
     # boundary tuples: (line_index, title, level, path, page_start, page_end)
     boundaries: list[tuple[int, str, int, list[str], int, int]] = []
     if outline:
-        # Match outline titles against ATX headings, bold lines, AND bare title
-        # lines — not just '#' headings — so a fine-grained outline (Dell manuals)
-        # maps accurately instead of collapsing to the few ATX-headed sections.
+        # Segment by the PDF's own outline (bookmark) page numbers, which are
+        # authoritative — Docling's heading detection is not. Each entry becomes a
+        # boundary at its bookmark page, refined to an exact/near heading when one
+        # is present (so sections that start partway down a page, or several on one
+        # page, land precisely). An entry with no heading still becomes an article
+        # anchored at its page top — so every outline item gets its real content
+        # instead of being dropped and absorbed into a neighbour. Titles are matched
+        # against ATX headings, bold lines, AND bare title lines (fine-grained Dell
+        # outlines rarely map to '#' headings).
         candidates = _title_candidate_lines(lines)
         starts = converted.page_line_starts
+        n_pages = len(starts)
+        # For each entry, the line where the NEXT strictly-later page begins bounds
+        # its heading search, so an entry never matches a heading belonging to a
+        # later section (outline page_starts are non-decreasing). Same-page siblings
+        # inherit the same bound; the tie-break-by-anchor + advancing cursor keeps
+        # their order within the shared page.
+        next_page_line = [len(lines)] * len(outline)
+        for i in range(len(outline) - 2, -1, -1):
+            nxt_ps = outline[i + 1].page_start
+            if nxt_ps > outline[i].page_start and 0 <= nxt_ps < n_pages:
+                next_page_line[i] = starts[nxt_ps]
+            else:
+                next_page_line[i] = next_page_line[i + 1]
         cursor = 0
-        for seg in outline:
-            line = _find_boundary(candidates, seg.title, cursor, starts, seg.page_start)
-            if line is None:
-                # This outline entry isn't delimited by a heading Docling detected.
-                # Some PDFs (e.g. Dell manuals) expose a far finer outline than the
-                # headings present in the converted markdown. Skip it: its text
-                # stays within the preceding matched section, keeping content
-                # correct — rather than slicing the page into unrelated fragments
-                # by a page-anchored guess (which produced garbage articles).
+        for i, seg in enumerate(outline):
+            has_page = bool(starts) and 0 <= seg.page_start < n_pages
+            if has_page:
+                page_top = starts[seg.page_start]
+                lo = max(cursor, page_top - _ANCHOR_BACK)
+                # exclusive of the next section's page top: a heading there is the
+                # NEXT entry's, never this one's.
+                hi = max(lo, next_page_line[i] - 1)
+                anchor = max(cursor, page_top)
+                line = _match_in_window(candidates, seg.title, lo, hi, anchor)
+                if line is None:
+                    # No heading for this entry. Anchor it at its page top when the
+                    # page hasn't been consumed yet (a new section on its own page);
+                    # otherwise it shares a page with an already-emitted entry and
+                    # can't be split without a heading — skip so its text stays with
+                    # that entry rather than stealing it with a 1-line boundary.
+                    line = page_top if page_top >= cursor else None
+            else:
+                # No page offsets (pymupdf fallback): match within a line window of
+                # the cursor; skip if nothing matches (can't page-anchor blind).
+                line = _match_in_window(
+                    candidates, seg.title, cursor, cursor + _FALLBACK_WINDOW, cursor)
+            if line is None or line < cursor:
                 continue
             cursor = line + 1
             boundaries.append((line, seg.title, seg.level, seg.path or [seg.title],

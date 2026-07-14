@@ -1,9 +1,14 @@
-"""split_into_segments must only cut on outline entries that map to a heading
-Docling actually detected. An entry with no matching heading is NOT turned into
-a page-anchored fragment (that produced garbage, unrelated-content articles for
-finer-grained outlines like Dell manuals) — its text stays within the preceding
-matched section, keeping content correct. The converted markdown holds the whole
-document's text, so nothing is lost, just grouped more coarsely.
+"""split_into_segments is PAGE-ANCHORED: the PDF outline's bookmark page numbers
+are authoritative (Docling's heading detection is not), so every outline entry
+becomes an article at its bookmark page — refined to an exact/near heading when
+Docling emitted one, else anchored at the page top. This gives finer-grained
+outlines (Dell manuals) their real content per TOC item instead of dropping
+unmatched entries and absorbing their text into a neighbour. Two guards keep it
+from fragmenting into garbage: (1) an entry sharing a page with an already-emitted
+entry, and lacking a heading, is grouped (not split by a 1-line guess); (2) a
+title matches a heading only by exact equality or SAFE containment (heading ⊆
+title, for section numbering) — never title ⊆ heading, which used to mis-match a
+longer sub-heading.
 """
 import os
 import sys
@@ -14,9 +19,12 @@ from app.services.pdf_convert import ConvertedDoc, split_into_segments
 from app.services.pdf_import import Segment
 
 
-def test_unmatched_outline_entry_is_grouped_not_fragmented():
-    # Docling emitted a heading for "Alpha" but not for "Beta"; both sections'
-    # text is in the converted markdown (Docling converts the whole document).
+def test_unmatched_entry_on_its_own_page_is_page_anchored():
+    # Docling emitted a heading for "Alpha" but NOT for "Beta". Because "Beta" is a
+    # distinct outline entry on its own page (page 1), it still becomes its own
+    # article anchored at that page — every TOC item gets its real content, rather
+    # than being dropped and absorbed into the previous section. (The outline's
+    # bookmark page numbers are authoritative; Docling's heading detection is not.)
     lines = ["## Alpha", "alpha body text", "", "beta body text", ""]
     converted = ConvertedDoc(
         markdown="\n".join(lines),
@@ -32,11 +40,10 @@ def test_unmatched_outline_entry_is_grouped_not_fragmented():
 
     segs = split_into_segments(converted, outline)
 
-    # Only the heading-matched entry becomes a segment — no page-anchored "Beta".
-    assert [s.title for s in segs] == ["Alpha"]
-    # Beta's text is preserved, grouped under Alpha's section (not lost).
+    assert [s.title for s in segs] == ["Alpha", "Beta"]
     assert "alpha body text" in segs[0].markdown
-    assert "beta body text" in segs[0].markdown
+    assert "beta body text" not in segs[0].markdown        # no bleed into Alpha
+    assert "beta body text" in segs[1].markdown            # Beta got its page's content
 
 
 def test_matched_outline_entries_get_a_segment_each():
@@ -115,38 +122,93 @@ def test_bare_prose_line_is_not_matched_as_a_heading():
 
 def test_unmatched_entry_does_not_cascade_to_a_distant_heading():
     # THE regression that collapsed the Avamar guide: an early outline entry with
-    # no heading on its own page ("Preface") must NOT match a same-word heading
-    # many pages away ("## Preface conventions" on page 8). Doing so dragged the
-    # monotonic cursor to the end and orphaned every page in between. Page-anchored
-    # matching bounds each title to a window around its bookmark page, so the
-    # unmatched entry is simply skipped and the later, correctly-placed entries
-    # ("Overview" on page 0, "Preface conventions" on page 8) each get a segment.
+    # no heading on its own page ("Preface", page 0) must NOT match a same-word
+    # heading many pages away ("## Preface conventions", page 8). Doing so dragged
+    # the monotonic cursor to the end and orphaned every page in between. With
+    # page-anchored matching, "Preface" is anchored at its own page 0 (it gets that
+    # page's content), and the later, correctly-placed entries each get their own
+    # segment — no cascade, no orphaned pages.
     lines = [
-        "## Overview", "overview body", "",          # page 0  (lines 0-2)
-        "filler p1", "",                              # page 1  (3-4)
+        "Preface intro text", "",                     # page 0  (lines 0-1)
+        "## Overview", "overview body", "",           # page 1  (2-4)
         "filler p2", "",                              # page 2  (5-6)
         "filler p3", "",                              # page 3  (7-8)
         "filler p4", "",                              # page 4  (9-10)
         "filler p5", "",                              # page 5  (11-12)
         "filler p6", "",                              # page 6  (13-14)
         "filler p7", "",                              # page 7  (15-16)
-        "## Preface conventions", "preface body", "", # page 8  (17-19)
+        "## Preface conventions", "preface conv body", "",  # page 8  (17-19)
     ]
     converted = ConvertedDoc(
         markdown="\n".join(lines), headings=[],
         page_texts=["\n".join(lines)], table_pages=set(),
-        page_line_starts=[0, 3, 5, 7, 9, 11, 13, 15, 17],
+        page_line_starts=[0, 2, 5, 7, 9, 11, 13, 15, 17],
     )
     outline = [
         Segment(title="Preface", level=1, page_start=0, page_end=0, path=["Preface"]),
-        Segment(title="Overview", level=1, page_start=0, page_end=0, path=["Overview"]),
+        Segment(title="Overview", level=2, page_start=1, page_end=1, path=["Overview"]),
         Segment(title="Preface conventions", level=2, page_start=8, page_end=8,
                 path=["Preface conventions"]),
     ]
     segs = split_into_segments(converted, outline)
-    # "Preface" (no page-0 heading) is skipped — NOT matched to the page-8 heading.
-    assert [s.title for s in segs] == ["Overview", "Preface conventions"]
-    # No orphaned content: pages 0-7 land under Overview, page 8 under its own entry.
-    assert "filler p7" in segs[0].markdown
-    assert "preface body" in segs[1].markdown
-    assert "overview body" not in segs[1].markdown
+    assert [s.title for s in segs] == ["Preface", "Overview", "Preface conventions"]
+    # "Preface" anchored to page 0 — NOT dragged to the page-8 heading.
+    assert "Preface intro text" in segs[0].markdown
+    assert "preface conv body" not in segs[0].markdown
+    # No orphaned pages: 1-7 land under Overview, page 8 under its own entry.
+    assert "overview body" in segs[1].markdown and "filler p7" in segs[1].markdown
+    assert "filler p7" not in segs[2].markdown
+    assert "preface conv body" in segs[2].markdown
+
+
+def test_title_does_not_match_longer_subheading_via_containment():
+    # THE 'Avamar server' bug: the outline entry "Avamar server" has no heading of
+    # its own on its page, but Docling emitted a longer SUB-heading, "## Avamar
+    # server functional blocks". Matching title ⊆ heading pointed the article at
+    # that sub-heading (a 371-byte fragment) and stranded the real section. The
+    # article must instead anchor at the section's page top and contain the whole
+    # section — the sub-heading included, not used as the boundary.
+    lines = [
+        "cover", "",                                              # page 0 (0-1)
+        "Introductory paragraph about the server component.",     # page 1 (2)
+        "",                                                       # (3)
+        "## Avamar server functional blocks",                     # (4)
+        "The major functional blocks include the data server.",   # (5)
+        "",
+    ]
+    converted = ConvertedDoc(
+        markdown="\n".join(lines), headings=[],
+        page_texts=["\n".join(lines)], table_pages=set(), page_line_starts=[0, 2],
+    )
+    outline = [
+        Segment(title="Avamar server", level=3, page_start=1, page_end=1,
+                path=["Avamar server"]),
+    ]
+    segs = split_into_segments(converted, outline)
+    assert [s.title for s in segs] == ["Avamar server"]
+    assert segs[0].page_start == 1
+    # Anchored at page top — captures the intro that precedes the sub-heading …
+    assert "Introductory paragraph about the server component." in segs[0].markdown
+    # … and still includes the sub-heading's content (grouped, not stranded).
+    assert "functional blocks include the data server" in segs[0].markdown
+
+
+def test_same_page_sibling_without_heading_is_grouped_not_fragmented():
+    # "Data server" is a distinct outline entry but shares a page with "Avamar
+    # server" and has no heading Docling detected. It cannot be split off without a
+    # heading, so its text stays grouped under "Avamar server" rather than being
+    # torn out by a 1-line page guess (which would fragment the page into garbage).
+    lines = ["## Avamar server", "server intro", "", "data server details here", ""]
+    converted = ConvertedDoc(
+        markdown="\n".join(lines), headings=[],
+        page_texts=["\n".join(lines)], table_pages=set(), page_line_starts=[0],
+    )
+    outline = [
+        Segment(title="Avamar server", level=3, page_start=0, page_end=0,
+                path=["Avamar server"]),
+        Segment(title="Data server", level=5, page_start=0, page_end=0,
+                path=["Avamar server", "Data server"]),
+    ]
+    segs = split_into_segments(converted, outline)
+    assert [s.title for s in segs] == ["Avamar server"]
+    assert "data server details here" in segs[0].markdown
