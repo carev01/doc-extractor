@@ -212,3 +212,46 @@ def test_same_page_sibling_without_heading_is_grouped_not_fragmented():
     segs = split_into_segments(converted, outline)
     assert [s.title for s in segs] == ["Avamar server"]
     assert "data server details here" in segs[0].markdown
+
+
+def test_articles_are_detected_sections_subentries_fold_into_covering_article():
+    # THE real Avamar shape: a section Docling gave a heading ("functional blocks")
+    # on one page, then fine sub-entries with NO heading (Data server, MCS) on the
+    # next page, then another detected section ("Avamar clients") further down that
+    # page. Articles are the DETECTED sections only; the sub-entries are NOT their
+    # own articles — their text folds into the article that covers their page (here
+    # "functional blocks"), so nothing is lost. Each segment records the outline
+    # index that starts it (so pdf_import can build the full-outline TOC and link
+    # every entry — including Data server/MCS — to its covering article).
+    lines = [
+        "# Introduction", "intro body", "",                 # page 0 (0-2)
+        "## functional blocks", "fb body", "",              # page 1 (3-5)
+        "data server description", "",                       # page 2 (6-7)
+        "mcs description", "",                               # (8-9)
+        "## Avamar clients", "clients body", "",             # (10-12)
+    ]
+    converted = ConvertedDoc(
+        markdown="\n".join(lines), headings=[],
+        page_texts=["\n".join(lines)], table_pages=set(),
+        page_line_starts=[0, 3, 6],
+    )
+    outline = [
+        Segment(title="Introduction", level=1, page_start=0, page_end=0, path=["Introduction"]),
+        Segment(title="functional blocks", level=4, page_start=1, page_end=1,
+                path=["Introduction", "functional blocks"]),
+        Segment(title="Data server", level=5, page_start=2, page_end=2,
+                path=["Introduction", "functional blocks", "Data server"]),
+        Segment(title="Management Console Server (MCS)", level=5, page_start=2, page_end=2,
+                path=["Introduction", "functional blocks", "Management Console Server (MCS)"]),
+        Segment(title="Avamar clients", level=4, page_start=2, page_end=2, path=["Introduction", "Avamar clients"]),
+    ]
+    segs = split_into_segments(converted, outline)
+    # Only detected sections are articles — Data server / MCS are NOT.
+    assert [s.title for s in segs] == ["Introduction", "functional blocks", "Avamar clients"]
+    # Each article knows which outline entry starts it (for TOC linking).
+    assert [s.outline_index for s in segs] == [0, 1, 4]
+    # The sub-entries' text is preserved in the covering ("functional blocks") article.
+    assert "data server description" in segs[1].markdown
+    assert "mcs description" in segs[1].markdown
+    # …and not leaked into the next detected section.
+    assert "data server description" not in segs[2].markdown

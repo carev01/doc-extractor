@@ -354,6 +354,12 @@ class RenderedSegment:
     page_end: int
     markdown: str
     images: list[RenderedImage] = field(default_factory=list)
+    # Index into the source outline of the entry that STARTS this article
+    # (a "detected section": a Docling heading match or a top-level chapter).
+    # -1 when segmentation didn't come from an outline (docling-headings/whole-doc
+    # fallbacks). The full outline drives the TOC; articles are the coarser,
+    # gap-free content units each outline entry links into (see split_into_segments).
+    outline_index: int = -1
 
 
 _ATX_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
@@ -474,26 +480,24 @@ def split_into_segments(converted: ConvertedDoc, outline: "list[Segment]") -> li
     lines = md.split("\n")
     heading_lines = _heading_lines(lines)
 
-    # boundary tuples: (line_index, title, level, path, page_start, page_end)
-    boundaries: list[tuple[int, str, int, list[str], int, int]] = []
+    # boundary tuples: (line_index, title, level, path, page_start, page_end, outline_idx)
+    boundaries: list[tuple[int, str, int, list[str], int, int, int]] = []
     if outline:
-        # Segment by the PDF's own outline (bookmark) page numbers, which are
-        # authoritative — Docling's heading detection is not. Each entry becomes a
-        # boundary at its bookmark page, refined to an exact/near heading when one
-        # is present (so sections that start partway down a page, or several on one
-        # page, land precisely). An entry with no heading still becomes an article
-        # anchored at its page top — so every outline item gets its real content
-        # instead of being dropped and absorbed into a neighbour. Titles are matched
-        # against ATX headings, bold lines, AND bare title lines (fine-grained Dell
-        # outlines rarely map to '#' headings).
+        # ARTICLES are the coarser, gap-free content units; the full outline drives
+        # the TOC separately (in pdf_import). An article begins at a "detected
+        # section" — an outline entry whose title Docling actually emitted as a
+        # heading, or a top-level chapter — anchored to the entry's bookmark page
+        # (page numbers are authoritative; Docling's heading detection is not).
+        # Finer sub-entries with no heading of their own do NOT open an article;
+        # their text stays in the article that covers their page (each TOC entry
+        # links to that article), so nothing is dropped and the TOC stays faithful.
+        # Titles match ATX headings, bold lines, or bare title lines.
         candidates = _title_candidate_lines(lines)
         starts = converted.page_line_starts
         n_pages = len(starts)
         # For each entry, the line where the NEXT strictly-later page begins bounds
         # its heading search, so an entry never matches a heading belonging to a
-        # later section (outline page_starts are non-decreasing). Same-page siblings
-        # inherit the same bound; the tie-break-by-anchor + advancing cursor keeps
-        # their order within the shared page.
+        # later section (outline page_starts are non-decreasing).
         next_page_line = [len(lines)] * len(outline)
         for i in range(len(outline) - 2, -1, -1):
             nxt_ps = outline[i + 1].page_start
@@ -511,24 +515,29 @@ def split_into_segments(converted: ConvertedDoc, outline: "list[Segment]") -> li
                 # NEXT entry's, never this one's.
                 hi = max(lo, next_page_line[i] - 1)
                 anchor = max(cursor, page_top)
-                line = _match_in_window(candidates, seg.title, lo, hi, anchor)
-                if line is None:
-                    # No heading for this entry. Anchor it at its page top when the
-                    # page hasn't been consumed yet (a new section on its own page);
-                    # otherwise it shares a page with an already-emitted entry and
-                    # can't be split without a heading — skip so its text stays with
-                    # that entry rather than stealing it with a 1-line boundary.
-                    line = page_top if page_top >= cursor else None
+                matched = _match_in_window(candidates, seg.title, lo, hi, anchor)
             else:
                 # No page offsets (pymupdf fallback): match within a line window of
-                # the cursor; skip if nothing matches (can't page-anchor blind).
-                line = _match_in_window(
+                # the cursor; can't page-anchor blind, so only a heading opens here.
+                matched = _match_in_window(
                     candidates, seg.title, cursor, cursor + _FALLBACK_WINDOW, cursor)
-            if line is None or line < cursor:
+            # An article starts here only for a detected section: a matched heading,
+            # or a top-level chapter (major division), or the very first entry (so
+            # the document's opening content is never orphaned).
+            starts_article = matched is not None or seg.level == 1 or not boundaries
+            if not starts_article:
                 continue
-            cursor = line + 1
+            if matched is not None:
+                line = matched
+            elif has_page and page_top >= cursor:
+                line = page_top          # level-1 chapter, no heading → page top
+            else:
+                line = cursor            # can't place precisely → right after prev
+            if line < cursor:
+                line = cursor
             boundaries.append((line, seg.title, seg.level, seg.path or [seg.title],
-                               seg.page_start, seg.page_end))
+                               seg.page_start, seg.page_end, i))
+            cursor = line + 1
     elif converted.headings:
         cursor = 0
         stack: list[str] = []
@@ -539,10 +548,10 @@ def split_into_segments(converted: ConvertedDoc, outline: "list[Segment]") -> li
             cursor = line + 1
             stack = stack[: h.level - 1]
             stack.append(h.text)
-            boundaries.append((line, h.text, h.level, list(stack), h.page0, h.page0))
+            boundaries.append((line, h.text, h.level, list(stack), h.page0, h.page0, -1))
     if not boundaries and heading_lines:
         for idx, text in heading_lines:
-            boundaries.append((idx, text, 1, [text], 0, 0))
+            boundaries.append((idx, text, 1, [text], 0, 0, -1))
 
     if not boundaries:
         return [RenderedSegment(
@@ -552,19 +561,20 @@ def split_into_segments(converted: ConvertedDoc, outline: "list[Segment]") -> li
         )]
 
     segs: list[RenderedSegment] = []
-    for i, (line, title, level, path, p_start, p_end) in enumerate(boundaries):
+    for i, (line, title, level, path, p_start, p_end, o_idx) in enumerate(boundaries):
         end_line = boundaries[i + 1][0] if i + 1 < len(boundaries) else len(lines)
         body = "\n".join(lines[line:end_line]).strip()
         if not body:
-            # A heading with no content before the next boundary — no article to
-            # emit (its children, if any, are separate segments). Skipping it also
-            # keeps the TOC free of contentless nodes and the article total honest.
+            # A detected section with no content before the next boundary — no
+            # article to emit. Its outline entry still exists in the TOC and links
+            # to the previous covering article, so nothing is lost.
             continue
         segs.append(RenderedSegment(
             title=title, level=level, path=path,
             page_start=p_start, page_end=p_end,
             markdown=body,
             images=[img for img in converted.images if img.filename in body],
+            outline_index=o_idx,
         ))
     if not segs:
         # No heading-delimited section held content — keep the whole document as

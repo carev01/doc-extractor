@@ -529,6 +529,9 @@ async def get_toc(
 ):
     """Get the table of contents for a source, with article IDs."""
     await authorize_source(db, principal, source_id, write=False)
+    source_type = (await db.execute(
+        select(DocumentationSource.source_type).where(DocumentationSource.id == source_id)
+    )).scalar_one_or_none()
     result = await db.execute(
         select(TOCEntry)
         .where(TOCEntry.source_id == source_id)
@@ -564,10 +567,26 @@ async def get_toc(
     for row in article_result:
         article_toc_map[row.toc_entry_id] = row.id
 
-    for entry in entries:
-        resp = entry_map[entry.id]
-        if entry.id in article_toc_map:
-            resp.article_id = article_toc_map[entry.id]
+    # A PDF's TOC mirrors the PDF outline verbatim: many bookmark entries aren't
+    # standalone articles but sub-sections that fold into the article covering their
+    # page. Resolve those to that covering article (the most recent article-start in
+    # reading order — entries are ordered by sort_order) so every node navigates to
+    # the content that contains it. Web TOCs keep the strict semantics where a
+    # non-article entry is a genuine grouping node (article_id stays None).
+    if source_type == "pdf":
+        covering: uuid.UUID | None = None
+        for entry in entries:
+            resp = entry_map[entry.id]
+            if entry.id in article_toc_map:
+                covering = article_toc_map[entry.id]
+                resp.article_id = covering
+            elif covering is not None:
+                resp.article_id = covering
+    else:
+        for entry in entries:
+            resp = entry_map[entry.id]
+            if entry.id in article_toc_map:
+                resp.article_id = article_toc_map[entry.id]
 
     # Third pass: build hierarchy
     for entry in entries:
