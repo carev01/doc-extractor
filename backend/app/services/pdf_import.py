@@ -272,29 +272,64 @@ async def run_pdf_extraction(service, db, source, run, run_pk,
     levels: list[int] = []
     article_inputs: list[tuple] = []
     key_counts: dict[str, int] = {}
-    for i, seg in enumerate(rendered_segments):
-        parent_id = None
-        for j in range(i - 1, -1, -1):
-            if levels[j] < seg.level:
-                parent_id = entry_ids[j]
-                break
-        base_key = derive_pdf_topic_key(seg.path or [seg.title])
+
+    def _topic_key(path: list[str] | None, title: str) -> str:
+        base_key = derive_pdf_topic_key(path or [title])
         n = key_counts.get(base_key, 0) + 1
         key_counts[base_key] = n
-        topic_key = base_key if n == 1 else f"{base_key}-{n}"
-        page_anchor = f"#page={seg.page_start + 1}"
-        url = f"{source.base_url}{page_anchor}"
-        toc = TOCEntry(
-            source_id=source.id, title=seg.title, url=url,
-            level=seg.level, sort_order=i, is_article=True, parent_id=parent_id,
-        )
-        db.add(toc)
-        await db.flush()
-        entry_ids.append(toc.id)
-        levels.append(seg.level)
-        article_inputs.append(
-            (toc.id, i, seg.title, topic_key, url, seg.markdown, seg.images)
-        )
+        return base_key if n == 1 else f"{base_key}-{n}"
+
+    def _parent_of(level: int) -> "uuid.UUID | None":
+        for j in range(len(levels) - 1, -1, -1):
+            if levels[j] < level:
+                return entry_ids[j]
+        return None
+
+    # The TOC mirrors the PDF's own outline verbatim (every bookmark entry, full
+    # hierarchy), while ARTICLES are the coarser gap-free content units keyed to
+    # "detected section" outline entries (RenderedSegment.outline_index). A TOC
+    # entry that doesn't start an article links into the article covering its page
+    # — resolved when the TOC is served (get_toc), so nothing is dropped and every
+    # entry navigates somewhere. Fall back to one-entry-per-segment only when there
+    # is no usable outline (e.g. the docling-headings / whole-document paths).
+    seg_by_outline: dict[int, RenderedSegment] = {
+        seg.outline_index: seg for seg in rendered_segments if seg.outline_index >= 0
+    }
+    if outline and seg_by_outline:
+        for idx, o in enumerate(outline):
+            parent_id = _parent_of(o.level)
+            seg = seg_by_outline.get(idx)
+            url = f"{source.base_url}#page={o.page_start + 1}"
+            toc = TOCEntry(
+                source_id=source.id, title=o.title, url=url,
+                level=o.level, sort_order=idx,
+                is_article=seg is not None, parent_id=parent_id,
+            )
+            db.add(toc)
+            await db.flush()
+            entry_ids.append(toc.id)
+            levels.append(o.level)
+            if seg is not None:
+                topic_key = _topic_key(seg.path, seg.title)
+                article_inputs.append(
+                    (toc.id, idx, seg.title, topic_key, url, seg.markdown, seg.images)
+                )
+    else:
+        for i, seg in enumerate(rendered_segments):
+            parent_id = _parent_of(seg.level)
+            topic_key = _topic_key(seg.path, seg.title)
+            url = f"{source.base_url}#page={seg.page_start + 1}"
+            toc = TOCEntry(
+                source_id=source.id, title=seg.title, url=url,
+                level=seg.level, sort_order=i, is_article=True, parent_id=parent_id,
+            )
+            db.add(toc)
+            await db.flush()
+            entry_ids.append(toc.id)
+            levels.append(seg.level)
+            article_inputs.append(
+                (toc.id, i, seg.title, topic_key, url, seg.markdown, seg.images)
+            )
 
     run.current_phase = "content_scraping"
     # The convert phase used articles_extracted to report conversion progress;
