@@ -8,18 +8,20 @@ import logging
 import socket
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select, update
 
 # Ensure models are registered before any query runs.
 import app.models  # noqa: F401
+from app.core.config import settings
 from app.core.database import async_session
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.source import DocumentationSource, SourceStatus
 from app.services.firecrawl import firecrawl_service
 from app.services.maintenance import run_maintenance_sweeps
-from app.services.queue import claim_next_run, claim_next_export
+from app.services.pdf_import import PdfAcquireError
+from app.services.queue import claim_next_run, claim_next_export, retry_delay_seconds
 from app.services.export_runner import run_export_job_sync
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
@@ -175,13 +177,44 @@ async def run_one(claim_session_factory=None, work_session_factory=None) -> bool
                 if r is not None and r.status not in (
                     RunStatus.COMPLETED, RunStatus.FAILED,
                 ):
-                    r.status = RunStatus.FAILED
-                    r.error_message = str(exc)[:4096]
-                    r.completed_at = datetime.now(timezone.utc)
-                    src = await db.get(DocumentationSource, source_id)
-                    if src is not None and src.status == SourceStatus.EXTRACTING:
-                        src.status = SourceStatus.FAILED
-                        src.error_message = str(exc)[:4096]
+                    # Transient PDF download failures (e.g. Dell's CDN) are requeued
+                    # with backoff so the source is retried later without blocking
+                    # the queue — until the attempt cap, then it fails for real.
+                    retryable = (
+                        isinstance(exc, PdfAcquireError)
+                        and getattr(exc, "retryable", False)
+                        and r.attempts < settings.pdf_download_max_attempts
+                    )
+                    if retryable:
+                        delay = retry_delay_seconds(r.attempts)
+                        now = datetime.now(timezone.utc)
+                        r.status = RunStatus.PENDING
+                        r.next_attempt_at = now + timedelta(seconds=delay)
+                        r.claimed_by = None
+                        r.claimed_at = None
+                        r.heartbeat_at = None
+                        r.error_message = (
+                            f"PDF download failed (attempt {r.attempts}/"
+                            f"{settings.pdf_download_max_attempts}); "
+                            f"retrying in {delay}s: {exc}"
+                        )[:4096]
+                        # Not actively extracting while it waits — reflect "queued".
+                        src = await db.get(DocumentationSource, source_id)
+                        if src is not None and src.status == SourceStatus.EXTRACTING:
+                            src.status = SourceStatus.PENDING
+                        logger.warning(
+                            "Run %s requeued after retryable PDF failure "
+                            "(attempt %d/%d, next in %ds)",
+                            run_id, r.attempts, settings.pdf_download_max_attempts, delay,
+                        )
+                    else:
+                        r.status = RunStatus.FAILED
+                        r.error_message = str(exc)[:4096]
+                        r.completed_at = datetime.now(timezone.utc)
+                        src = await db.get(DocumentationSource, source_id)
+                        if src is not None and src.status == SourceStatus.EXTRACTING:
+                            src.status = SourceStatus.FAILED
+                            src.error_message = str(exc)[:4096]
                     await db.commit()
         finally:
             hb.cancel()

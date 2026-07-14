@@ -108,6 +108,14 @@ class Settings(BaseSettings):
     pdf_dir: str = "pdf_uploads"
     pdf_max_upload_bytes: int = 100 * 1024 * 1024  # 100 MiB
 
+    # Backoff-and-retry for transient PDF download failures (e.g. Dell's CDN
+    # intermittently serving a non-PDF shell). A failed download requeues the run
+    # with an exponential delay (base * 2^(attempts-1), capped) instead of failing;
+    # after this many total attempts it fails for real.
+    pdf_download_max_attempts: int = 5
+    pdf_download_retry_base_seconds: int = 120      # first retry ~2 min later
+    pdf_download_retry_max_seconds: int = 1800      # cap the backoff at 30 min
+
     # PDF conversion engine (Layer A) and VLM escalation (Layer B).
     # pdf_converter: "docling" (default, remote docling-serve) | "pymupdf"
     # (in-process fallback engine). docling-serve is consumed over HTTP — no

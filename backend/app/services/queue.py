@@ -3,10 +3,11 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.export_job import ExportJob, ExportStatus
 from app.models.source import DocumentationSource, SourceStatus
@@ -14,6 +15,21 @@ from app.models.source import DocumentationSource, SourceStatus
 
 class ActiveRunExists(Exception):
     """Raised when a source already has a pending/running run (coalesce/409)."""
+
+
+def retry_delay_seconds(attempts: int) -> int:
+    """Exponential backoff for a requeued run: base * 2^(attempts-1), capped.
+
+    ``attempts`` is the run's attempt count (already incremented for the try that
+    just failed), so the first retry waits ``base`` seconds. Pure/synchronous so
+    the schedule is unit-testable.
+    """
+    base = settings.pdf_download_retry_base_seconds
+    cap = settings.pdf_download_retry_max_seconds
+    exp = max(0, attempts - 1)
+    # Clamp the shift before multiplying so a large attempts count can't overflow.
+    delay = base * (2 ** min(exp, 20))
+    return int(min(delay, cap))
 
 
 def _is_active_run_violation(exc: IntegrityError) -> bool:
@@ -47,11 +63,25 @@ async def enqueue_run(
 async def claim_next_run(
     db: AsyncSession, worker_id: str
 ) -> ExtractionRun | None:
-    """Atomically claim the oldest pending run, or None if the queue is empty."""
+    """Atomically claim the oldest *ready* pending run, or None if none is ready.
+
+    A run requeued with backoff (next_attempt_at in the future) is skipped until
+    its delay elapses, so a transiently-failing source doesn't block the queue.
+    Ready runs are ordered by coalesce(next_attempt_at, created_at): fresh runs
+    keep FIFO order, and a requeued run sorts to the back (its next_attempt_at is
+    later than the others' created_at).
+    """
+    now = datetime.now(timezone.utc)
     result = await db.execute(
         select(ExtractionRun)
-        .where(ExtractionRun.status == RunStatus.PENDING)
-        .order_by(ExtractionRun.created_at)
+        .where(
+            ExtractionRun.status == RunStatus.PENDING,
+            or_(
+                ExtractionRun.next_attempt_at.is_(None),
+                ExtractionRun.next_attempt_at <= now,
+            ),
+        )
+        .order_by(func.coalesce(ExtractionRun.next_attempt_at, ExtractionRun.created_at))
         .with_for_update(skip_locked=True)
         .limit(1)
     )
@@ -64,6 +94,7 @@ async def claim_next_run(
     run.claimed_at = now
     run.heartbeat_at = now
     run.started_at = now
+    run.next_attempt_at = None
     run.attempts += 1
     await db.commit()
     await db.refresh(run)

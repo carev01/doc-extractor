@@ -71,6 +71,13 @@ class ExtractionRun(Base):
         DateTime(timezone=True), nullable=True
     )
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    # Earliest time this PENDING run may be claimed. Set when a run is requeued
+    # with backoff after a retryable failure (e.g. an intermittent PDF download);
+    # claim_next_run skips runs whose next_attempt_at is still in the future, so a
+    # transiently-failing source is retried later without blocking the queue.
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Product version captured at run time (NULL for non-versioned products).
     version: Mapped[str | None] = mapped_column(String(64), nullable=True)
