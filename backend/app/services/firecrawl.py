@@ -760,6 +760,7 @@ class FirecrawlService:
         pdf_images: list | None = None,
         toc_fragment: str | None = None,
         auth_cookies: list[dict] | None = None,
+        detect_blocks: bool = True,
     ) -> str:
         """Store or skip a single article and atomically increment run counters.
 
@@ -784,7 +785,11 @@ class FirecrawlService:
         # be stored as a real article — silently corrupting the source. Record the
         # condition on the run so a fully-blocked extraction fails loudly (see the
         # completion path) instead of reporting COMPLETED with junk.
-        if is_block_page(markdown_content):
+        # Skipped for PDFs: the content comes from one already-downloaded file, so
+        # there is no per-page WAF interception to detect — and a doc section that
+        # merely documents "Access Denied" errors or names a CDN would false-flag,
+        # dropping real content and warning nonsensically about "blocked pages".
+        if detect_blocks and is_block_page(markdown_content):
             logger.warning(
                 "Bot-protection/interstitial page from %s (len=%d) — not storing",
                 url, len(markdown_content),

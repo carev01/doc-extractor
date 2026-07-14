@@ -360,6 +360,9 @@ async def run_pdf_extraction(service, db, source, run, run_pk,
             db, source.id, run_pk, url=url, markdown_content=md, doc_html="",
             toc_entry_id=toc_id, sort_order=sort_order, title=title,
             change_status=None, topic_key=topic_key, pdf_images=images,
+            # PDF content is one trusted downloaded file — no per-page WAF to
+            # detect; block detection here only false-flags real sections.
+            detect_blocks=False,
         )
 
     run = (await db.execute(

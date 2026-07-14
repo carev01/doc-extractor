@@ -88,3 +88,26 @@ async def test_real_content_still_stored(factory):
     async with factory() as db:
         arts = (await db.execute(select(Article))).scalars().all()
         assert len(arts) == 1
+
+
+async def test_detect_blocks_false_stores_blockish_pdf_content(factory):
+    # PDF path passes detect_blocks=False: a real doc section that merely documents
+    # an "Access Denied" error must be stored, not mistaken for a WAF block page
+    # (which produced nonsensical "blocked pages" warnings on monolithic PDFs).
+    src_id, run_id = await _source_and_run(factory)
+    async with factory() as db:
+        result = await firecrawl_service.process_article_result(
+            db=db, source_id=src_id, run_id=run_id,
+            url="file://guide.pdf#page=42&s=7",
+            markdown_content=AKAMAI,          # same text the block detector flags
+            doc_html="",
+            toc_entry_id=None, sort_order=0, title="Troubleshoot Access Denied",
+            detect_blocks=False,
+        )
+    assert result in ("new", "updated")       # stored, not "blocked"
+    async with factory() as db:
+        arts = (await db.execute(select(Article))).scalars().all()
+        assert len(arts) == 1
+        run = await db.get(ExtractionRun, run_id)
+        assert run.error_message != _BLOCKED_MSG
+        assert run.blocked_pending in (None, [])
