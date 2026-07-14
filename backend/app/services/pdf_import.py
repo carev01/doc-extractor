@@ -35,7 +35,17 @@ logger = logging.getLogger(__name__)
 
 
 class PdfAcquireError(Exception):
-    """Raised when a PDF source's bytes cannot be obtained."""
+    """Raised when a PDF source's bytes cannot be obtained.
+
+    ``retryable`` marks a transient failure (a URL download / Browserless fetch
+    that may succeed on a later attempt — e.g. Dell's intermittently-failing CDN)
+    versus a permanent one (a missing uploaded file). The worker requeues
+    retryable failures with backoff instead of failing the run outright.
+    """
+
+    def __init__(self, message: str, *, retryable: bool = True) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 def pdf_is_upload(source) -> bool:
@@ -91,7 +101,10 @@ async def acquire_pdf(source, auth_cookies: list[dict] | None = None) -> tuple[b
             with open(path, "rb") as fh:
                 data = fh.read()
         except OSError as exc:
-            raise PdfAcquireError(f"Could not read uploaded PDF: {exc}") from exc
+            # A missing/unreadable uploaded file won't fix itself — don't retry.
+            raise PdfAcquireError(
+                f"Could not read uploaded PDF: {exc}", retryable=False
+            ) from exc
     else:
         data = None
         try:
