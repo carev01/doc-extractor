@@ -247,29 +247,48 @@ def _parse_table_pages(json_content: dict) -> set[int]:
 
 def _split_page_breaks(markdown: str) -> tuple[str, list[int]]:
     """Remove page-break placeholder lines; return (clean_md, page_line_starts)
-    where page_line_starts[p] is the clean-markdown line index of page p (0-based)."""
+    where page_line_starts[p] is the clean-markdown line index of page p (0-based).
+
+    MUST run last (after content-addressing and sanitize), so the returned offsets
+    index the *final* markdown — sanitize collapses blank runs (concentrated at the
+    page-break gaps) and would otherwise drift the offsets by ~1 line per page,
+    breaking the page-anchored boundary match on long documents. Consecutive
+    markers (a batch-seam artifact, or an empty page carrying no content to anchor)
+    are deduped so page indices stay aligned with the source PDF's numbering."""
     out: list[str] = []
     starts: list[int] = [0]
     for ln in markdown.split("\n"):
         if ln.strip() == _PAGE_BREAK:
-            starts.append(len(out))
+            if starts[-1] != len(out):
+                starts.append(len(out))
         else:
             out.append(ln)
+    # Anchor each page at its first non-blank line: removing the marker leaves the
+    # blank lines that framed it, so a raw offset would point at a blank just before
+    # the page's heading. Advancing past blanks lands the anchor on real content.
+    for i, s in enumerate(starts):
+        while s < len(out) and not out[s].strip():
+            s += 1
+        starts[i] = s
     return "\n".join(out), starts
 
 
 def _build_converted_doc(doc: dict, pdf_bytes: bytes) -> ConvertedDoc:
     md = doc.get("md_content") or ""
     json_content = doc.get("json_content") or {}
-    md, page_line_starts = _split_page_breaks(md)
     if "images" in doc:
         # Batched path already content-addressed images per batch (and stripped
         # the base64 from the markdown), to avoid holding every image twice.
         images = doc["images"]
     else:
         md, images = _content_address_data_uris(md)
+    # Page-break markers (HTML comments) are carried THROUGH content-addressing and
+    # sanitize — none of the sanitize rules touch comment lines — then stripped last
+    # so page_line_starts indexes the final, sanitized markdown (see _split_page_breaks).
+    md = sanitize_markdown(md)
+    md, page_line_starts = _split_page_breaks(md)
     return ConvertedDoc(
-        markdown=sanitize_markdown(md),
+        markdown=md,
         headings=_parse_headings(json_content),
         page_texts=_page_texts(pdf_bytes),
         table_pages=_parse_table_pages(json_content),
@@ -408,24 +427,54 @@ def _find_heading_line(headings: list[tuple[int, str]], title: str, start: int) 
     return None
 
 
-def _find_boundary(candidates: list[tuple[int, str, bool]], title: str, start: int) -> "int | None":
-    """Locate the line delimiting *title* at or after *start*. Exact normalized
-    match against any candidate first (safe for weak/bare lines); then containment
-    against *strong* candidates only (handles section numbering, e.g. outline
-    '1.2 Foo' vs a heading 'Foo'), never against bare prose lines."""
+_PAGE_WINDOW = 4          # accept a heading within N pages of its bookmark page
+_FALLBACK_WINDOW = 600    # …or within N lines of the cursor when page offsets are absent
+
+
+def _find_boundary(
+    candidates: list[tuple[int, str, bool]],
+    title: str,
+    cursor: int,
+    page_line_starts: "list[int] | None",
+    page_start: int,
+) -> "int | None":
+    """Locate the line delimiting *title*, anchored to the entry's PDF page.
+
+    Crucially bounded: an entry is matched only to a candidate *near its own
+    page* (or, without page offsets, within a fixed line window of the cursor).
+    This prevents a title with no heading on its page from matching a distant
+    mention and dragging the monotonic cursor to the end of the document — the
+    cascade that collapsed a whole PDF into one segment. Within the window, an
+    exact normalized match wins over containment (strong ATX/bold lines only, to
+    absorb section numbering like '1.2 Foo' ↔ 'Foo'); ties break by proximity to
+    the page anchor. Never matches before *cursor*, so boundaries stay ordered."""
     t = _norm_core(title)
     if not t:
         return None
-    for idx, text, _strong in candidates:
-        if idx >= start and _norm_core(text) == t:
-            return idx
+    if page_line_starts and 0 <= page_start < len(page_line_starts):
+        anchor = page_line_starts[page_start]
+        lo = max(cursor, anchor - 3)
+        end_page = min(page_start + _PAGE_WINDOW, len(page_line_starts) - 1)
+        hi = page_line_starts[end_page]
+        if hi <= lo:                       # last pages / degenerate offsets
+            hi = anchor + _FALLBACK_WINDOW
+    else:
+        anchor = cursor
+        lo, hi = cursor, cursor + _FALLBACK_WINDOW
+    best: "int | None" = None
+    best_key: "tuple[int, int] | None" = None
     for idx, text, strong in candidates:
-        if idx < start or not strong:
+        if idx < lo or idx > hi:
             continue
         h = _norm_core(text)
-        if h and (t in h or h in t):
-            return idx
-    return None
+        exact = h == t
+        contained = strong and bool(h) and (t in h or h in t)
+        if not (exact or contained):
+            continue
+        key = (0 if exact else 1, abs(idx - anchor))
+        if best_key is None or key < best_key:
+            best, best_key = idx, key
+    return best
 
 
 def split_into_segments(converted: ConvertedDoc, outline: "list[Segment]") -> list[RenderedSegment]:
@@ -440,9 +489,10 @@ def split_into_segments(converted: ConvertedDoc, outline: "list[Segment]") -> li
         # lines — not just '#' headings — so a fine-grained outline (Dell manuals)
         # maps accurately instead of collapsing to the few ATX-headed sections.
         candidates = _title_candidate_lines(lines)
+        starts = converted.page_line_starts
         cursor = 0
         for seg in outline:
-            line = _find_boundary(candidates, seg.title, cursor)
+            line = _find_boundary(candidates, seg.title, cursor, starts, seg.page_start)
             if line is None:
                 # This outline entry isn't delimited by a heading Docling detected.
                 # Some PDFs (e.g. Dell manuals) expose a far finer outline than the

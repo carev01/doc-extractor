@@ -129,14 +129,20 @@ async def test_convert_pdf_batches_large_doc(monkeypatch):
 
     import fitz
 
+    seen = 0
+
     async def fake_convert_async(pdf_bytes, **kw):
         # Batches now arrive as page-extracted PDFs (no page_range option).
         assert kw.get("page_range") is None
+        nonlocal seen
         d = fitz.open(stream=pdf_bytes, filetype="pdf")
         n = d.page_count
         d.close()
         calls.append(n)
-        pages = [f"# Page {i + 1}" for i in range(n)]
+        # Globally-distinct page headings (real docling never restarts numbering
+        # per batch), so sanitize's duplicate-title strip leaves them intact.
+        pages = [f"# Page {seen + i + 1}" for i in range(n)]
+        seen += n
         return {"md_content": f"\n{dc._PAGE_BREAK}\n".join(pages),
                 "json_content": {"texts": [], "tables": []}}
 
@@ -146,6 +152,11 @@ async def test_convert_pdf_batches_large_doc(monkeypatch):
     assert out.engine == "docling"
     assert len(out.page_line_starts) == 5             # all 5 pages stitched
     assert dc._PAGE_BREAK not in out.markdown
+    # page_line_starts index the FINAL (sanitized, marker-free) markdown: each
+    # anchor lands on that page's heading, with no cumulative drift.
+    md_lines = out.markdown.split("\n")
+    for p in range(5):
+        assert md_lines[out.page_line_starts[p]].strip() == f"# Page {p + 1}"
 
 
 @pytest.mark.asyncio
