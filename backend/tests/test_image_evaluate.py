@@ -7,6 +7,7 @@ from PIL import Image
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from app.core.config import settings
 from app.services.image_describe import evaluate_image
 
 
@@ -58,6 +59,17 @@ def test_non_raster_bytes_rejected():
     assert ev.is_meaningful is False
     assert ev.width is None and ev.height is None
     assert len(ev.bytes_sha256) == 64
+
+
+def test_bomb_scale_pixels_rejected(monkeypatch):
+    # An image whose pixel count exceeds image_max_pixels must be rejected without
+    # a full decode — decoding one 129 MP image OOM-killed the worker. Uses a small
+    # cap + modest image so the test doesn't allocate the real bomb.
+    monkeypatch.setattr(settings, "image_max_pixels", 1000)  # cap at 1000 px
+    data = _noise_png(400, 300)  # 120,000 px > cap
+    ev = evaluate_image(data)
+    assert ev.is_meaningful is False
+    assert ev.width == 400 and ev.height == 300  # dims read from header, then rejected
 
 
 def test_hash_is_stable_and_content_addressed():

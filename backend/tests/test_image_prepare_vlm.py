@@ -68,6 +68,13 @@ def test_non_raster_bytes_return_none():
     assert prepare_for_vlm(b"this is not an image") is None
 
 
+def test_returns_none_for_bomb_scale_pixels(monkeypatch):
+    # Defense for images marked meaningful before the evaluate_image guard existed:
+    # prepare must refuse a too-many-pixels image before decoding it.
+    monkeypatch.setattr(settings, "image_max_pixels", 1000)  # 400x300 exceeds this
+    assert prepare_for_vlm(_png(400, 300)) is None
+
+
 def test_returns_none_when_cannot_fit_cap(monkeypatch):
     # Force an unsatisfiable byte cap: even a downscaled JPEG can't fit, so the
     # image is unpreparable and must be dropped (None), not retried forever.
