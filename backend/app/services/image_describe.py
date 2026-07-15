@@ -86,6 +86,52 @@ def evaluate_image(data: bytes) -> ImageEval:
     return ImageEval(meaningful, w, h, sha)
 
 
+def prepare_for_vlm(data: bytes) -> "tuple[bytes, str] | None":
+    """Normalize raw image bytes into a (payload, mime) pair a vision model can
+    actually accept, or None if the image can't be made describable.
+
+    Guards against the failures that otherwise keep an image pending forever:
+    huge or animated GIFs (documentation screencasts) that the VLM rejects with
+    413 Payload Too Large / 400 Bad Request on every run. An animated image is
+    collapsed to its first frame, oversized images are downscaled to
+    image_vlm_max_dimension, and the result is re-encoded so the payload stays
+    under image_vlm_max_bytes. A small, static, correctly-formatted image passes
+    through untouched (no re-encode). Returns None for non-raster/unreadable
+    bytes or an image that can't be shrunk under the cap — the caller marks those
+    not-meaningful so they leave the backlog for good."""
+    fmt = _detect_format(data)
+    if fmt not in _VLM_IMAGE_FORMATS:
+        return None
+    try:
+        from PIL import Image  # local import: Pillow is only needed here
+        with Image.open(io.BytesIO(data)) as img:
+            animated = getattr(img, "n_frames", 1) > 1
+            w, h = img.size
+            within = max(w, h) <= settings.image_vlm_max_dimension
+            # Fast path: static, in-bounds, already small enough — send as-is.
+            if not animated and within and len(data) <= settings.image_vlm_max_bytes:
+                return data, _VLM_IMAGE_FORMATS[fmt]
+            if animated:
+                img.seek(0)  # describe the first frame of a screencast/animation
+            frame = img.convert("RGB")
+        # Downscale + re-encode (JPEG) until the payload fits the byte cap.
+        for max_dim, quality in (
+            (settings.image_vlm_max_dimension, 85),
+            (settings.image_vlm_max_dimension, 70),
+            (1024, 70),
+        ):
+            im = frame.copy()
+            im.thumbnail((max_dim, max_dim))
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=quality)
+            out = buf.getvalue()
+            if len(out) <= settings.image_vlm_max_bytes:
+                return out, "image/jpeg"
+        return None
+    except Exception:  # noqa: BLE001 — unpreparable → drop from backlog
+        return None
+
+
 _KINDS = {"screenshot", "diagram", "chart", "photo", "other"}
 
 _PROMPT = (
@@ -280,17 +326,20 @@ async def enrich_run_images(db: AsyncSession, source_id: uuid.UUID, run_id: uuid
                     changed = True
                     described += 1
                 else:
-                    # Gate on the real format (from bytes, not the .png name): a
-                    # WMF/vector mislabeled .png 400s the VLM on every run. Mark it
-                    # not-meaningful so it leaves the backlog for good.
-                    fmt = _detect_format(data)
-                    if fmt not in _VLM_IMAGE_FORMATS:
+                    # Normalize the real bytes into something the VLM accepts:
+                    # first frame of an animated GIF, downscaled/re-encoded under
+                    # the payload cap. Returns None for a WMF/vector mislabeled
+                    # .png or a huge GIF that can't be shrunk under the cap — both
+                    # would 400/413 on every run, so mark them not-meaningful to
+                    # leave the backlog for good.
+                    prepared = await asyncio.to_thread(prepare_for_vlm, data)
+                    if prepared is None:
                         img.is_meaningful = False
                         continue
                     if budget <= 0 or consecutive_failures >= settings.image_vlm_max_consecutive_failures:
                         continue
                     budget -= 1  # reserve; refunded below if the call fails
-                    pending.append((img, data, _VLM_IMAGE_FORMATS[fmt]))
+                    pending.append((img, *prepared))
 
             # Describe the queued images concurrently, then apply results serially.
             if pending:

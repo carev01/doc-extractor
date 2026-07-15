@@ -171,6 +171,14 @@ class Settings(BaseSettings):
     # Selection thresholds: images smaller than either are treated as decorative.
     image_min_dimension: int = 100
     image_min_bytes: int = 3072
+    # Before a VLM call, an image is normalized to fit the endpoint's limits:
+    # animated frames collapse to the first frame, and the image is downscaled so
+    # its longest side is <= image_vlm_max_dimension, then re-encoded so the raw
+    # bytes stay <= image_vlm_max_bytes. An image that still can't fit (e.g. a
+    # huge animated GIF) is dropped from the backlog instead of 413/400-failing
+    # on every run.
+    image_vlm_max_dimension: int = 1536
+    image_vlm_max_bytes: int = 4 * 1024 * 1024
 
     # Master key for encrypting credentials/sessions at rest (Fernet, urlsafe
     # base64, 32 bytes). Required only when auth_realm rows exist. Generate with:

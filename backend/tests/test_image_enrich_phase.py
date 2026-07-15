@@ -181,6 +181,56 @@ async def test_not_meaningful_image_no_row(factory):
         assert rows == []
 
 
+def _animated_gif(w, h, frames=6):
+    imgs = [Image.effect_noise((w, h), 100).convert("P") for _ in range(frames)]
+    buf = io.BytesIO()
+    imgs[0].save(buf, format="GIF", save_all=True, append_images=imgs[1:],
+                 duration=80, loop=0)
+    return buf.getvalue()
+
+
+async def test_oversized_animated_gif_is_prepared_and_described(factory):
+    # Regression: a large animated documentation GIF used to 413/400 on every VLM
+    # call and stay is_meaningful=True/description=None forever (perpetual pending).
+    # It must now be normalized (first frame, downscaled, small JPEG) and described,
+    # clearing the backlog.
+    src_id, art_id, run_id = await _seed_article_with_image(
+        factory, img_bytes=_animated_gif(3400, 1400, frames=8), filename="demo.gif")
+    seen = {}
+
+    async def fake(data, alt, *, mime="image/png", **kw):
+        seen["mime"] = mime
+        seen["bytes"] = len(data)
+        return Desc(text="A UI walkthrough.", kind="screenshot")
+
+    await enrich_run_images_via(factory, src_id, run_id, fake)
+
+    assert seen.get("mime") == "image/jpeg"                    # re-encoded
+    assert seen.get("bytes", 0) <= settings.image_vlm_max_bytes  # under the cap
+    async with factory() as s:
+        img = (await s.execute(select(ArticleImage).where(
+            ArticleImage.article_id == art_id))).scalar_one()
+        assert img.is_meaningful is True and img.description == "A UI walkthrough."
+
+
+async def test_unpreparable_image_marked_not_meaningful_no_vlm(factory, monkeypatch):
+    # An image that can't be shrunk under the payload cap is dropped from the
+    # backlog (is_meaningful=False) without ever calling the VLM — so it stops
+    # being counted as pending instead of failing on every run.
+    monkeypatch.setattr(settings, "image_vlm_max_bytes", 200)
+    src_id, art_id, run_id = await _seed_article_with_image(
+        factory, img_bytes=_animated_gif(3400, 1400, frames=8), filename="demo.gif")
+
+    async def fake(data, alt, **kw):
+        raise AssertionError("VLM must not be called for an unpreparable image")
+
+    await enrich_run_images_via(factory, src_id, run_id, fake)
+    async with factory() as s:
+        img = (await s.execute(select(ArticleImage).where(
+            ArticleImage.article_id == art_id))).scalar_one()
+        assert img.is_meaningful is False and img.description is None
+
+
 # helper: run the phase on its own session against the test factory
 async def enrich_run_images_via(factory, src_id, run_id, describe):
     async with factory() as db:
