@@ -82,6 +82,11 @@ def evaluate_image(data: bytes) -> ImageEval:
     # decoded or sent to the VLM — exclude by format, not just by dimensions.
     if fmt not in _VLM_IMAGE_FORMATS:
         return ImageEval(False, w, h, sha)
+    # Refuse to treat an absurdly large image as meaningful: fully decoding one
+    # can allocate hundreds of MB (w*h*3 bytes) and OOM-kill the worker. .size is
+    # read from the header, so this check happens before any decode.
+    if w * h > settings.image_max_pixels:
+        return ImageEval(False, w, h, sha)
     meaningful = w >= settings.image_min_dimension and h >= settings.image_min_dimension
     return ImageEval(meaningful, w, h, sha)
 
@@ -107,6 +112,11 @@ def prepare_for_vlm(data: bytes) -> "tuple[bytes, str] | None":
         with Image.open(io.BytesIO(data)) as img:
             animated = getattr(img, "n_frames", 1) > 1
             w, h = img.size
+            # Never decode a bomb-scale image (defense for images marked meaningful
+            # before the evaluate_image pixel guard existed): ~400 MB for one 129 MP
+            # frame. It can't be usefully described anyway → drop from the backlog.
+            if w * h > settings.image_max_pixels:
+                return None
             within = max(w, h) <= settings.image_vlm_max_dimension
             # Fast path: static, in-bounds, already small enough — send as-is.
             if not animated and within and len(data) <= settings.image_vlm_max_bytes:

@@ -179,6 +179,13 @@ class Settings(BaseSettings):
     # on every run.
     image_vlm_max_dimension: int = 1536
     image_vlm_max_bytes: int = 4 * 1024 * 1024
+    # Hard pixel-count ceiling: an image with more pixels than this is never
+    # fully decoded (decoding one 129 MP "decompression-bomb"-scale image can
+    # allocate ~400 MB, and several at once OOM-killed the worker). Such an image
+    # can't be usefully described anyway — the VLM downscales to ~1.5k px — so it
+    # is treated as decorative. Comfortably above real documentation imagery
+    # (a 4K screenshot is ~8 MP) and below PIL's ~89 MP bomb-warning threshold.
+    image_max_pixels: int = 60_000_000
 
     # Master key for encrypting credentials/sessions at rest (Fernet, urlsafe
     # base64, 32 bytes). Required only when auth_realm rows exist. Generate with:
