@@ -231,6 +231,37 @@ async def test_unpreparable_image_marked_not_meaningful_no_vlm(factory, monkeypa
         assert img.is_meaningful is False and img.description is None
 
 
+async def test_budget_exhausted_skips_expensive_prepare(factory, monkeypatch):
+    # Regression: the expensive normalization (decode + re-encode) must not run once
+    # the per-run budget is spent. Otherwise a large backlog re-encodes thousands of
+    # images every run only to discard all but the budgeted few (slow image_enrich).
+    monkeypatch.setattr(settings, "image_vlm_max_per_run", 1)
+    src_id, a1, run_id = await _seed_article_with_image(
+        factory, img_bytes=_noise_png(400, 300), filename="a.png")
+    async with factory() as s:  # second article, distinct meaningful bytes
+        art2 = Article(source_id=src_id, extraction_run_id=run_id, created_run_id=run_id,
+                       title="B", source_url="https://x/b", topic_key="https://x/b",
+                       content_markdown="![p](/media/PH/b.png)", content_hash="h2")
+        s.add(art2); await s.flush()
+        art2.content_markdown = f"![p](/media/{art2.id}/b.png)"
+        s.add(ArticleImage(article_id=art2.id, original_url="u", local_filename="b.png",
+                           local_path=f"/media/{art2.id}/b.png", sort_order=0))
+        await s.commit()
+        d = os.path.join(settings.media_dir, str(art2.id)); os.makedirs(d, exist_ok=True)
+        open(os.path.join(d, "b.png"), "wb").write(_noise_png(400, 300))
+
+    calls = {"n": 0}
+    real = image_describe.prepare_for_vlm
+    monkeypatch.setattr(image_describe, "prepare_for_vlm",
+                        lambda data: (calls.__setitem__("n", calls["n"] + 1), real(data))[1])
+
+    async def fake(data, alt, **kw):
+        return Desc(text="d", kind="other")
+
+    await enrich_run_images_via(factory, src_id, run_id, fake)
+    assert calls["n"] == 1  # prepared only the one image the budget allowed, not both
+
+
 # helper: run the phase on its own session against the test factory
 async def enrich_run_images_via(factory, src_id, run_id, describe):
     async with factory() as db:

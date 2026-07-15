@@ -326,17 +326,24 @@ async def enrich_run_images(db: AsyncSession, source_id: uuid.UUID, run_id: uuid
                     changed = True
                     described += 1
                 else:
-                    # Normalize the real bytes into something the VLM accepts:
-                    # first frame of an animated GIF, downscaled/re-encoded under
-                    # the payload cap. Returns None for a WMF/vector mislabeled
-                    # .png or a huge GIF that can't be shrunk under the cap — both
-                    # would 400/413 on every run, so mark them not-meaningful to
-                    # leave the backlog for good.
+                    # Cheap format gate first (reads only the header): a WMF/vector
+                    # mislabeled .png can never be described — drop it now, regardless
+                    # of budget, so it leaves the backlog for good.
+                    if _detect_format(data) not in _VLM_IMAGE_FORMATS:
+                        img.is_meaningful = False
+                        continue
+                    # Stop before the expensive step once budget/circuit-breaker is
+                    # spent, so a large backlog doesn't re-encode thousands of images
+                    # per run only to discard all but the budgeted few.
+                    if budget <= 0 or consecutive_failures >= settings.image_vlm_max_consecutive_failures:
+                        continue
+                    # Normalize the bytes into something the VLM accepts (first frame
+                    # of an animated GIF, downscaled/re-encoded under the payload cap).
+                    # None → a huge GIF that can't be shrunk under the cap; it would
+                    # 413 on every run, so mark it not-meaningful to leave the backlog.
                     prepared = await asyncio.to_thread(prepare_for_vlm, data)
                     if prepared is None:
                         img.is_meaningful = False
-                        continue
-                    if budget <= 0 or consecutive_failures >= settings.image_vlm_max_consecutive_failures:
                         continue
                     budget -= 1  # reserve; refunded below if the call fails
                     pending.append((img, *prepared))
