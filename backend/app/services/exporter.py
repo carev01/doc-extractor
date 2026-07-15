@@ -31,9 +31,19 @@ from app.models.toc import TOCEntry
 from app.services.pdf_renderer import render_markdown_to_pdf
 
 # Full-text search expression over title + content. Kept identical to the GIN
-# expression index (see the add_fts_index migration) so the planner can use it.
+# expression index (see the bound_fts_index migration) so the planner can use it.
+#
+# The input is bounded with left(): to_tsvector rejects input over 1 MB
+# ("string is too long for tsvector … max 1048575 bytes"), and because this same
+# expression is a GIN index computed on *every* insert, an oversized page (e.g. a
+# 5.8 MB doc) would otherwise fail its insert and be dropped entirely. left() is
+# by characters; 262143 * 4 (max UTF-8 bytes per char) < 1048575, so the cap is
+# safe for any encoding. The full content is still stored and served — only FTS
+# index coverage is bounded to roughly the first 262k characters.
+_FTS_MAX_CHARS = 262143
 _TSV = (
-    "to_tsvector('english', coalesce(title,'') || ' ' || coalesce(content_markdown,''))"
+    "to_tsvector('english', "
+    f"left(coalesce(title,'') || ' ' || coalesce(content_markdown,''), {_FTS_MAX_CHARS}))"
 )
 
 # Max articles loaded per render pass (memory bound).
