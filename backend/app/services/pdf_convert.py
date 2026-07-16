@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import bisect
 import hashlib
 import html
 import logging
@@ -417,40 +416,6 @@ def _norm_core(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", html.unescape(s).lower())
 
 
-def _heading_line_by_page(lines: list[str], headings: "list[DocHeading]") -> dict[int, int]:
-    """Map fitz page0 → the markdown line of the FIRST heading on that page.
-
-    Built by matching docling's json headings (``converted.headings`` — which carry
-    reliable ``prov`` page numbers) to the markdown's ATX heading lines in reading
-    order. This anchor is immune to page-break-marker DRIFT: docling omits a
-    page-break marker for empty pages AND for some merged adjacent content pages, so
-    ``page_line_starts`` (derived from those markers) under-counts and its index
-    stops equalling the fitz page number partway through a long document. json
-    heading page numbers don't drift, and the exact heading text locates cleanly in
-    the markdown, so an outline entry can be anchored to the right page regardless.
-
-    A json heading not found among the ATX lines is skipped (the sequential cursor
-    only advances on a match), so a miss can't misalign later matches; duplicate
-    heading texts on different pages map to successive ATX occurrences in order."""
-    if not headings:
-        return {}
-    atx = [(ln, _norm_core(t)) for ln, t in _heading_lines(lines)]
-    by_page: dict[int, int] = {}
-    ai = 0
-    for h in headings:
-        ht = _norm_core(h.text)
-        if not ht:
-            continue
-        j = ai
-        while j < len(atx):
-            if atx[j][1] == ht:
-                by_page.setdefault(h.page0, atx[j][0])
-                ai = j + 1
-                break
-            j += 1
-    return by_page
-
-
 def _find_heading_line(headings: list[tuple[int, str]], title: str, start: int) -> "int | None":
     t = _norm_core(title)
     if not t:
@@ -510,60 +475,17 @@ def _match_in_window(
     return best
 
 
-def _fitz_page_line_starts(
-    head_line: dict[int, int], total_pages: int, n_lines: int
-) -> "list[int] | None":
-    """A FITZ-aligned line map (index == fitz page, length == total_pages) for
-    escalation page-slicing, interpolated between the reliable json-heading anchors
-    (page → line). Immune to the marker drift that makes ``page_line_starts``
-    under-count and mis-index (see _heading_line_by_page). Returns None when there
-    are too few anchors to interpolate safely, so the caller keeps marker slicing.
-
-    Interpolation (rather than the raw markers) is used because docling merges some
-    content pages, so the markers can't locate every page boundary; between the
-    frequent heading anchors the estimate is close, and escalation re-converts each
-    flagged page by its exact fitz range anyway — the slice only picks WHICH page."""
-    if total_pages <= 0 or len(head_line) < 2:
-        return None
-    pts = sorted(head_line.items())
-    if pts[0][0] != 0:
-        pts.insert(0, (0, 0))
-    if pts[-1][0] != total_pages - 1:
-        pts.append((total_pages - 1, max(pts[-1][1] + 1, n_lines)))
-    pages = [p for p, _ in pts]
-    full: list[int] = [0] * total_pages
-    for f in range(total_pages):
-        k = min(bisect.bisect_right(pages, f) - 1, len(pts) - 2)
-        (pa, la), (pb, lb) = pts[k], pts[k + 1]
-        full[f] = la if pb == pa else la + round((lb - la) * (f - pa) / (pb - pa))
-    prev = 0  # enforce monotonic non-decreasing within [0, n_lines]
-    for f in range(total_pages):
-        full[f] = min(max(full[f], prev), n_lines)
-        prev = full[f]
-    return full
-
-
 def split_pages(converted: ConvertedDoc) -> list[str]:
-    """Per-page markdown slices of ``converted.markdown``, indexed by FITZ page.
+    """Per-page markdown slices of ``converted.markdown`` using ``page_line_starts``.
 
-    Prefers a fitz-aligned line map built from reliable json-heading anchors
-    (:func:`_fitz_page_line_starts`) so slice index p == fitz page p — what the
-    escalation scorer needs (``score_page`` indexes ``page_texts``/``table_pages``
-    by fitz page, and ``escalate_page`` extracts fitz page p). Falls back to the
-    marker-based ``page_line_starts`` when anchors are too sparse to interpolate.
-
-    Page 0 includes any leading lines before the first recorded start. Returns an
-    empty list when there are no page offsets (the pymupdf fallback), signalling
-    that page-level work is unavailable.
+    Page 0 includes any leading lines before the first recorded start. Returns one
+    string per page-line-start entry; an empty list when there are no page offsets
+    (the pymupdf fallback), signalling that page-level work is unavailable.
     """
     starts = converted.page_line_starts
     if not starts:
         return []
     lines = converted.markdown.split("\n")
-    head_line = _heading_line_by_page(lines, converted.headings)
-    fitz_starts = _fitz_page_line_starts(head_line, len(converted.page_texts), len(lines))
-    if fitz_starts is not None:
-        starts = fitz_starts
     n = len(starts)
     pages: list[str] = []
     for p in range(n):
@@ -610,31 +532,21 @@ def split_into_segments(converted: ConvertedDoc, outline: "list[Segment]") -> li
         candidates = _title_candidate_lines(lines)
         starts = converted.page_line_starts
         n_pages = len(starts)
-        # Where a fitz page begins in the markdown. Prefer a reliable json-heading
-        # anchor (immune to page-break-marker drift); fall back to the marker-based
-        # page_line_starts for pages without a heading. See _heading_line_by_page.
-        head_line = _heading_line_by_page(lines, converted.headings)
-
-        def _page_top(p: int) -> "int | None":
-            if p in head_line:
-                return head_line[p]
-            if 0 <= p < n_pages:
-                return starts[p]
-            return None
-
         # For each entry, the line where the NEXT strictly-later page begins bounds
         # its heading search, so an entry never matches a heading belonging to a
         # later section (outline page_starts are non-decreasing).
         next_page_line = [len(lines)] * len(outline)
         for i in range(len(outline) - 2, -1, -1):
             nxt_ps = outline[i + 1].page_start
-            npt = _page_top(nxt_ps) if nxt_ps > outline[i].page_start else None
-            next_page_line[i] = npt if npt is not None else next_page_line[i + 1]
+            if nxt_ps > outline[i].page_start and 0 <= nxt_ps < n_pages:
+                next_page_line[i] = starts[nxt_ps]
+            else:
+                next_page_line[i] = next_page_line[i + 1]
         cursor = 0
         for i, seg in enumerate(outline):
-            page_top = _page_top(seg.page_start)
-            has_page = page_top is not None
+            has_page = bool(starts) and 0 <= seg.page_start < n_pages
             if has_page:
+                page_top = starts[seg.page_start]
                 lo = max(cursor, page_top - _ANCHOR_BACK)
                 # exclusive of the next section's page top: a heading there is the
                 # NEXT entry's, never this one's.
