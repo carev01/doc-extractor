@@ -57,12 +57,40 @@ async def test_escalate_page_content_addresses_images(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_escalate_page_returns_none_on_docling_failure(monkeypatch):
-    # A docling-serve failure is signalled as None so the caller can trip its
-    # circuit breaker rather than treating it as a no-op.
+    # A persistent docling-serve failure is signalled as None (after exhausting
+    # retries) so the caller can trip its circuit breaker.
+    monkeypatch.setattr(esc.settings, "pdf_vlm_page_retries", 2)
+    monkeypatch.setattr(esc.settings, "pdf_vlm_page_retry_backoff", 0)  # no sleep in test
     monkeypatch.setattr(esc, "_extract_page_range", lambda *a: b"%PDF-x")
+    calls = {"n": 0}
 
     async def boom(pdf_bytes, **kw):
+        calls["n"] += 1
         raise dc.DoclingServeError("vlm down")
 
     monkeypatch.setattr(esc.docling_client, "convert_async", boom)
     assert await esc.escalate_page(b"WHOLE", 0) is None
+    assert calls["n"] == 3  # 1 initial + 2 retries before giving up
+
+
+@pytest.mark.asyncio
+async def test_escalate_page_recovers_after_transient_failure(monkeypatch):
+    # docling often fails a page that converts fine on re-submit; a transient
+    # failure must be retried, not counted as a failure that abandons the drain.
+    monkeypatch.setattr(esc.settings, "pdf_vlm_page_retries", 2)
+    monkeypatch.setattr(esc.settings, "pdf_vlm_page_retry_backoff", 0)
+    monkeypatch.setattr(esc, "_extract_page_range", lambda *a: b"%PDF-x")
+    calls = {"n": 0}
+
+    async def flaky(pdf_bytes, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise dc.DoclingServeError("task failed")   # first attempt wobbles
+        return {"md_content": "## Recovered\n\nreal content"}
+
+    monkeypatch.setattr(esc.docling_client, "convert_async", flaky)
+    out = await esc.escalate_page(b"WHOLE", 0)
+    assert out is not None
+    md, _ = out
+    assert "Recovered" in md
+    assert calls["n"] == 2  # retried once, then succeeded
