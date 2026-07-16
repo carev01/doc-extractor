@@ -107,6 +107,14 @@ class Settings(BaseSettings):
     # mirroring media_dir/export_dir. Uploads larger than the cap are rejected.
     pdf_dir: str = "pdf_uploads"
     pdf_max_upload_bytes: int = 100 * 1024 * 1024  # 100 MiB
+    # Converted-doc cache: when a PDF run finishes with pages still pending VLM
+    # escalation, its converted markdown (+ page offsets + image blobs) is cached
+    # here keyed by the PDF's content hash, so a retry re-escalates just the
+    # leftover pages and re-splits WITHOUT redoing the (often >1h) Layer-A
+    # conversion. A subdir of pdf_dir so it rides the existing pdf PVC (persisted
+    # across restarts); if it isn't persisted, a retry simply falls back to a full
+    # re-conversion.
+    pdf_cache_dir: str = "pdf_uploads/cache"
 
     # Backoff-and-retry for transient PDF download failures (e.g. Dell's CDN
     # intermittently serving a non-PDF shell). A failed download requeues the run

@@ -10,6 +10,10 @@ backend/exports/
 # Canonical article images downloaded at extraction time
 backend/media/
 
+# Uploaded PDFs and the converted-doc escalation cache (rides the pdf volume)
+backend/pdf_uploads/
+backend/pdf_cache/
+
 # macOS
 .DS_Store
 

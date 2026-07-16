@@ -99,10 +99,12 @@ class ExtractionRun(Base):
     error_message: Mapped[str | None] = mapped_column(String(4096), nullable=True)
     firecrawl_job_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     current_phase: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    # PDF VLM escalation that failed this run and can be retried without redoing
-    # the conversion: a list of {article_id, page_start, page_end, level, title}.
-    # Non-empty ⇒ the run completed with an escalation *warning* (not a clean
-    # green) and is eligible for a kind="escalate" retry. NULL/empty ⇒ no warning.
+    # PDF pages whose VLM escalation still needs to run (a service outage, or over
+    # the per-run page budget), retryable without redoing the conversion: a list of
+    # {page_start, page_end} 0-based inclusive page ranges. Non-empty ⇒ the run
+    # completed with an escalation *warning* (not a clean green) and is eligible for
+    # a kind="escalate" retry (which reuses the cached converted doc). NULL/empty ⇒
+    # no warning.
     escalation_pending: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     # Pages that tripped bot protection (Akamai/Cloudflare) and were not stored
     # this run: a list of {url, title, toc_entry_id, sort_order, topic_key}.
