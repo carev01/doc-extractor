@@ -174,6 +174,13 @@ class Settings(BaseSettings):
     # down), stop escalating for the rest of the run instead of hammering the
     # shared service with dozens of doomed conversions.
     pdf_vlm_max_consecutive_failures: int = 5
+    # docling-serve intermittently returns a "task failed" for a page that
+    # converts fine on a re-submit (transient load/flakiness during a burst of
+    # escalations). Retry an individual page this many times before counting it as
+    # a failure, so a brief wobble doesn't trip the consecutive-failure breaker and
+    # abandon the whole drain. Linear backoff between attempts.
+    pdf_vlm_page_retries: int = 2
+    pdf_vlm_page_retry_backoff: float = 3.0
 
     # ── Image VLM description (Spec 2, opt-in) ──
     # OpenAI-compatible vision chat-completions endpoint (OpenRouter by default),

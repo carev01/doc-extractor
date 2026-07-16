@@ -103,20 +103,30 @@ async def escalate_page(pdf_bytes: bytes, page0: int) -> "tuple[str, list[Render
     its circuit breaker. Images are content-addressed (``<sha>.png``) exactly like
     the main conversion so figures on the page are preserved.
     """
-    try:
-        # Extract the single page into a standalone PDF and send THAT (docling
-        # rejects a large full-doc upload as "Input document is not valid").
-        page_bytes = await asyncio.to_thread(_extract_page_range, pdf_bytes, page0 + 1, page0 + 1)
-        doc = await docling_client.convert_async(
-            page_bytes, use_vlm_api=True, image_export_mode="embedded",
-        )
-    except DoclingServeError as exc:
-        logger.warning("VLM escalation failed for page %d: %s", page0 + 1, exc)
-        return None
-
-    md, images = _content_address_data_uris(doc.get("md_content") or "")
-    md = sanitize_markdown(md)
-    return md, images
+    # Extract the single page into a standalone PDF and send THAT (docling
+    # rejects a large full-doc upload as "Input document is not valid").
+    page_bytes = await asyncio.to_thread(_extract_page_range, pdf_bytes, page0 + 1, page0 + 1)
+    # docling-serve intermittently fails a page that converts fine on re-submit;
+    # retry a few times before giving up so a transient wobble doesn't trip the
+    # caller's consecutive-failure breaker and abandon the rest of the drain.
+    attempts = 1 + max(0, settings.pdf_vlm_page_retries)
+    for attempt in range(attempts):
+        try:
+            doc = await docling_client.convert_async(
+                page_bytes, use_vlm_api=True, image_export_mode="embedded",
+            )
+        except DoclingServeError as exc:
+            if attempt + 1 < attempts:
+                logger.info("VLM escalation transient failure for page %d "
+                            "(attempt %d/%d): %s; retrying", page0 + 1, attempt + 1,
+                            attempts, exc)
+                await asyncio.sleep(settings.pdf_vlm_page_retry_backoff * (attempt + 1))
+                continue
+            logger.warning("VLM escalation failed for page %d after %d attempts: %s",
+                           page0 + 1, attempts, exc)
+            return None
+        md, images = _content_address_data_uris(doc.get("md_content") or "")
+        return sanitize_markdown(md), images
 
 
 async def escalate_low_confidence_pages(
