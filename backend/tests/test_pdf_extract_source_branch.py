@@ -19,7 +19,7 @@ from app.models import Vendor, Product, DocumentationSource, ExtractionRun, Arti
 from app.models.extraction_run import RunStatus
 from app.services.firecrawl import FirecrawlService
 from app.services.pdf_convert import ConvertedDoc
-from app.services.pdf_import import pdf_path_for
+from app.services.pdf_import import pdf_path_for, PdfAcquireError
 import app.services.pdf_import as _pdf_import_mod
 
 TEST_DATABASE_URL = settings.database_url.rsplit("/", 1)[0] + "/docextractor_test"
@@ -127,3 +127,54 @@ async def test_corrupt_pdf_marks_run_failed_not_orphaned(factory, tmp_path):
         assert run.error_message
         src = await s.get(DocumentationSource, sid)
         assert src.status.value == "failed"
+
+
+async def _pdf_url_source(factory):
+    async with factory() as s:
+        v = Vendor(name="V"); s.add(v); await s.flush()
+        p = Product(vendor_id=v.id, name="P"); s.add(p); await s.flush()
+        src = DocumentationSource(product_id=p.id, name="M",
+                                  base_url="https://docs.example.com/g.pdf", source_type="pdf")
+        s.add(src); await s.flush()
+        run = ExtractionRun(source_id=src.id); s.add(run); await s.commit()
+        return src.id, run.id
+
+
+async def test_retryable_acquire_error_propagates_not_failed(factory, monkeypatch):
+    # A transient download failure (retryable PdfAcquireError, e.g. a Browserless
+    # 502) must PROPAGATE so the worker can requeue it with backoff — extract_source
+    # must NOT swallow it by committing the run FAILED.
+    sid, rid = await _pdf_url_source(factory)
+
+    async def boom(*a, **k):
+        raise PdfAcquireError("browser download failed: status=502", retryable=True)
+
+    monkeypatch.setattr(_pdf_import_mod, "run_pdf_extraction", boom)
+
+    svc = FirecrawlService()
+    with pytest.raises(PdfAcquireError):
+        async with factory() as s:
+            await svc.extract_source(s, sid, run_id=rid)
+
+    async with factory() as s:
+        run = await s.get(ExtractionRun, rid)
+        assert run.status != RunStatus.FAILED   # left for the worker to requeue
+
+
+async def test_non_retryable_acquire_error_marks_failed(factory, monkeypatch):
+    # A permanent acquire failure still hard-fails (no infinite requeue).
+    sid, rid = await _pdf_url_source(factory)
+
+    async def boom(*a, **k):
+        raise PdfAcquireError("missing uploaded file", retryable=False)
+
+    monkeypatch.setattr(_pdf_import_mod, "run_pdf_extraction", boom)
+
+    svc = FirecrawlService()
+    async with factory() as s:
+        await svc.extract_source(s, sid, run_id=rid)
+        await s.commit()
+
+    async with factory() as s:
+        run = await s.get(ExtractionRun, rid)
+        assert run.status == RunStatus.FAILED
