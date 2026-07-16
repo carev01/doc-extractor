@@ -132,6 +132,30 @@ async def test_escalate_budget_rounds_up_min_one(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_over_budget_empty_pages_recorded_pending_ragged_deferred(monkeypatch):
+    # budget = 1 page (1% of 100). Two 10-page exclusive segments, both over budget:
+    #  - a near-empty chapter (empty_pages) is actual content loss → must be
+    #    recorded pending so it's visible and a (budget-free) retry can recover it;
+    #  - a ragged table on populated content is merely imperfect → silently deferred.
+    empty = _seg("EmptyChap", 0, 9, "## EmptyChap\n")
+    ragged = _seg("BigTable", 20, 29,
+                  "## BigTable\n\n| a | b |\n| --- | --- |\n" + "| 1 | 2 | 3 |\n" * 40)
+    segs = [empty, ragged]
+    conv = ConvertedDoc(markdown="", headings=[], page_texts=[""] * 100,
+                        table_pages=set(), images=[], engine="docling")
+    monkeypatch.setattr(esc.settings, "pdf_vlm_escalation_enabled", True)
+    monkeypatch.setattr(esc.settings, "pdf_vlm_max_pages_pct", 1.0)  # budget = 1 page
+    called = []
+    async def fake_one(pdf_bytes, segment):
+        called.append(segment.title); return "x"
+    monkeypatch.setattr(esc, "escalate_segment", fake_one)
+
+    failed = await esc.escalate_segments(b"%PDF", segs, conv)
+    assert called == []      # both over budget → nothing escalated this run
+    assert failed == [0]     # only the near-empty chapter is pending; ragged deferred
+
+
+@pytest.mark.asyncio
 async def test_escalate_segments_disabled_noop(monkeypatch):
     seg = _seg("Bad", 0, 0, "## Bad\n\n| a | b |\n| --- | --- |\n| 1 | 2 | 3 |\n")
     conv = ConvertedDoc(markdown="", headings=[], page_texts=["x"*50],

@@ -35,3 +35,22 @@ def test_missing_table_flagged():
 def test_sparse_text_flagged():
     md = "## t\n\ntiny\n"
     assert "sparse_text" in score_segment(_seg(md), _conv(["y" * 1000]))
+
+
+def test_empty_pages_flagged_for_near_empty_multipage_segment():
+    # 6 pages, ~9 chars of markdown, and NO text layer (page_texts empty) so
+    # sparse_text can't fire — the image-only case that silently lost content.
+    md = "## Cloud\n"
+    issues = score_segment(_seg(md, p0=0, p1=5), _conv([""] * 6))
+    assert "empty_pages" in issues
+
+
+def test_empty_pages_not_flagged_when_populated():
+    md = "## t\n\n" + ("real content " * 200)  # well over 30 chars/page
+    assert "empty_pages" not in score_segment(_seg(md, p0=0, p1=5), _conv([""] * 6))
+
+
+def test_empty_pages_not_flagged_for_single_page():
+    # A single sparse page is normal (a section title page); only multi-page
+    # near-empty runs are suspicious.
+    assert "empty_pages" not in score_segment(_seg("x", p0=3, p1=3), _conv([""] * 4))
