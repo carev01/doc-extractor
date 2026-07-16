@@ -15,8 +15,82 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.services.pdf_convert import ConvertedDoc, split_into_segments
+from app.services.pdf_convert import (
+    ConvertedDoc, DocHeading, split_into_segments, _heading_line_by_page,
+)
 from app.services.pdf_import import Segment
+
+
+# ── heading-anchored page mapping (immune to page_line_starts drift) ──
+
+_DRIFT_LINES = [
+    "# Chapter A",        # 0  page 0
+    "intro alpha",        # 1
+    "",                   # 2
+    "## Section One",     # 3  page 1
+    "content one aaa",    # 4
+    "",                   # 5
+    "## Section Two",     # 6  page 2
+    "content two bbb",    # 7
+    "",                   # 8
+    "## Section Three",   # 9  page 3
+    "content three ccc",  # 10
+]
+_DRIFT_HEADINGS = [
+    DocHeading(text="Chapter A", level=1, page0=0),
+    DocHeading(text="Section One", level=2, page0=1),
+    DocHeading(text="Section Two", level=2, page0=2),
+    DocHeading(text="Section Three", level=2, page0=3),
+]
+_DRIFT_OUTLINE = [
+    Segment(title="Chapter A", level=1, page_start=0, page_end=0, path=["Chapter A"]),
+    Segment(title="Section One", level=2, page_start=1, page_end=1, path=["Chapter A", "Section One"]),
+    Segment(title="Section Two", level=2, page_start=2, page_end=2, path=["Chapter A", "Section Two"]),
+    Segment(title="Section Three", level=2, page_start=3, page_end=3, path=["Chapter A", "Section Three"]),
+]
+# DRIFTED page_line_starts: docling dropped/merged markers, so every later page
+# collapses onto Section Three's line (line 9) — the marker-based anchor is wrong.
+_DRIFTED_STARTS = [0, 9, 9, 9]
+
+
+def test_heading_line_by_page_maps_reliable_json_pages():
+    m = _heading_line_by_page(_DRIFT_LINES, _DRIFT_HEADINGS)
+    assert m == {0: 0, 1: 3, 2: 6, 3: 9}
+
+
+def test_heading_line_by_page_skips_unmatched_and_handles_dupes():
+    lines = ["## Alpha", "x", "## Beta", "y", "## Alpha", "z"]
+    heads = [DocHeading("Alpha", 2, 0), DocHeading("Gamma", 2, 1),  # Gamma not in md
+             DocHeading("Beta", 2, 2), DocHeading("Alpha", 2, 4)]   # 2nd Alpha → 2nd occurrence
+    assert _heading_line_by_page(lines, heads) == {0: 0, 2: 2, 4: 4}
+
+
+def test_heading_anchor_beats_drifted_page_line_starts():
+    # With correct json headings, each entry anchors to its real page despite the
+    # drifted page_line_starts → all four sections become their own articles.
+    converted = ConvertedDoc(
+        markdown="\n".join(_DRIFT_LINES), headings=_DRIFT_HEADINGS,
+        page_texts=["p0", "p1", "p2", "p3"], table_pages=set(),
+        page_line_starts=_DRIFTED_STARTS,
+    )
+    segs = split_into_segments(converted, _DRIFT_OUTLINE)
+    assert [s.title for s in segs] == ["Chapter A", "Section One", "Section Two", "Section Three"]
+    one = next(s for s in segs if s.title == "Section One")
+    assert "content one aaa" in one.markdown and "content two bbb" not in one.markdown
+
+
+def test_drift_without_heading_anchors_folds_a_section():
+    # Same drift but NO json headings → falls back to the drifted page_line_starts,
+    # whose collapsed anchors push a real heading out of the search window, so a
+    # section folds instead of opening its own article. Documents the bug the
+    # heading anchor fixes (and proves the fix, not the fixture, is what resolves it).
+    converted = ConvertedDoc(
+        markdown="\n".join(_DRIFT_LINES), headings=[],
+        page_texts=["p0", "p1", "p2", "p3"], table_pages=set(),
+        page_line_starts=_DRIFTED_STARTS,
+    )
+    titles = [s.title for s in split_into_segments(converted, _DRIFT_OUTLINE)]
+    assert titles != ["Chapter A", "Section One", "Section Two", "Section Three"]
 
 
 def test_unmatched_entry_on_its_own_page_is_page_anchored():

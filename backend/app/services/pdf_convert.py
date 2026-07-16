@@ -416,6 +416,40 @@ def _norm_core(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", html.unescape(s).lower())
 
 
+def _heading_line_by_page(lines: list[str], headings: "list[DocHeading]") -> dict[int, int]:
+    """Map fitz page0 → the markdown line of the FIRST heading on that page.
+
+    Built by matching docling's json headings (``converted.headings`` — which carry
+    reliable ``prov`` page numbers) to the markdown's ATX heading lines in reading
+    order. This anchor is immune to page-break-marker DRIFT: docling omits a
+    page-break marker for empty pages AND for some merged adjacent content pages, so
+    ``page_line_starts`` (derived from those markers) under-counts and its index
+    stops equalling the fitz page number partway through a long document. json
+    heading page numbers don't drift, and the exact heading text locates cleanly in
+    the markdown, so an outline entry can be anchored to the right page regardless.
+
+    A json heading not found among the ATX lines is skipped (the sequential cursor
+    only advances on a match), so a miss can't misalign later matches; duplicate
+    heading texts on different pages map to successive ATX occurrences in order."""
+    if not headings:
+        return {}
+    atx = [(ln, _norm_core(t)) for ln, t in _heading_lines(lines)]
+    by_page: dict[int, int] = {}
+    ai = 0
+    for h in headings:
+        ht = _norm_core(h.text)
+        if not ht:
+            continue
+        j = ai
+        while j < len(atx):
+            if atx[j][1] == ht:
+                by_page.setdefault(h.page0, atx[j][0])
+                ai = j + 1
+                break
+            j += 1
+    return by_page
+
+
 def _find_heading_line(headings: list[tuple[int, str]], title: str, start: int) -> "int | None":
     t = _norm_core(title)
     if not t:
@@ -532,21 +566,31 @@ def split_into_segments(converted: ConvertedDoc, outline: "list[Segment]") -> li
         candidates = _title_candidate_lines(lines)
         starts = converted.page_line_starts
         n_pages = len(starts)
+        # Where a fitz page begins in the markdown. Prefer a reliable json-heading
+        # anchor (immune to page-break-marker drift); fall back to the marker-based
+        # page_line_starts for pages without a heading. See _heading_line_by_page.
+        head_line = _heading_line_by_page(lines, converted.headings)
+
+        def _page_top(p: int) -> "int | None":
+            if p in head_line:
+                return head_line[p]
+            if 0 <= p < n_pages:
+                return starts[p]
+            return None
+
         # For each entry, the line where the NEXT strictly-later page begins bounds
         # its heading search, so an entry never matches a heading belonging to a
         # later section (outline page_starts are non-decreasing).
         next_page_line = [len(lines)] * len(outline)
         for i in range(len(outline) - 2, -1, -1):
             nxt_ps = outline[i + 1].page_start
-            if nxt_ps > outline[i].page_start and 0 <= nxt_ps < n_pages:
-                next_page_line[i] = starts[nxt_ps]
-            else:
-                next_page_line[i] = next_page_line[i + 1]
+            npt = _page_top(nxt_ps) if nxt_ps > outline[i].page_start else None
+            next_page_line[i] = npt if npt is not None else next_page_line[i + 1]
         cursor = 0
         for i, seg in enumerate(outline):
-            has_page = bool(starts) and 0 <= seg.page_start < n_pages
+            page_top = _page_top(seg.page_start)
+            has_page = page_top is not None
             if has_page:
-                page_top = starts[seg.page_start]
                 lo = max(cursor, page_top - _ANCHOR_BACK)
                 # exclusive of the next section's page top: a heading there is the
                 # NEXT entry's, never this one's.
