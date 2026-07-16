@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import bisect
 import hashlib
 import html
 import logging
@@ -509,17 +510,60 @@ def _match_in_window(
     return best
 
 
-def split_pages(converted: ConvertedDoc) -> list[str]:
-    """Per-page markdown slices of ``converted.markdown`` using ``page_line_starts``.
+def _fitz_page_line_starts(
+    head_line: dict[int, int], total_pages: int, n_lines: int
+) -> "list[int] | None":
+    """A FITZ-aligned line map (index == fitz page, length == total_pages) for
+    escalation page-slicing, interpolated between the reliable json-heading anchors
+    (page → line). Immune to the marker drift that makes ``page_line_starts``
+    under-count and mis-index (see _heading_line_by_page). Returns None when there
+    are too few anchors to interpolate safely, so the caller keeps marker slicing.
 
-    Page 0 includes any leading lines before the first recorded start. Returns one
-    string per page-line-start entry; an empty list when there are no page offsets
-    (the pymupdf fallback), signalling that page-level work is unavailable.
+    Interpolation (rather than the raw markers) is used because docling merges some
+    content pages, so the markers can't locate every page boundary; between the
+    frequent heading anchors the estimate is close, and escalation re-converts each
+    flagged page by its exact fitz range anyway — the slice only picks WHICH page."""
+    if total_pages <= 0 or len(head_line) < 2:
+        return None
+    pts = sorted(head_line.items())
+    if pts[0][0] != 0:
+        pts.insert(0, (0, 0))
+    if pts[-1][0] != total_pages - 1:
+        pts.append((total_pages - 1, max(pts[-1][1] + 1, n_lines)))
+    pages = [p for p, _ in pts]
+    full: list[int] = [0] * total_pages
+    for f in range(total_pages):
+        k = min(bisect.bisect_right(pages, f) - 1, len(pts) - 2)
+        (pa, la), (pb, lb) = pts[k], pts[k + 1]
+        full[f] = la if pb == pa else la + round((lb - la) * (f - pa) / (pb - pa))
+    prev = 0  # enforce monotonic non-decreasing within [0, n_lines]
+    for f in range(total_pages):
+        full[f] = min(max(full[f], prev), n_lines)
+        prev = full[f]
+    return full
+
+
+def split_pages(converted: ConvertedDoc) -> list[str]:
+    """Per-page markdown slices of ``converted.markdown``, indexed by FITZ page.
+
+    Prefers a fitz-aligned line map built from reliable json-heading anchors
+    (:func:`_fitz_page_line_starts`) so slice index p == fitz page p — what the
+    escalation scorer needs (``score_page`` indexes ``page_texts``/``table_pages``
+    by fitz page, and ``escalate_page`` extracts fitz page p). Falls back to the
+    marker-based ``page_line_starts`` when anchors are too sparse to interpolate.
+
+    Page 0 includes any leading lines before the first recorded start. Returns an
+    empty list when there are no page offsets (the pymupdf fallback), signalling
+    that page-level work is unavailable.
     """
     starts = converted.page_line_starts
     if not starts:
         return []
     lines = converted.markdown.split("\n")
+    head_line = _heading_line_by_page(lines, converted.headings)
+    fitz_starts = _fitz_page_line_starts(head_line, len(converted.page_texts), len(lines))
+    if fitz_starts is not None:
+        starts = fitz_starts
     n = len(starts)
     pages: list[str] = []
     for p in range(n):

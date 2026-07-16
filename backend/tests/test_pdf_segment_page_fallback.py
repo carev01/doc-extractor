@@ -16,7 +16,8 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.services.pdf_convert import (
-    ConvertedDoc, DocHeading, split_into_segments, _heading_line_by_page,
+    ConvertedDoc, DocHeading, split_into_segments, split_pages,
+    _heading_line_by_page, _fitz_page_line_starts,
 )
 from app.services.pdf_import import Segment
 
@@ -77,6 +78,57 @@ def test_heading_anchor_beats_drifted_page_line_starts():
     assert [s.title for s in segs] == ["Chapter A", "Section One", "Section Two", "Section Three"]
     one = next(s for s in segs if s.title == "Section One")
     assert "content one aaa" in one.markdown and "content two bbb" not in one.markdown
+
+
+_PAGE_SLICE_LINES = [
+    "# Page Zero",     # 0  fitz page 0 (heading)
+    "zero body",       # 1
+    "one body",        # 2  fitz page 1 — MERGED into page 0's segment (no marker)
+    "## Page Two",     # 3  fitz page 2 (heading)
+    "two body",        # 4
+    "## Page Three",   # 5  fitz page 3 (heading)
+    "three body",      # 6
+]
+_PAGE_SLICE_HEADINGS = [
+    DocHeading(text="Page Zero", level=1, page0=0),
+    DocHeading(text="Page Two", level=2, page0=2),
+    DocHeading(text="Page Three", level=2, page0=3),
+]
+
+
+def test_fitz_page_line_starts_interpolates_full_length():
+    # 4 fitz pages, anchors on 0,2,3 → a full-length map with page 1 interpolated.
+    out = _fitz_page_line_starts({0: 0, 2: 3, 3: 5}, total_pages=4, n_lines=7)
+    assert len(out) == 4 and out == sorted(out) and out[0] == 0
+    assert out[1] and 0 < out[1] <= 3           # page 1 placed between anchors 0 and 2
+
+
+def test_fitz_page_line_starts_needs_two_anchors():
+    assert _fitz_page_line_starts({0: 0}, 4, 7) is None   # too few → caller falls back
+
+
+def test_split_pages_is_fitz_aligned_via_heading_anchors():
+    # page_line_starts is DRIFTED (3 markers for 4 pages — docling merged page 1),
+    # but heading anchors let split_pages emit one slice PER FITZ PAGE, so the
+    # escalation scorer's page index lines up with page_texts/table_pages again.
+    conv = ConvertedDoc(
+        markdown="\n".join(_PAGE_SLICE_LINES), headings=_PAGE_SLICE_HEADINGS,
+        page_texts=["p0", "p1", "p2", "p3"], table_pages=set(),
+        page_line_starts=[0, 3, 5],   # drifted: 3 entries for 4 fitz pages
+    )
+    pages = split_pages(conv)
+    assert len(pages) == 4                                  # fitz-aligned, not 3
+    assert "one body" in pages[1]                           # merged page 1 is its own slice
+    assert "Page Two" in pages[2] and "Page Three" in pages[3]
+
+
+def test_split_pages_falls_back_to_markers_without_anchors():
+    conv = ConvertedDoc(
+        markdown="\n".join(_PAGE_SLICE_LINES), headings=[],
+        page_texts=["p0", "p1", "p2", "p3"], table_pages=set(),
+        page_line_starts=[0, 3, 5],
+    )
+    assert len(split_pages(conv)) == 3     # no anchors → marker-based (drifted) slices
 
 
 def test_drift_without_heading_anchors_folds_a_section():
