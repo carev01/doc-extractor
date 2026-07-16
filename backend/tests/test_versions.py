@@ -425,6 +425,45 @@ async def test_browse_unknown_source_404(client):
     assert resp.status_code == 404
 
 
+async def test_browse_pdf_folds_subentries_into_covering_article(client):
+    # A PDF's outline has many sub-entries that aren't their own article; browse
+    # must resolve each to the article covering its page (the most recent
+    # article-start), so every node is navigable instead of a dead link.
+    client, TestSession = client
+    async with TestSession() as s:
+        v = Vendor(name="PV"); s.add(v); await s.flush()
+        p = Product(vendor_id=v.id, name="P"); s.add(p); await s.flush()
+        source = DocumentationSource(product_id=p.id, name="Guide",
+                                     base_url="file://g.pdf", source_type="pdf")
+        s.add(source); await s.flush()
+        s.add(ExtractionRun(source_id=source.id, status=RunStatus.COMPLETED,
+                            started_at=RUN_START))
+        chapter = TOCEntry(source_id=source.id, title="Chapter 10", url="file://g.pdf#page=1",
+                           level=1, sort_order=0, is_article=True)
+        s.add(chapter); await s.flush()
+        aws = TOCEntry(source_id=source.id, title="AWS", url="file://g.pdf#page=1",
+                       level=2, sort_order=1, is_article=False, parent_id=chapter.id)
+        azure = TOCEntry(source_id=source.id, title="Azure", url="file://g.pdf#page=3",
+                         level=2, sort_order=2, is_article=False, parent_id=chapter.id)
+        s.add_all([aws, azure]); await s.flush()
+        # Only the chapter is an article-start; AWS/Azure fold into it.
+        art = Article(source_id=source.id, toc_entry_id=chapter.id, title="Chapter 10",
+                      source_url="file://g.pdf#page=1&s=0", topic_key="ch10",
+                      content_markdown="body", content_hash="h", sort_order=0,
+                      estimated_tokens=1, content_size_bytes=1, created_at=T0)
+        s.add(art); await s.flush()
+        source_id, art_id = source.id, art.id
+        await s.commit()
+
+    resp = await client.get(f"/api/sources/{source_id}/browse")
+    assert resp.status_code == 200
+    nodes = {n["title"]: n for n in _flatten(resp.json()["entries"])}
+    assert nodes["Chapter 10"]["article_id"] == str(art_id)
+    # The folded sub-entries navigate to the covering article, not a dead link.
+    assert nodes["AWS"]["article_id"] == str(art_id)
+    assert nodes["Azure"]["article_id"] == str(art_id)
+
+
 # ── Article provenance metadata ──
 
 async def test_article_metadata_vendor_product_and_chapters(client):

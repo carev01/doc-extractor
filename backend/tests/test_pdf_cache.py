@@ -53,6 +53,26 @@ def test_delete_removes_entry(tmp_path, monkeypatch):
     assert pdf_cache.load("h", []) is None
 
 
+def test_pdf_bytes_round_trip(tmp_path, monkeypatch):
+    # The raw PDF is cached so an escalate-retry re-extracts pages without a
+    # re-download (hence without a fresh auth session).
+    monkeypatch.setattr(settings, "pdf_cache_dir", str(tmp_path))
+    assert pdf_cache.has_pdf("h") is False
+    assert pdf_cache.load_pdf("h") is None
+    pdf_cache.save_pdf("h", b"%PDF-1.7 body")
+    assert pdf_cache.has_pdf("h") is True
+    assert pdf_cache.load_pdf("h") == b"%PDF-1.7 body"
+    pdf_cache.delete_pdf("h")
+    assert pdf_cache.has_pdf("h") is False
+    assert pdf_cache.load_pdf("h") is None
+
+
+def test_pdf_bytes_helpers_tolerate_empty_hash(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "pdf_cache_dir", str(tmp_path))
+    assert pdf_cache.has_pdf("") is False
+    assert pdf_cache.load_pdf("") is None
+
+
 def test_load_tolerates_missing_blob(tmp_path, monkeypatch):
     # If an image blob is gone, the image is dropped rather than failing the load.
     monkeypatch.setattr(settings, "pdf_cache_dir", str(tmp_path))

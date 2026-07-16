@@ -25,6 +25,7 @@ from app.models.vendor import Vendor
 from app.schemas.export import ExtractionTriggerResponse
 from app.services.auth.session import session_expired
 from app.services.diffing import compute_unified_diff
+from app.services import pdf_cache
 from app.services.firecrawl import compute_content_hash, firecrawl_service
 from app.services.queue import enqueue_run, ActiveRunExists
 from app.services.sanitize import sanitize_markdown
@@ -151,7 +152,11 @@ async def retry_escalation(
     if source is None or source.source_type != "pdf":
         raise HTTPException(status_code=409, detail="Not a PDF source")
 
-    if source.auth_realm_id is not None:
+    # Escalation re-extracts page images from the PDF the original run cached, so
+    # it needs no re-download and therefore no fresh auth session. Only require a
+    # live login when that cached copy is absent (older run / GC'd cache), where
+    # the retry must re-acquire the PDF.
+    if source.auth_realm_id is not None and not pdf_cache.has_pdf(run.pdf_hash or ""):
         realm = await db.get(AuthRealm, source.auth_realm_id)
         if realm is not None and (session_expired(realm) or realm.status == RealmStatus.EXPIRED):
             raise HTTPException(
@@ -166,8 +171,10 @@ async def retry_escalation(
             status_code=409,
             detail="Extraction already queued or running for this source",
         )
-    # Carry the failed segments onto the retry run for the worker to act on.
+    # Carry the failed segments + the source PDF hash onto the retry run: the hash
+    # lets retry_escalation load the cached PDF (no re-download / auth).
     new_run.escalation_pending = run.escalation_pending
+    new_run.pdf_hash = run.pdf_hash
     await db.commit()
 
     return ExtractionTriggerResponse(
