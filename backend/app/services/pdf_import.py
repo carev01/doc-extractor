@@ -294,13 +294,13 @@ async def run_pdf_extraction(service, db, source, run, run_pk,
 
     return await _persist_segments(
         service, db, source, run, run_pk, converted, outline,
-        rendered_segments, pdf_hash, failed_ranges,
+        rendered_segments, pdf_hash, failed_ranges, pdf_bytes,
     )
 
 
 async def _persist_segments(
     service, db, source, run, run_pk, converted, outline,
-    rendered_segments, pdf_hash, failed_ranges,
+    rendered_segments, pdf_hash, failed_ranges, pdf_bytes,
 ) -> ExtractionRun:
     """Rebuild the TOC, persist articles (through the diff/version machinery),
     reconcile removals, enrich images, and finalize the run. Shared by the main
@@ -444,8 +444,12 @@ async def _persist_segments(
 
     if failed_ranges:
         pdf_cache.save(pdf_hash, converted)
+        # Also cache the raw PDF so the retry re-escalates from the saved copy —
+        # no re-download, hence no fresh auth session required.
+        pdf_cache.save_pdf(pdf_hash, pdf_bytes)
     else:
         pdf_cache.delete(pdf_hash)
+        pdf_cache.delete_pdf(pdf_hash)
     return run
 
 
@@ -481,8 +485,16 @@ async def retry_escalation(service, db, source, run, run_pk,
         await db.flush()
         return run
 
-    pdf_bytes, pdf_hash = await acquire_pdf(
-        source, auth_cookies=(auth_state or {}).get("cookies"))
+    # Prefer the PDF cached by the original run: escalation re-extracts page
+    # images from these bytes, and reusing the saved copy avoids a re-download
+    # (and the fresh auth session an Akamai/Browserless-gated source would need).
+    # Only fall back to a live re-acquire if the cache is absent (e.g. a run from
+    # before PDF caching, or the cache was GC'd).
+    pdf_hash = run.pdf_hash
+    pdf_bytes = pdf_cache.load_pdf(pdf_hash) if pdf_hash else None
+    if pdf_bytes is None:
+        pdf_bytes, pdf_hash = await acquire_pdf(
+            source, auth_cookies=(auth_state or {}).get("cookies"))
     outline = await asyncio.to_thread(_outline_for, pdf_bytes)
     page_texts = await asyncio.to_thread(_page_texts, pdf_bytes)
 
@@ -511,5 +523,5 @@ async def retry_escalation(service, db, source, run, run_pk,
     rendered_segments = await asyncio.to_thread(split_into_segments, converted, outline)
     return await _persist_segments(
         service, db, source, run, run_pk, converted, outline,
-        rendered_segments, pdf_hash, failed_ranges,
+        rendered_segments, pdf_hash, failed_ranges, pdf_bytes,
     )

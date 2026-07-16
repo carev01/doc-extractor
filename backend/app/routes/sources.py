@@ -678,11 +678,12 @@ async def browse_source(
     (``toc_entry_id IS NULL``) are returned separately as ``removed``.
     """
     await authorize_source(db, principal, source_id, write=False)
-    src = await db.execute(
-        select(DocumentationSource.id).where(DocumentationSource.id == source_id)
-    )
-    if src.scalar_one_or_none() is None:
+    src = (await db.execute(
+        select(DocumentationSource.source_type).where(DocumentationSource.id == source_id)
+    )).scalar_one_or_none()
+    if src is None:
         raise HTTPException(status_code=404, detail="Source not found")
+    source_type = src
 
     # Most recent completed run — the baseline for change annotations.
     latest_run = (
@@ -779,6 +780,22 @@ async def browse_source(
             last_updated_at=article.last_updated_at if article else None,
             children=[],
         )
+
+    # A PDF's TOC mirrors the bookmark outline verbatim: many entries aren't
+    # standalone articles but sub-sections that fold into the article covering
+    # their page. Resolve those to that covering article (the most recent
+    # article-start in reading order — toc_rows is sort_order-ordered) so every
+    # node navigates to the content that contains it, instead of rendering as a
+    # dead, unclickable entry. Mirrors the same resolution in the /articles/toc
+    # endpoint (routes/articles.py get_toc). Web TOCs keep strict semantics.
+    if source_type == "pdf":
+        covering: uuid.UUID | None = None
+        for entry in toc_rows:
+            node = node_map[entry.id]
+            if node.article_id is not None:
+                covering = node.article_id
+            elif covering is not None:
+                node.article_id = covering
 
     roots: list[BrowseTOCEntry] = []
     for entry in toc_rows:

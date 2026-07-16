@@ -39,6 +39,53 @@ def _blob_dir() -> str:
     return os.path.join(_root(), "blobs")
 
 
+def _pdf_path(pdf_hash: str) -> str:
+    return os.path.join(_root(), f"{pdf_hash}.pdf")
+
+
+def save_pdf(pdf_hash: str, pdf_bytes: bytes) -> None:
+    """Persist the raw PDF bytes so an escalate-retry can re-extract page images
+    for VLM WITHOUT re-downloading (and thus without a fresh auth session — the
+    source may sit behind Akamai/Browserless). Best-effort (never raises)."""
+    try:
+        os.makedirs(_root(), exist_ok=True)
+        tmp = _pdf_path(pdf_hash) + ".tmp"
+        with open(tmp, "wb") as fh:
+            fh.write(pdf_bytes)
+        os.replace(tmp, _pdf_path(pdf_hash))
+    except Exception as exc:  # noqa: BLE001 — cache is an optimization
+        logger.warning("pdf_cache.save_pdf failed for %s: %s", pdf_hash, exc)
+
+
+def load_pdf(pdf_hash: str) -> "bytes | None":
+    """The cached PDF bytes for this hash, or None if not cached / unreadable."""
+    if not pdf_hash:
+        return None
+    try:
+        with open(_pdf_path(pdf_hash), "rb") as fh:
+            return fh.read()
+    except FileNotFoundError:
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("pdf_cache.load_pdf failed for %s: %s", pdf_hash, exc)
+        return None
+
+
+def has_pdf(pdf_hash: str) -> bool:
+    """True if the raw PDF bytes for this hash are cached (retry needs no download)."""
+    return bool(pdf_hash) and os.path.isfile(_pdf_path(pdf_hash))
+
+
+def delete_pdf(pdf_hash: str) -> None:
+    """Drop the cached PDF bytes. Best-effort."""
+    try:
+        os.remove(_pdf_path(pdf_hash))
+    except FileNotFoundError:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("pdf_cache.delete_pdf failed for %s: %s", pdf_hash, exc)
+
+
 def save(pdf_hash: str, converted: ConvertedDoc) -> None:
     """Persist the converted doc + its image bytes. Best-effort (never raises)."""
     try:
