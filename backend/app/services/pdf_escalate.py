@@ -63,6 +63,15 @@ def score_segment(segment: RenderedSegment, converted: ConvertedDoc) -> list[str
     if len(raw) > 200 and len(md) < 0.5 * len(raw):
         issues.append("sparse_text")
 
+    # Near-empty multi-page segment: the standard pipeline produced almost no
+    # markdown across several pages. sparse_text only fires when there's a text
+    # layer to compare against, so image-only pages (no extractable text) slip
+    # through and the content is silently lost. Flag them so the VLM (which reads
+    # the rendered pages) can recover the content.
+    pages = segment.page_end - segment.page_start + 1
+    if pages >= 2 and len(md.strip()) < settings.pdf_min_chars_per_page * pages:
+        issues.append("empty_pages")
+
     return issues
 
 
@@ -77,23 +86,34 @@ async def escalate_segment(pdf_bytes: bytes, segment: RenderedSegment) -> "str |
     adds nothing), or ``None`` when docling-serve itself failed — so the caller
     can tell a genuine service failure apart from a no-op improvement and trip
     its circuit breaker."""
+    # Extract the segment's pages into a standalone PDF and send THAT, rather than
+    # the whole document + a page_range option: docling-serve rejects a large
+    # full-doc upload as "Input document is not valid" (the same reason the batched
+    # conversion extracts each batch — see _extract_page_range). For the same
+    # reason, a segment larger than the VLM batch size is escalated batch-by-batch
+    # and stitched — a single 100+ page extract would itself be rejected, which is
+    # why large sections (e.g. a whole chapter) consistently failed to escalate.
+    start1, end1 = segment.page_start + 1, segment.page_end + 1
+    size = max(1, settings.pdf_vlm_batch_pages)
+    parts: list[str] = []
     try:
-        # Extract the segment's pages into a standalone PDF and send THAT, rather
-        # than the whole document + a page_range option: docling-serve rejects a
-        # large full-doc upload as "Input document is not valid" (the same reason
-        # the batched conversion extracts each batch — see _extract_page_range).
-        page_bytes = await asyncio.to_thread(
-            _extract_page_range, pdf_bytes, segment.page_start + 1, segment.page_end + 1)
-        doc = await docling_client.convert_async(
-            page_bytes,
-            use_vlm_api=True,
-            image_export_mode="placeholder",
-        )
+        for bstart in range(start1, end1 + 1, size):
+            bend = min(bstart + size - 1, end1)
+            page_bytes = await asyncio.to_thread(_extract_page_range, pdf_bytes, bstart, bend)
+            doc = await docling_client.convert_async(
+                page_bytes,
+                use_vlm_api=True,
+                image_export_mode="placeholder",
+            )
+            parts.append((doc.get("md_content") or "").strip())
     except DoclingServeError as exc:
+        # Any batch failing means the VLM pipeline is unhealthy for this segment —
+        # signal None so the caller trips its circuit breaker and leaves the
+        # segment pending, rather than storing a partial (some-batches-missing) body.
         logger.warning("VLM escalation failed for %r: %s", segment.title, exc)
         return None
 
-    cleaned = sanitize_markdown((doc.get("md_content") or "").strip())
+    cleaned = sanitize_markdown("\n\n".join(p for p in parts if p).strip())
     if not cleaned.strip():
         return segment.markdown
     if not cleaned.lstrip().startswith("#"):
@@ -127,10 +147,11 @@ async def escalate_segments(pdf_bytes, segments, converted, on_event=None) -> li
         return all(page_owners.get(p, 0) == 1 for p in range(s.page_start, s.page_end + 1))
 
     # Keep each flagged segment's index into the original list so the caller can
-    # map a failure back to its persisted article.
+    # map a failure back to its persisted article, plus its issues (so an
+    # over-budget content-loss segment can still be surfaced as pending below).
     flagged = [
-        (i, s) for i, s in enumerate(segments)
-        if _exclusive(s) and score_segment(s, converted)
+        (i, s, issues) for i, s in enumerate(segments)
+        if _exclusive(s) and (issues := score_segment(s, converted))
     ]
     # Budget = a percentage of the document's total pages (rounded up, min 1), so
     # a large guide gets a proportionally larger allowance than a fixed cap.
@@ -148,9 +169,17 @@ async def escalate_segments(pdf_bytes, segments, converted, on_event=None) -> li
     done = 0
     consecutive_failures = 0
     failed: list[int] = []
-    for pos, (idx, seg) in enumerate(flagged):
+    for pos, (idx, seg, issues) in enumerate(flagged):
         pages = seg.page_end - seg.page_start + 1
         if pages > budget:
+            # Too large for this run's budget. A merely-imperfect segment (e.g. a
+            # ragged table on otherwise-populated content) is safely deferred and
+            # not flagged — a healthy big doc shouldn't warn just for hitting the
+            # cap. But a near-empty segment ("empty_pages") is actual content loss;
+            # record it as pending so it's visible and a retry (which has no budget
+            # cap) can recover it, instead of silently dropping it.
+            if "empty_pages" in issues:
+                failed.append(idx)
             continue
         new_md = await escalate_segment(pdf_bytes, seg)
         if new_md is None:
@@ -169,7 +198,7 @@ async def escalate_segments(pdf_bytes, segments, converted, on_event=None) -> li
                 )
                 # The remaining flagged segments weren't attempted because the
                 # service is clearly down — treat them as pending too.
-                failed.extend(j for j, _ in flagged[pos + 1:])
+                failed.extend(j for j, _, _ in flagged[pos + 1:])
                 break
             continue
         consecutive_failures = 0

@@ -58,6 +58,54 @@ async def test_escalate_prepends_missing_heading(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_escalate_batches_large_segment_and_stitches(monkeypatch):
+    # A segment larger than the VLM batch size must be extracted+converted in
+    # batches and stitched — a single large extract is rejected by docling, which
+    # is why big sections (e.g. a whole chapter) used to fail escalation wholesale.
+    monkeypatch.setattr(esc.settings, "pdf_vlm_batch_pages", 2)
+    ranges: list[tuple[int, int]] = []
+
+    def fake_extract(pdf_bytes, s, e):
+        ranges.append((s, e))
+        return f"pdf-{s}-{e}".encode()
+
+    calls: list[bytes] = []
+
+    async def fake_convert_async(pdf_bytes, **kw):
+        calls.append(pdf_bytes)
+        return {"md_content": f"chunk[{pdf_bytes.decode()}]"}
+
+    monkeypatch.setattr(esc, "_extract_page_range", fake_extract)
+    monkeypatch.setattr(esc.docling_client, "convert_async", fake_convert_async)
+
+    # 0-based pages 0..4 → 1-based 1..5, batch size 2 → (1,2),(3,4),(5,5).
+    out = await esc.escalate_segment(b"WHOLE", _seg(p0=0, p1=4, title="Big", level=2))
+
+    assert ranges == [(1, 2), (3, 4), (5, 5)]
+    assert len(calls) == 3
+    assert "chunk[pdf-1-2]" in out and "chunk[pdf-3-4]" in out and "chunk[pdf-5-5]" in out
+
+
+@pytest.mark.asyncio
+async def test_escalate_returns_none_when_any_batch_fails(monkeypatch):
+    # If one batch of a multi-batch segment fails, the whole escalation is a
+    # failure (None) — never store a partial body missing some batches.
+    monkeypatch.setattr(esc.settings, "pdf_vlm_batch_pages", 2)
+    monkeypatch.setattr(esc, "_extract_page_range", lambda *a: b"x")
+    n = {"i": 0}
+
+    async def fake_convert_async(pdf_bytes, **kw):
+        n["i"] += 1
+        if n["i"] == 2:
+            raise dc.DoclingServeError("batch 2 down")
+        return {"md_content": "ok"}
+
+    monkeypatch.setattr(esc.docling_client, "convert_async", fake_convert_async)
+    out = await esc.escalate_segment(b"WHOLE", _seg(p0=0, p1=4))
+    assert out is None
+
+
+@pytest.mark.asyncio
 async def test_escalate_returns_none_on_docling_failure(monkeypatch):
     # A docling-serve failure is signalled as None (not the original markdown) so
     # the caller can distinguish a service failure from a no-op improvement.

@@ -145,6 +145,18 @@ class Settings(BaseSettings):
     pdf_vlm_base_url: str = "https://openrouter.ai/api/v1/chat/completions"
     pdf_vlm_api_key: str = ""                 # Bearer key (env only)
     pdf_vlm_model: str = "qwen/qwen3-vl-32b-instruct"
+    # A segment's page range is VLM-escalated in batches of this many pages, for
+    # the same reason standard conversion batches (docling-serve rejects a large
+    # upload as "Input document is not valid"). Smaller than pdf_convert_batch_pages
+    # because the VLM pipeline is far heavier per page. A segment spanning more
+    # than this is converted batch-by-batch and stitched, so a large low-confidence
+    # section (e.g. a 100+ page chapter) can be escalated instead of failing wholesale.
+    pdf_vlm_batch_pages: int = 25
+    # A segment spanning >= 2 pages with fewer than this many characters of
+    # markdown per page is treated as near-empty ("empty_pages") — the standard
+    # pipeline extracted almost nothing (typically image-only pages with no text
+    # layer, which sparse_text can't catch), so it is a VLM-escalation candidate.
+    pdf_min_chars_per_page: int = 30
     # Per-run VLM escalation page budget, as a percentage of the document's total
     # page count (scales with document size instead of a fixed cap). e.g. 10.0 =>
     # up to ~10% of pages may be VLM-re-converted per run; rounded up, min 1 page.
