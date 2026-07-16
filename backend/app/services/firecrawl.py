@@ -2175,6 +2175,14 @@ class FirecrawlService:
                 # run/source, so reload both by PK before writing the failure state.
                 logger.exception("PDF extraction failed for source %s", source_id)
                 await db.rollback()
+                # A TRANSIENT acquire failure (e.g. a Browserless 502 while fetching
+                # the PDF, or Dell's flaky CDN) is retryable: re-raise so the worker
+                # requeues the run with backoff (worker.run_one) instead of hard-
+                # failing. Committing FAILED here would swallow the error before the
+                # worker's retry logic ever sees it. Nothing FAILED is written, so the
+                # run stays claimable for the next attempt.
+                if isinstance(exc, pdf_import.PdfAcquireError) and getattr(exc, "retryable", False):
+                    raise
                 run = (await db.execute(
                     select(ExtractionRun).where(ExtractionRun.id == run_pk)
                 )).scalar_one()
