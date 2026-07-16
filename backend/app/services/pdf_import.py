@@ -19,15 +19,14 @@ from sqlalchemy import delete, func, select, update
 
 from app.core.config import settings
 from app.models.article import Article
-from app.models.article_version import ArticleVersion
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.source import DocumentationSource, SourceStatus
 from app.models.toc import TOCEntry
 from app.services.pdf_convert import (
-    ConvertedDoc, RenderedImage, RenderedSegment, convert_pdf, split_into_segments,
+    RenderedSegment, _page_texts, convert_pdf, split_into_segments,
 )
-from app.services import change_log
-from app.services.pdf_escalate import escalate_segment, escalate_segments
+from app.services import change_log, pdf_cache
+from app.services.pdf_escalate import escalate_low_confidence_pages, pages_in_ranges
 from app.services.sanitize import sanitize_markdown
 from app.services.versioning import derive_pdf_topic_key
 
@@ -169,11 +168,13 @@ def _outline_for(pdf_bytes: bytes) -> list[Segment]:
 
 
 async def process_segments(pdf_bytes, outline, on_poll=None):
-    """Convert (off-loop, async), split on headings, then VLM-escalate the
-    exclusive low-confidence segments. Returns (segments, converted)."""
+    """Convert (off-loop, async), VLM-escalate low-confidence PAGES, then split.
+    Escalation runs BEFORE the split so the improved content feeds segmentation
+    (a section the standard pipeline rendered empty can now be detected and get its
+    own article). Returns (segments, converted)."""
     converted = await convert_pdf(pdf_bytes, on_poll=on_poll)
+    await escalate_low_confidence_pages(pdf_bytes, converted)
     segments = split_into_segments(converted, outline)
-    await escalate_segments(pdf_bytes, segments, converted)
     return segments, converted
 
 
@@ -262,6 +263,25 @@ async def run_pdf_extraction(service, db, source, run, run_pk,
     await service._raise_if_controlled(db, run_pk)
     converted = await convert_pdf(
         pdf_bytes, on_poll=_on_poll, on_progress=_on_convert_progress)
+
+    # VLM-escalate low-confidence PAGES BEFORE splitting, so the split sees the
+    # improved markdown. A page (not a whole outline section) is the escalation
+    # unit, so one bad table no longer drags a 100+ page chapter through the VLM;
+    # and a chapter the standard pipeline rendered near-empty can, once its pages
+    # are recovered, be split into its real sub-sections' articles.
+    run.current_phase = "pdf_escalate"
+    run.articles_extracted = 0
+    await db.commit()
+
+    async def _on_escalate(done: int, total: int, _page0: int) -> None:
+        run.articles_extracted = done
+        run.articles_total = total
+        await db.commit()
+        await service._raise_if_controlled(db, run_pk)
+
+    failed_ranges = await escalate_low_confidence_pages(
+        pdf_bytes, converted, on_page=_on_escalate)
+
     run.current_phase = "pdf_split"
     await db.commit()
     await service._raise_if_controlled(db, run_pk)
@@ -272,9 +292,21 @@ async def run_pdf_extraction(service, db, source, run, run_pk,
     logger.info("pdf_split: %d article segments (%s engine)",
                 len(rendered_segments), converted.engine)
 
-    run.current_phase = "pdf_escalate"
-    await db.commit()
-    escalation_failed_idx = await escalate_segments(pdf_bytes, rendered_segments, converted)
+    return await _persist_segments(
+        service, db, source, run, run_pk, converted, outline,
+        rendered_segments, pdf_hash, failed_ranges,
+    )
+
+
+async def _persist_segments(
+    service, db, source, run, run_pk, converted, outline,
+    rendered_segments, pdf_hash, failed_ranges,
+) -> ExtractionRun:
+    """Rebuild the TOC, persist articles (through the diff/version machinery),
+    reconcile removals, enrich images, and finalize the run. Shared by the main
+    extraction and the escalate-retry so both re-split identically. ``failed_ranges``
+    (page ranges still pending escalation) is recorded on the run and, when
+    non-empty, the converted doc is cached for a fast retry."""
     run.articles_total = len(rendered_segments)
     await db.commit()
 
@@ -396,13 +428,12 @@ async def run_pdf_extraction(service, db, source, run, run_pk,
         select(ExtractionRun).where(ExtractionRun.id == run_pk)
     )).scalar_one()
 
-    # Record any segments whose VLM escalation failed so the run completes with a
-    # warning (not a clean green) and can be retried without redoing the (often
-    # >1h) Layer-A conversion. Map each failed segment back to its persisted
-    # article by the topic_key assigned above.
-    run.escalation_pending = await _build_escalation_pending(
-        db, source.id, rendered_segments, article_inputs, escalation_failed_idx
-    ) or None
+    # Pages that still need VLM escalation (a service outage, or over the per-run
+    # budget) are recorded as page ranges so the run completes with a warning (not
+    # a clean green) and can be retried. When present, the converted doc is cached
+    # so the retry re-escalates just those pages and re-splits without redoing the
+    # (often >1h) Layer-A conversion.
+    run.escalation_pending = failed_ranges or None
 
     run.status = RunStatus.COMPLETED
     run.completed_at = datetime.now(timezone.utc)
@@ -410,57 +441,27 @@ async def run_pdf_extraction(service, db, source, run, run_pk,
     source.status = SourceStatus.COMPLETED
     source.last_extracted_at = run.completed_at
     await db.flush()
+
+    if failed_ranges:
+        pdf_cache.save(pdf_hash, converted)
+    else:
+        pdf_cache.delete(pdf_hash)
     return run
-
-
-async def _build_escalation_pending(
-    db, source_id, rendered_segments, article_inputs, failed_idx,
-) -> list[dict]:
-    """Map failed-escalation segment indices to {article_id, page range, …} dicts
-    for ExtractionRun.escalation_pending (JSON-serialisable)."""
-    if not failed_idx:
-        return []
-    topic_keys = {article_inputs[i][3] for i in failed_idx if i < len(article_inputs)}
-    rows = await db.execute(
-        select(Article.id, Article.topic_key).where(
-            Article.source_id == source_id, Article.topic_key.in_(topic_keys)
-        )
-    )
-    id_by_key = {tk: aid for aid, tk in rows}
-    pending: list[dict] = []
-    for i in failed_idx:
-        if i >= len(article_inputs):
-            continue
-        topic_key = article_inputs[i][3]
-        article_id = id_by_key.get(topic_key)
-        if article_id is None:
-            continue  # empty-markdown segment was not persisted
-        seg = rendered_segments[i]
-        pending.append({
-            "article_id": str(article_id),
-            "page_start": seg.page_start,
-            "page_end": seg.page_end,
-            "level": seg.level,
-            "title": seg.title,
-        })
-    return pending
 
 
 async def retry_escalation(service, db, source, run, run_pk,
                            auth_state: dict | None = None) -> ExtractionRun:
-    """Re-attempt VLM escalation for the segments that failed on a prior run,
-    WITHOUT redoing the Layer-A conversion. ``run.escalation_pending`` (copied
-    from the failed run when this retry was enqueued) lists the page ranges to
-    re-convert; we re-acquire the PDF and re-escalate just those, updating the
-    affected articles in place and snapshotting their prior content as a version.
+    """Re-attempt VLM escalation for the PAGES that failed on a prior run, reusing
+    the cached converted doc (no Layer-A re-conversion), then re-split and
+    re-persist — so recovered content can form new sub-articles (the reason a
+    near-empty chapter is finally split into its real sections).
 
-    Leaves still-failing segments in ``escalation_pending`` (so the run keeps its
-    warning and can be retried again); clears it to NULL when all succeed."""
-    from app.services.firecrawl import compute_content_hash
-
-    pending: list[dict] = list(run.escalation_pending or [])
+    ``run.escalation_pending`` (copied from the failed run at enqueue) lists the
+    page ranges to retry. Still-failing pages are left in ``escalation_pending``;
+    it clears to NULL when all succeed. Falls back to a full re-conversion when no
+    cache entry exists (e.g. a run from before caching)."""
+    pending_ranges: list[dict] = list(run.escalation_pending or [])
     run.current_phase = "pdf_escalate"
-    run.articles_total = len(pending)
     run.articles_extracted = 0
     run.articles_updated = 0
     source.status = SourceStatus.EXTRACTING
@@ -472,7 +473,7 @@ async def retry_escalation(service, db, source, run, run_pk,
     await change_log.record_run_start(db, source_id=source.id, run_id=run_pk)
     await db.commit()
 
-    if not pending:
+    if not pending_ranges:
         run.status = RunStatus.COMPLETED
         run.completed_at = datetime.now(timezone.utc)
         run.escalation_pending = None
@@ -480,67 +481,35 @@ async def retry_escalation(service, db, source, run, run_pk,
         await db.flush()
         return run
 
-    pdf_bytes, _ = await acquire_pdf(source, auth_cookies=(auth_state or {}).get("cookies"))
+    pdf_bytes, pdf_hash = await acquire_pdf(
+        source, auth_cookies=(auth_state or {}).get("cookies"))
+    outline = await asyncio.to_thread(_outline_for, pdf_bytes)
+    page_texts = await asyncio.to_thread(_page_texts, pdf_bytes)
 
-    still_failing: list[dict] = []
-    updated = 0
-    consecutive_failures = 0
-    now = datetime.now(timezone.utc)
-    for pos, entry in enumerate(pending):
+    converted = pdf_cache.load(pdf_hash, page_texts)
+    if converted is None:
+        # No cache (older run, or the PDF changed) — rebuild via a full conversion
+        # and re-escalate every flagged page under the normal budget, since the
+        # prior escalations weren't preserved.
+        logger.info("retry_escalation: no cache for %s; re-converting + full escalation", pdf_hash)
+        converted = await convert_pdf(pdf_bytes)
+        only: "set[int] | None" = None
+        budget: "int | None" = None
+    else:
+        only = pages_in_ranges(pending_ranges)
+        budget = max(1, len(only))  # drain all pending pages (no per-run % cap)
+
+    async def _on_escalate(done: int, total: int, _page0: int) -> None:
+        run.articles_extracted = done
+        run.articles_total = total
+        await db.commit()
         await service._raise_if_controlled(db, run_pk)
-        article = await db.get(Article, uuid.UUID(entry["article_id"]))
-        if article is None:
-            continue  # article deleted since the original run — drop from pending
-        seg = RenderedSegment(
-            title=entry["title"], level=entry["level"], path=[entry["title"]],
-            page_start=entry["page_start"], page_end=entry["page_end"],
-            markdown=article.content_markdown, images=[],
-        )
-        new_md = await escalate_segment(pdf_bytes, seg)
-        if new_md is None:
-            consecutive_failures += 1
-            still_failing.append(entry)
-            if consecutive_failures >= settings.pdf_vlm_max_consecutive_failures:
-                logger.warning(
-                    "retry_escalation: %d consecutive VLM failures — leaving the "
-                    "remaining %d segments pending", consecutive_failures,
-                    len(pending) - pos - 1,
-                )
-                still_failing.extend(pending[pos + 1:])
-                break
-            continue
-        consecutive_failures = 0
-        if new_md != article.content_markdown:
-            db.add(ArticleVersion(
-                article_id=article.id, extraction_run_id=run_pk,
-                content_markdown=article.content_markdown,
-                content_hash=article.content_hash,
-                source_url=article.source_url,
-            ))
-            article.content_markdown = new_md
-            article.content_hash = compute_content_hash(new_md)
-            article.content_size_bytes = len(new_md.encode("utf-8"))
-            article.estimated_tokens = len(new_md) // 4
-            article.extraction_run_id = run_pk
-            article.extracted_at = now
-            # Outbox: surface the VLM-improved content in the delta feed, same as
-            # the main extraction path. Committed with the run at completion.
-            await change_log.record_change(
-                db, article=article, change_type="updated", run_id=run_pk
-            )
-            updated += 1
-        logger.info("retry_escalation: %d/%d re-converted (%r)",
-                    pos + 1, len(pending), entry["title"])
 
-    run = (await db.execute(
-        select(ExtractionRun).where(ExtractionRun.id == run_pk)
-    )).scalar_one()
-    run.articles_updated = updated
-    run.articles_extracted = updated
-    run.escalation_pending = still_failing or None
-    run.status = RunStatus.COMPLETED
-    run.completed_at = datetime.now(timezone.utc)
-    source.status = SourceStatus.COMPLETED
-    source.last_extracted_at = run.completed_at
-    await db.flush()
-    return run
+    failed_ranges = await escalate_low_confidence_pages(
+        pdf_bytes, converted, budget=budget, only=only, on_page=_on_escalate)
+
+    rendered_segments = await asyncio.to_thread(split_into_segments, converted, outline)
+    return await _persist_segments(
+        service, db, source, run, run_pk, converted, outline,
+        rendered_segments, pdf_hash, failed_ranges,
+    )

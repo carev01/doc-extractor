@@ -475,6 +475,43 @@ def _match_in_window(
     return best
 
 
+def split_pages(converted: ConvertedDoc) -> list[str]:
+    """Per-page markdown slices of ``converted.markdown`` using ``page_line_starts``.
+
+    Page 0 includes any leading lines before the first recorded start. Returns one
+    string per page-line-start entry; an empty list when there are no page offsets
+    (the pymupdf fallback), signalling that page-level work is unavailable.
+    """
+    starts = converted.page_line_starts
+    if not starts:
+        return []
+    lines = converted.markdown.split("\n")
+    n = len(starts)
+    pages: list[str] = []
+    for p in range(n):
+        lo = 0 if p == 0 else starts[p]
+        hi = starts[p + 1] if p + 1 < n else len(lines)
+        pages.append("\n".join(lines[lo:hi]))
+    return pages
+
+
+def rebuild_from_pages(pages: list[str]) -> "tuple[str, list[int]]":
+    """Inverse of :func:`split_pages`: concatenate per-page markdown back into one
+    document and recompute ``page_line_starts`` as cumulative line counts.
+
+    Preserves an exact one-start-per-page mapping (unlike ``_split_page_breaks``'s
+    marker dedup), so replacing a single page's markdown keeps every later page's
+    offset correct — the page-anchored split in ``split_into_segments`` depends on
+    that alignment.
+    """
+    lines: list[str] = []
+    starts: list[int] = []
+    for pg in pages:
+        starts.append(len(lines))
+        lines.extend(pg.split("\n"))
+    return "\n".join(lines), starts
+
+
 def split_into_segments(converted: ConvertedDoc, outline: "list[Segment]") -> list[RenderedSegment]:
     md = converted.markdown
     lines = md.split("\n")

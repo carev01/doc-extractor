@@ -1,8 +1,14 @@
-"""Confidence scoring + VLM re-conversion of low-confidence PDF segments.
+"""Confidence scoring + VLM re-conversion of low-confidence PDF pages.
 
 The standard docling-serve conversion is good but not perfect on the hardest
-tables. score_segment flags segments worth re-doing; escalate_segment re-converts
-them via docling-serve's VLM pipeline (pointed at OpenRouter)."""
+tables and on image-only pages. ``score_page`` flags an individual page worth
+re-doing; ``escalate_low_confidence_pages`` re-converts just those pages via
+docling-serve's VLM pipeline (pointed at OpenRouter) and splices the results back
+into the ConvertedDoc — BEFORE the document is split into articles, so the split
+sees the improved content (and can detect sub-sections the standard pipeline
+missed). Escalating per page, rather than per whole outline section, means one bad
+table no longer drags a 100+ page chapter through the VLM.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -11,12 +17,20 @@ import math
 import re
 
 from app.core.config import settings
-from app.services.pdf_convert import ConvertedDoc, RenderedSegment, _extract_page_range
+from app.services.pdf_convert import (
+    ConvertedDoc, RenderedImage, _content_address_data_uris, _extract_page_range,
+    rebuild_from_pages, split_pages,
+)
 
 logger = logging.getLogger(__name__)
 
 _TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 _SEP_RE = re.compile(r"^\s*\|?\s*:?-{3,}.*$")
+
+# Issues that mean content is actually missing/wrong (worth surfacing as pending
+# when over budget), vs a merely-cosmetic imperfection ("ragged_table") on a page
+# that still has its content.
+_CONTENT_LOSS_ISSUES = {"empty_pages", "sparse_text", "missing_table"}
 
 
 def _cell_count(row: str) -> int:
@@ -25,7 +39,7 @@ def _cell_count(row: str) -> int:
 
 def _has_ragged_table(md: str) -> bool:
     lines = md.split("\n")
-    i, n = 0, len(md.split("\n"))
+    i, n = 0, len(lines)
     while i < n:
         if _TABLE_ROW_RE.match(lines[i]):
             block = []
@@ -45,31 +59,32 @@ def _has_ragged_table(md: str) -> bool:
     return False
 
 
-def score_segment(segment: RenderedSegment, converted: ConvertedDoc) -> list[str]:
+def score_page(page_md: str, page_idx: int, converted: ConvertedDoc) -> list[str]:
+    """Confidence issues for a SINGLE page's markdown. Empty list = trust it.
+
+    - ``ragged_table``  : a table on the page has inconsistent column counts.
+    - ``missing_table`` : docling detected a table on this page but the markdown
+      has no table at all.
+    - ``sparse_text``   : the page has a real text layer but the markdown captured
+      less than half of it.
+    - ``empty_pages``   : an image-only page (≈no text layer) that also produced
+      almost no markdown — the content the VLM must read from the rendered page.
+    """
     issues: list[str] = []
-    md = segment.markdown
+    md = page_md
 
     if _has_ragged_table(md):
         issues.append("ragged_table")
 
-    seg_pages = range(segment.page_start, segment.page_end + 1)
-    if any(p in converted.table_pages for p in seg_pages) and "|" not in md:
+    if page_idx in converted.table_pages and "|" not in md:
         issues.append("missing_table")
 
-    raw = "".join(
-        converted.page_texts[p] for p in seg_pages
-        if 0 <= p < len(converted.page_texts)
-    )
+    raw = converted.page_texts[page_idx] if 0 <= page_idx < len(converted.page_texts) else ""
     if len(raw) > 200 and len(md) < 0.5 * len(raw):
         issues.append("sparse_text")
-
-    # Near-empty multi-page segment: the standard pipeline produced almost no
-    # markdown across several pages. sparse_text only fires when there's a text
-    # layer to compare against, so image-only pages (no extractable text) slip
-    # through and the content is silently lost. Flag them so the VLM (which reads
-    # the rendered pages) can recover the content.
-    pages = segment.page_end - segment.page_start + 1
-    if pages >= 2 and len(md.strip()) < settings.pdf_min_chars_per_page * pages:
+    elif len(raw.strip()) < 50 and len(md.strip()) < settings.pdf_min_chars_per_page:
+        # No usable text layer AND almost no markdown → an image-only page whose
+        # content was lost. sparse_text can't catch this (nothing to compare to).
         issues.append("empty_pages")
 
     return issues
@@ -80,138 +95,151 @@ from app.services.docling_client import DoclingServeError
 from app.services.sanitize import sanitize_markdown
 
 
-async def escalate_segment(pdf_bytes: bytes, segment: RenderedSegment) -> "str | None":
-    """Re-convert one segment via docling-serve's VLM pipeline (OpenRouter).
-    Returns the re-converted markdown (which may equal the original when the VLM
-    adds nothing), or ``None`` when docling-serve itself failed — so the caller
-    can tell a genuine service failure apart from a no-op improvement and trip
-    its circuit breaker."""
-    # Extract the segment's pages into a standalone PDF and send THAT, rather than
-    # the whole document + a page_range option: docling-serve rejects a large
-    # full-doc upload as "Input document is not valid" (the same reason the batched
-    # conversion extracts each batch — see _extract_page_range). For the same
-    # reason, a segment larger than the VLM batch size is escalated batch-by-batch
-    # and stitched — a single 100+ page extract would itself be rejected, which is
-    # why large sections (e.g. a whole chapter) consistently failed to escalate.
-    start1, end1 = segment.page_start + 1, segment.page_end + 1
-    size = max(1, settings.pdf_vlm_batch_pages)
-    parts: list[str] = []
+async def escalate_page(pdf_bytes: bytes, page0: int) -> "tuple[str, list[RenderedImage]] | None":
+    """Re-convert ONE page (0-based) via docling-serve's VLM pipeline.
+
+    Returns ``(markdown, images)`` for that page, or ``None`` when docling-serve
+    itself failed — so the caller can tell a service failure from a no-op and trip
+    its circuit breaker. Images are content-addressed (``<sha>.png``) exactly like
+    the main conversion so figures on the page are preserved.
+    """
     try:
-        for bstart in range(start1, end1 + 1, size):
-            bend = min(bstart + size - 1, end1)
-            page_bytes = await asyncio.to_thread(_extract_page_range, pdf_bytes, bstart, bend)
-            doc = await docling_client.convert_async(
-                page_bytes,
-                use_vlm_api=True,
-                image_export_mode="placeholder",
-            )
-            parts.append((doc.get("md_content") or "").strip())
+        # Extract the single page into a standalone PDF and send THAT (docling
+        # rejects a large full-doc upload as "Input document is not valid").
+        page_bytes = await asyncio.to_thread(_extract_page_range, pdf_bytes, page0 + 1, page0 + 1)
+        doc = await docling_client.convert_async(
+            page_bytes, use_vlm_api=True, image_export_mode="embedded",
+        )
     except DoclingServeError as exc:
-        # Any batch failing means the VLM pipeline is unhealthy for this segment —
-        # signal None so the caller trips its circuit breaker and leaves the
-        # segment pending, rather than storing a partial (some-batches-missing) body.
-        logger.warning("VLM escalation failed for %r: %s", segment.title, exc)
+        logger.warning("VLM escalation failed for page %d: %s", page0 + 1, exc)
         return None
 
-    cleaned = sanitize_markdown("\n\n".join(p for p in parts if p).strip())
-    if not cleaned.strip():
-        return segment.markdown
-    if not cleaned.lstrip().startswith("#"):
-        hashes = "#" * max(1, segment.level)
-        cleaned = f"{hashes} {segment.title}\n\n{cleaned}"
-    return cleaned
+    md, images = _content_address_data_uris(doc.get("md_content") or "")
+    md = sanitize_markdown(md)
+    return md, images
 
 
-async def escalate_segments(pdf_bytes, segments, converted, on_event=None) -> list[int]:
-    """Re-convert low-confidence segments in place via the VLM, but only those
-    that exclusively own their page range (escalating a shared page would pull in
-    neighbours' content and reintroduce cross-section bleed). Bounded by a per-run
-    page budget sized as a percentage of the document's total pages
-    (``pdf_vlm_max_pages_pct``), so the allowance scales with document size.
+async def escalate_low_confidence_pages(
+    pdf_bytes: bytes, converted: ConvertedDoc, *,
+    budget: "int | None" = None, only: "set[int] | None" = None, on_page=None,
+) -> list[dict]:
+    """VLM-re-convert low-confidence PAGES in place on ``converted``, BEFORE the
+    document is split into articles.
 
-    Returns the indices (into ``segments``) of flagged segments that genuinely
-    FAILED to escalate — a docling-serve error, or skipped because the circuit
-    breaker tripped. Budget-deferred segments are NOT failures and are excluded,
-    so a healthy big document doesn't get flagged just for hitting the page cap.
-    The caller can persist these so the escalation can be retried later without
-    redoing the whole conversion."""
+    Slices ``converted.markdown`` into per-page markdown, scores each page, and
+    re-converts the flagged ones (up to ``budget`` pages — a percentage of the
+    document, ``pdf_vlm_max_pages_pct``), splicing each result back and rebuilding
+    ``converted.markdown`` / ``converted.page_line_starts`` so the subsequent split
+    sees the improved content. ``only`` restricts candidates to a specific page set
+    (used by retry to target the previously-failed pages).
+
+    Returns the pages that still need escalation — VLM failures, and over-budget
+    pages whose issue is genuine content loss — as contiguous ranges
+    ``[{"page_start", "page_end"}]`` for ``ExtractionRun.escalation_pending``.
+    Budget-deferred *cosmetic* pages (e.g. a ragged table on populated content) are
+    not surfaced, so a healthy big document doesn't warn just for hitting the cap.
+    """
     if not settings.pdf_vlm_escalation_enabled:
         return []
+    pages = split_pages(converted)
+    if not pages:
+        return []  # no page offsets (pymupdf fallback) — page-level work n/a
 
-    page_owners: dict[int, int] = {}
-    for s in segments:
-        for p in range(s.page_start, s.page_end + 1):
-            page_owners[p] = page_owners.get(p, 0) + 1
+    n = len(pages)
+    total_pages = len(converted.page_texts) or n
+    if budget is None:
+        budget = max(1, math.ceil(total_pages * settings.pdf_vlm_max_pages_pct / 100.0))
 
-    def _exclusive(s) -> bool:
-        return all(page_owners.get(p, 0) == 1 for p in range(s.page_start, s.page_end + 1))
-
-    # Keep each flagged segment's index into the original list so the caller can
-    # map a failure back to its persisted article, plus its issues (so an
-    # over-budget content-loss segment can still be surfaced as pending below).
-    flagged = [
-        (i, s, issues) for i, s in enumerate(segments)
-        if _exclusive(s) and (issues := score_segment(s, converted))
-    ]
-    # Budget = a percentage of the document's total pages (rounded up, min 1), so
-    # a large guide gets a proportionally larger allowance than a fixed cap.
-    total_pages = len(converted.page_texts) or (
-        max((s.page_end for s in segments), default=-1) + 1)
-    budget = max(1, math.ceil(total_pages * settings.pdf_vlm_max_pages_pct / 100.0))
+    flagged: list[tuple[int, list[str]]] = []
+    for p in range(n):
+        if only is not None:
+            # Retry targeting: attempt the requested pages regardless of their
+            # current score (they were flagged and failed on a prior run).
+            if p not in only:
+                continue
+            flagged.append((p, score_page(pages[p], p, converted)))
+        else:
+            issues = score_page(pages[p], p, converted)
+            if issues:
+                flagged.append((p, issues))
     if flagged:
         logger.info(
-            "pdf_escalate: %d/%d segments flagged; re-converting via VLM "
-            "(budget %d/%d pages, %.0f%%)",
-            len(flagged), len(segments), budget, total_pages,
-            settings.pdf_vlm_max_pages_pct,
+            "pdf_escalate: %d/%d pages flagged; VLM re-converting (budget %d/%d pages, %.0f%%)",
+            len(flagged), n, budget, total_pages, settings.pdf_vlm_max_pages_pct,
         )
+
     total = len(flagged)
     done = 0
     consecutive_failures = 0
-    failed: list[int] = []
-    for pos, (idx, seg, issues) in enumerate(flagged):
-        pages = seg.page_end - seg.page_start + 1
-        if pages > budget:
-            # Too large for this run's budget. A merely-imperfect segment (e.g. a
-            # ragged table on otherwise-populated content) is safely deferred and
-            # not flagged — a healthy big doc shouldn't warn just for hitting the
-            # cap. But a near-empty segment ("empty_pages") is actual content loss;
-            # record it as pending so it's visible and a retry (which has no budget
-            # cap) can recover it, instead of silently dropping it.
-            if "empty_pages" in issues:
-                failed.append(idx)
+    failed_pages: list[int] = []
+    changed = False
+    seen = {img.filename for img in converted.images}
+    new_images: list[RenderedImage] = []
+    breaker = settings.pdf_vlm_max_consecutive_failures
+
+    for pos, (p, issues) in enumerate(flagged):
+        if budget <= 0 or consecutive_failures >= breaker:
+            # Can't attempt more this run. Surface only genuine content loss as
+            # pending (retryable); leave cosmetic-only pages deferred silently.
+            if _CONTENT_LOSS_ISSUES.intersection(issues):
+                failed_pages.append(p)
             continue
-        new_md = await escalate_segment(pdf_bytes, seg)
-        if new_md is None:
-            # docling-serve failed this conversion. A run of these means the VLM
-            # pipeline is down — stop rather than hammer the shared service with
-            # dozens of doomed calls. The segment keeps its standard-pipeline
-            # markdown. A failed attempt converts no pages, so the budget is not
-            # consumed.
+        result = await escalate_page(pdf_bytes, p)
+        if result is None:
             consecutive_failures += 1
-            failed.append(idx)
-            if consecutive_failures >= settings.pdf_vlm_max_consecutive_failures:
+            failed_pages.append(p)
+            if consecutive_failures >= breaker:
                 logger.warning(
-                    "pdf_escalate: %d consecutive VLM failures — skipping the "
-                    "remaining %d flagged segments", consecutive_failures,
-                    total - done - consecutive_failures,
+                    "pdf_escalate: %d consecutive VLM failures — deferring the "
+                    "remaining %d flagged pages", consecutive_failures,
+                    total - pos - 1,
                 )
-                # The remaining flagged segments weren't attempted because the
-                # service is clearly down — treat them as pending too.
-                failed.extend(j for j, _, _ in flagged[pos + 1:])
-                break
             continue
         consecutive_failures = 0
-        if new_md != seg.markdown:
-            seg.markdown = new_md
-            matched = [img for img in converted.images if img.filename in new_md]
-            seg.images = matched or seg.images
-        budget -= pages
+        budget -= 1
+        md, imgs = result
+        if md.strip() and md != pages[p]:
+            pages[p] = md
+            changed = True
+            for im in imgs:
+                if im.filename not in seen:
+                    seen.add(im.filename)
+                    new_images.append(im)
         done += 1
-        logger.info("pdf_escalate: %d/%d re-converted (%r)", done, total, seg.title)
-        if on_event is not None:
+        logger.info("pdf_escalate: %d/%d pages re-converted (page %d)", done, total, p + 1)
+        if on_page is not None:
             try:
-                await on_event(done, total, seg.title)
+                await on_page(done, total, p)
             except Exception:  # noqa: BLE001
-                logger.exception("escalate on_event failed")
-    return failed
+                logger.exception("escalate on_page callback failed")
+
+    if changed:
+        converted.markdown, converted.page_line_starts = rebuild_from_pages(pages)
+        converted.images = list(converted.images) + new_images
+
+    return _contiguous_ranges(failed_pages)
+
+
+def _contiguous_ranges(pages: list[int]) -> list[dict]:
+    """Collapse a list of 0-based page indices into sorted contiguous ranges."""
+    if not pages:
+        return []
+    ordered = sorted(set(pages))
+    ranges: list[dict] = []
+    start = prev = ordered[0]
+    for p in ordered[1:]:
+        if p == prev + 1:
+            prev = p
+        else:
+            ranges.append({"page_start": start, "page_end": prev})
+            start = prev = p
+    ranges.append({"page_start": start, "page_end": prev})
+    return ranges
+
+
+def pages_in_ranges(ranges: "list[dict] | None") -> set[int]:
+    """Expand ``escalation_pending`` page ranges back into a set of page indices."""
+    out: set[int] = set()
+    for r in ranges or []:
+        out.update(range(int(r["page_start"]), int(r["page_end"]) + 1))
+    return out
