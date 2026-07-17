@@ -273,6 +273,129 @@ def _split_page_breaks(markdown: str) -> tuple[str, list[int]]:
     return "\n".join(out), starts
 
 
+# ── drift-free page→line alignment (anchor-verified) ─────────────────────────
+# docling's page-break markers are unreliable (it omits a marker for empty pages
+# AND for some merged adjacent content pages), so the marker-derived starts
+# under-count and their index stops equalling the fitz page number partway
+# through — drift that grows down the document and mis-anchors outline entries.
+# Rebuild a fitz-length map (index == fitz page) from independently-verifiable
+# anchors instead. Errors are bounded per-bracket and never accumulate.
+
+_ANCHOR_MIN_CHARS = 20  # min normalized length for a line/element to anchor
+
+
+def _lis_keep(vals: list[int]) -> list[int]:
+    """Indices of a longest strictly-increasing subsequence of ``vals`` (patience
+    sort). Used to drop anchors that violate monotonicity — a stray false anchor
+    removes only ITSELF, it can't shift any other page (the flaw that sank the
+    single-cursor approach)."""
+    import bisect
+    tails: list[int] = []       # tails[k] = smallest possible tail value, len k+1
+    tail_idx: list[int] = []    # index into vals of that tail
+    prev: list[int] = [-1] * len(vals)
+    for i, v in enumerate(vals):
+        k = bisect.bisect_left(tails, v)
+        if k == len(tails):
+            tails.append(v); tail_idx.append(i)
+        else:
+            tails[k] = v; tail_idx[k] = i
+        prev[i] = tail_idx[k - 1] if k > 0 else -1
+    if not tail_idx:
+        return []
+    out: list[int] = []
+    i = tail_idx[-1]
+    while i != -1:
+        out.append(i); i = prev[i]
+    out.reverse()
+    return out
+
+
+def _align_page_lines(lines, json_texts, page_texts, page_count, seg_starts):
+    """Build a fitz-authoritative ``page_line_starts`` (length == page_count, index
+    == fitz page) from verified anchors. Falls back to ``seg_starts`` (the marker
+    behavior) when it can't build a trustworthy map, so no document regresses."""
+    import bisect
+    import collections
+    if page_count <= 0 or len(lines) < 2:
+        return seg_starts
+    n_lines = len(lines)
+    norm_lines = [_norm_core(l) for l in lines]
+
+    # A normalized markdown line that occurs exactly once → locatable content.
+    line_occ = collections.Counter(k for k in norm_lines if len(k) >= _ANCHOR_MIN_CHARS)
+    line_of_key: dict[str, int] = {}
+    for i, k in enumerate(norm_lines):
+        if len(k) >= _ANCHOR_MIN_CHARS and line_occ[k] == 1:
+            line_of_key.setdefault(k, i)
+
+    # (1) Anchors from json text elements: a text unique AMONG elements (so a
+    #     repeating header/footer can't anchor) that also locates once in the
+    #     markdown → a verified (fitz page, line). No cursor: each is independent.
+    elem_keys = [_norm_core(t.get("text") or "") for t in json_texts]
+    elem_occ = collections.Counter(k for k in elem_keys if len(k) >= _ANCHOR_MIN_CHARS)
+    raw: dict[int, int] = {}
+    for t, k in zip(json_texts, elem_keys):
+        if len(k) < _ANCHOR_MIN_CHARS or elem_occ[k] != 1:
+            continue
+        ln = line_of_key.get(k)
+        if ln is None:
+            continue
+        prov = t.get("prov") or []
+        p = prov[0].get("page_no") if prov else None
+        if isinstance(p, int) and 0 <= p - 1 < page_count:
+            raw.setdefault(p - 1, ln)
+
+    # (2) Keep only the longest page-ordered, line-increasing anchor subset.
+    pages_sorted = sorted(raw)
+    keep = _lis_keep([raw[p] for p in pages_sorted])
+    anchors = {pages_sorted[i]: raw[pages_sorted[i]] for i in keep}
+    # Need enough evidence to trust the rebuild; else keep current behavior.
+    if len(anchors) < max(2, page_count // 10):
+        return seg_starts
+
+    anc_pages = sorted(anchors)
+
+    def _npage(p: int) -> str:
+        return _norm_core(page_texts[p]) if 0 <= p < len(page_texts) else ""
+
+    # (3) Every page's start line. Anchored pages are exact; an unanchored page is
+    #     placed by finding, WITHIN its bracket of verified neighbors, the first
+    #     line whose content is on that page but NOT the previous one (its opening,
+    #     via authoritative fitz page text) — else linear interpolation.
+    starts = [0] * page_count
+    for p in anchors:
+        starts[p] = anchors[p]
+    for p in range(page_count):
+        if p in anchors:
+            continue
+        j = bisect.bisect_left(anc_pages, p)
+        lo_p = anc_pages[j - 1] if j > 0 else None
+        hi_p = anc_pages[j] if j < len(anc_pages) else None
+        lo_line = anchors[lo_p] if lo_p is not None else 0
+        hi_line = anchors[hi_p] if hi_p is not None else n_lines
+        placed = None
+        pn, prev_pn = _npage(p), _npage(p - 1)
+        if pn:
+            for i in range(max(0, lo_line), min(hi_line, n_lines)):
+                k = norm_lines[i]
+                if len(k) >= _ANCHOR_MIN_CHARS and k in pn and k not in prev_pn:
+                    placed = i
+                    break
+        if placed is None:
+            if lo_p is not None and hi_p is not None and hi_p > lo_p:
+                frac = (p - lo_p) / (hi_p - lo_p)
+                placed = int(round(lo_line + frac * (hi_line - lo_line)))
+            else:
+                placed = lo_line
+        starts[p] = placed
+
+    # (4) Monotone non-decreasing (clamp any residual disorder from interpolation).
+    for p in range(1, page_count):
+        if starts[p] < starts[p - 1]:
+            starts[p] = starts[p - 1]
+    return starts
+
+
 def _build_converted_doc(doc: dict, pdf_bytes: bytes) -> ConvertedDoc:
     md = doc.get("md_content") or ""
     json_content = doc.get("json_content") or {}
@@ -286,11 +409,18 @@ def _build_converted_doc(doc: dict, pdf_bytes: bytes) -> ConvertedDoc:
     # sanitize — none of the sanitize rules touch comment lines — then stripped last
     # so page_line_starts indexes the final, sanitized markdown (see _split_page_breaks).
     md = sanitize_markdown(md)
-    md, page_line_starts = _split_page_breaks(md)
+    md, seg_starts = _split_page_breaks(md)
+    # Rebuild a drift-free, fitz-indexed page_line_starts from verified anchors
+    # (falls back to the marker-based seg_starts if it can't build a trustworthy
+    # map). See _align_page_lines.
+    page_texts = _page_texts(pdf_bytes)
+    page_line_starts = _align_page_lines(
+        md.split("\n"), json_content.get("texts") or [], page_texts,
+        len(page_texts), seg_starts)
     return ConvertedDoc(
         markdown=md,
         headings=_parse_headings(json_content),
-        page_texts=_page_texts(pdf_bytes),
+        page_texts=page_texts,
         table_pages=_parse_table_pages(json_content),
         images=images,
         engine="docling",
