@@ -174,12 +174,15 @@ class Settings(BaseSettings):
     # down), stop escalating for the rest of the run instead of hammering the
     # shared service with dozens of doomed conversions.
     pdf_vlm_max_consecutive_failures: int = 5
-    # docling-serve intermittently returns a "task failed" for a page that
-    # converts fine on a re-submit (transient load/flakiness during a burst of
-    # escalations). Retry an individual page this many times before counting it as
-    # a failure, so a brief wobble doesn't trip the consecutive-failure breaker and
-    # abandon the whole drain. Linear backoff between attempts.
-    pdf_vlm_page_retries: int = 2
+    # Per-page escalation retries. Default 0 (no retry): the dominant docling-serve
+    # failure is a DETERMINISTIC per-page error ("tile cannot extend outside image",
+    # a docling-internal PIL bug) that fails identically on every re-submit, so
+    # retrying only wastes VLM budget and time. docling returns only a generic
+    # "task failed" (no error detail) so we cannot tell a deterministic failure from
+    # a transient one and retry selectively — so we don't retry at all. Left as a
+    # setting (raise it) in case a future docling release makes failures transient.
+    # Backoff applies only when retries > 0.
+    pdf_vlm_page_retries: int = 0
     pdf_vlm_page_retry_backoff: float = 3.0
 
     # ── Image VLM description (Spec 2, opt-in) ──

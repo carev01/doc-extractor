@@ -74,6 +74,25 @@ async def test_escalate_page_returns_none_on_docling_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_escalate_page_does_not_retry_by_default(monkeypatch):
+    # Default pdf_vlm_page_retries == 0: a failed page is attempted exactly ONCE.
+    # docling's dominant failure ("tile cannot extend outside image") is
+    # deterministic, so retrying just wastes budget; and docling gives no error
+    # detail to retry selectively.
+    assert esc.settings.pdf_vlm_page_retries == 0
+    monkeypatch.setattr(esc, "_extract_page_range", lambda *a: b"%PDF-x")
+    calls = {"n": 0}
+
+    async def boom(pdf_bytes, **kw):
+        calls["n"] += 1
+        raise dc.DoclingServeError("tile cannot extend outside image")
+
+    monkeypatch.setattr(esc.docling_client, "convert_async", boom)
+    assert await esc.escalate_page(b"WHOLE", 0) is None
+    assert calls["n"] == 1  # no retry
+
+
+@pytest.mark.asyncio
 async def test_escalate_page_recovers_after_transient_failure(monkeypatch):
     # docling often fails a page that converts fine on re-submit; a transient
     # failure must be retried, not counted as a failure that abandons the drain.
