@@ -3,16 +3,13 @@ import type {
   DocumentationSource,
   TOCEntry,
   ExportResponse,
-  ExportListItem,
 } from "../types";
 import {
   getTOC,
   enqueueExport,
   getExportJob,
-  getDownloadUrl,
-  getZipDownloadUrl,
-  listExports,
-  deleteExport,
+  downloadExportZip,
+  downloadExportFile,
 } from "../api/client";
 import { apiError } from "../api/errors";
 
@@ -33,7 +30,6 @@ export default function ExportPanel({ source }: Props) {
   const [exportResult, setExportResult] = useState<ExportResponse | null>(null);
   const [error, setError] = useState("");
   const [mode, setMode] = useState<"full" | "chapters" | "topic">("full");
-  const [recentExports, setRecentExports] = useState<ExportListItem[]>([]);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -44,28 +40,13 @@ export default function ExportPanel({ source }: Props) {
     }
   }, [source.id, source.status]);
 
-  // Recent exports persist on the server, so reload them whenever the panel
-  // mounts — the download links survive navigating away and back.
-  useEffect(() => {
-    loadRecentExports();
-  }, []);
-
-  async function loadRecentExports() {
+  // Downloads must fetch through the authenticated API client (a plain link omits
+  // the bearer token → 401). Surface any failure instead of saving a broken file.
+  async function download(fn: () => Promise<void>) {
     try {
-      const res = await listExports();
-      setRecentExports(res.exports);
+      await fn();
     } catch {
-      /* non-fatal: the recent-exports list is supplementary */
-    }
-  }
-
-  async function handleDeleteExport(exportId: string) {
-    if (!confirm("Delete this export? The generated files will be removed from the server.")) return;
-    try {
-      await deleteExport(exportId);
-      await loadRecentExports();
-    } catch {
-      setError("Failed to delete export");
+      setError("Download failed — please try again.");
     }
   }
 
@@ -148,7 +129,6 @@ export default function ExportPanel({ source }: Props) {
             zip_filename: job.zip_filename ?? "",
             files: job.files ?? [],
           });
-          loadRecentExports();
         } else if (job.status === "failed" || job.status === "cancelled") {
           stopPolling();
           setJobStatusMsg(null);
@@ -341,27 +321,29 @@ export default function ExportPanel({ source }: Props) {
           </p>
           {exportResult.zip_filename && (
             <p>
-              <a
+              <button
+                type="button"
                 className="btn-primary"
-                href={getZipDownloadUrl(exportResult.export_id)}
-                download
+                onClick={() => download(() => downloadExportZip(exportResult.export_id))}
               >
                 Download ZIP (markdown + images)
-              </a>
+              </button>
             </p>
           )}
           <ul>
             {exportResult.files.map((f, i) => (
               <li key={f.filename}>
-                <a
+                <button
+                  type="button"
                   className={
-                    !exportResult.zip_filename && i === 0 ? "btn-primary" : undefined
+                    !exportResult.zip_filename && i === 0 ? "btn-primary" : "link-btn"
                   }
-                  href={getDownloadUrl(exportResult.export_id, f.filename)}
-                  download
+                  onClick={() =>
+                    download(() => downloadExportFile(exportResult.export_id, f.filename))
+                  }
                 >
                   {f.filename}
-                </a>
+                </button>
                 <span className="sub">
                   ({f.article_count} articles,{" "}
                   {(f.size_bytes / 1024).toFixed(1)} KB)
@@ -369,57 +351,9 @@ export default function ExportPanel({ source }: Props) {
               </li>
             ))}
           </ul>
-        </div>
-      )}
-
-      {recentExports.length > 0 && (
-        <div className="recent-exports">
-          <h3>Recent Exports</h3>
           <p className="sub">
-            Kept on the server for a limited time, then automatically removed.
+            Past exports are available under <strong>Exports</strong> in the menu.
           </p>
-          <ul>
-            {recentExports.map((ex) => (
-              <li key={ex.export_id}>
-                <div>
-                  <strong>{ex.source_name}</strong>{" "}
-                  <span className="sub">
-                    · {ex.format.toUpperCase()} · {ex.file_count} file(s) ·{" "}
-                    {(ex.total_size_bytes / 1024).toFixed(0)} KB ·{" "}
-                    {new Date(ex.created_at).toLocaleString()}
-                    {ex.expires_at && (
-                      <> · expires {new Date(ex.expires_at).toLocaleDateString()}</>
-                    )}
-                  </span>
-                </div>
-                <div className="export-links">
-                  {ex.zip_filename ? (
-                    <a href={getZipDownloadUrl(ex.export_id)} download>
-                      Download ZIP
-                    </a>
-                  ) : (
-                    ex.files.map((f) => (
-                      <a
-                        key={f}
-                        href={getDownloadUrl(ex.export_id, f)}
-                        download
-                      >
-                        {f}
-                      </a>
-                    ))
-                  )}
-                  <button
-                    type="button"
-                    className="btn-danger-sm"
-                    title="Delete this export from the server"
-                    onClick={() => handleDeleteExport(ex.export_id)}
-                  >
-                    Delete
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
         </div>
       )}
     </div>

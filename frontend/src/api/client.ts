@@ -413,13 +413,37 @@ export async function getExportJob(jobId: string): Promise<ExportJobStatus> {
   return res.data;
 }
 
-export function getDownloadUrl(exportId: string, filename: string): string {
-  return `${API_BASE}/api/export/download/${exportId}/${filename}`;
+/** Fetch an authenticated file as a blob and trigger a browser download.
+ * Export downloads MUST go through axios (not a plain <a href>): the API requires
+ * a Bearer token, which the request interceptor attaches — a bare link omits it
+ * and the server returns 401 JSON that the browser saves as an unusable "file". */
+async function saveAuthedBlob(path: string, fallbackName: string): Promise<void> {
+  const res = await api.get(path, { responseType: "blob" });
+  let name = fallbackName;
+  const cd = (res.headers?.["content-disposition"] as string | undefined) ?? "";
+  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+  if (m) {
+    try { name = decodeURIComponent(m[1]); } catch { name = m[1]; }
+  }
+  const url = URL.createObjectURL(res.data as Blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
-/** URL of the self-contained zip bundle (markdown + images) for an export. */
-export function getZipDownloadUrl(exportId: string): string {
-  return `${API_BASE}/api/export/download/${exportId}`;
+/** Download the self-contained zip bundle (markdown + images) for an export. */
+export async function downloadExportZip(exportId: string): Promise<void> {
+  await saveAuthedBlob(`/export/download/${exportId}`, `export-${exportId}.zip`);
+}
+
+/** Download a single generated export file. */
+export async function downloadExportFile(exportId: string, filename: string): Promise<void> {
+  await saveAuthedBlob(
+    `/export/download/${exportId}/${encodeURIComponent(filename)}`, filename);
 }
 
 /** List recent (non-expired) completed exports with metadata. */

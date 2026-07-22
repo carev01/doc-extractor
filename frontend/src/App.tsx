@@ -21,6 +21,7 @@ const Admin = lazy(() => import("./views/Admin").then((m) => ({ default: m.Admin
 const Account = lazy(() => import("./views/Account").then((m) => ({ default: m.Account })));
 const Logins = lazy(() => import("./views/Logins").then((m) => ({ default: m.Logins })));
 const Webhooks = lazy(() => import("./views/Webhooks").then((m) => ({ default: m.Webhooks })));
+const Exports = lazy(() => import("./views/Exports").then((m) => ({ default: m.Exports })));
 
 type View =
   | "vendors"
@@ -31,6 +32,7 @@ type View =
   | "changelog"
   | "jobs"
   | "dashboard"
+  | "exports"
   | "logins"
   | "webhooks"
   | "apikeys"
@@ -239,6 +241,13 @@ export default function App() {
             {menuOpen && (
               <div className="hamburger-menu">
                 <button
+                  className={`hamburger-menu-item${view === "exports" ? " active" : ""}`}
+                  onClick={() => handleMenuNav("exports")}
+                >
+                  Exports
+                </button>
+                <div className="hamburger-menu-divider" />
+                <button
                   className={`hamburger-menu-item${view === "logins" ? " active" : ""}`}
                   onClick={() => handleMenuNav("logins")}
                 >
@@ -291,6 +300,8 @@ export default function App() {
         {view === "logins" && <Logins />}
 
         {view === "webhooks" && <Webhooks />}
+
+        {view === "exports" && <Exports />}
 
         {view === "apikeys" && <ApiKeys me={currentUser} />}
 
