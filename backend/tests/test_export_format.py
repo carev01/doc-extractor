@@ -104,3 +104,31 @@ def test_markdown_export_zips_images_without_staging(monkeypatch, tmp_path):
         names = zf.namelist()
     assert f"images/{art.id}/pic.png" in names       # image bundled into the zip
     assert not (subdir / "images").exists()          # but NOT staged uncompressed on disk
+
+
+def test_markdown_export_without_images_is_md_only(monkeypatch, tmp_path):
+    """include_images=False → the .md file(s) alone: no image bundling, no zip
+    (so an image-heavy source can always produce a text export)."""
+    import types
+
+    media = tmp_path / "media"
+    exports = tmp_path / "exports"
+    media.mkdir()
+    exports.mkdir()
+    monkeypatch.setattr(export_engine, "export_dir", str(exports))
+    monkeypatch.setattr(export_engine, "media_root", str(media))
+
+    art = _fake_article("Athena", "body with an image")
+    art.images = [types.SimpleNamespace(local_filename="pic.png", local_path="/media/x/pic.png")]
+    (media / str(art.id)).mkdir()
+    (media / str(art.id) / "pic.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 64)
+
+    result = export_engine._generate_export(
+        [[art]], "Satori", uuid.uuid4(), "markdown", lambda ids: [art], include_images=False
+    )
+    subdir = exports / str(result["export_id"])
+    files = os.listdir(subdir)
+    assert any(f.endswith(".md") for f in files), files
+    assert not any(f.endswith(".zip") for f in files), files   # no zip when no images
+    assert result["zip_filename"] is None
+    assert not (subdir / "images").exists()

@@ -35,6 +35,7 @@ def run_export_job_sync(job_id: uuid.UUID, session_factory=None) -> None:
                 max_tokens_per_file=req.get("max_tokens_per_file"),
                 respect_chapters=req.get("respect_chapters", False),
                 format=req.get("format", "markdown"),
+                include_images=req.get("include_images", True),
             )
             job.export_id = result["export_id"]
             job.result = {k: v for k, v in result.items() if k != "export_id"}

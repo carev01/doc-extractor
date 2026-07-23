@@ -232,6 +232,7 @@ export interface ExportRequest {
   max_tokens_per_file?: number;
   respect_chapters?: boolean;
   format?: "markdown" | "pdf";
+  include_images?: boolean;
 }
 
 export interface ExportFileInfo {
