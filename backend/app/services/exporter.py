@@ -14,7 +14,6 @@ remains in the export directory.
 
 import functools
 import os
-import shutil
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -364,17 +363,23 @@ class ExportEngine:
     #  Image copy helper                                                   #
     # ------------------------------------------------------------------ #
 
-    def _copy_image(self, article_id, image, export_subdir, archive_members) -> None:
+    def _register_image(self, article_id, image, archive_members, seen) -> None:
+        """Register a media image to be written into the zip DIRECTLY from its
+        source path — do NOT stage an uncompressed copy under the export dir.
+
+        Staging copies doubled the export volume's transient footprint (the loose
+        image tree AND the zip), which overflowed the (smaller) exports volume on
+        image-heavy sources — the file is read straight from media at zip time
+        instead."""
         rel = os.path.join(str(article_id), image.local_filename)
-        dst_path = os.path.join(export_subdir, "images", rel)
-        if os.path.exists(dst_path):
+        arcname = os.path.join("images", rel)
+        if arcname in seen:
             return
         src_path = os.path.join(self.media_root, rel)
         if not os.path.isfile(src_path):
             return
-        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-        shutil.copy2(src_path, dst_path)
-        archive_members.append((dst_path, os.path.join("images", rel)))
+        seen.add(arcname)
+        archive_members.append((src_path, arcname))
 
     # ------------------------------------------------------------------ #
     #  Core generation (render pass)                                       #
@@ -398,6 +403,7 @@ class ExportEngine:
         os.makedirs(export_subdir, exist_ok=True)
 
         archive_members: list[tuple[str, str]] = []
+        seen_images: set[str] = set()
         files_info: list[dict] = []
         total_size = 0
         base_name = source_name.replace(" ", "_")
@@ -445,7 +451,7 @@ class ExportEngine:
                             )
                             f.write(section + "\n")
                             for image in a.images:
-                                self._copy_image(a.id, image, export_subdir, archive_members)
+                                self._register_image(a.id, image, archive_members, seen_images)
                 file_size = os.path.getsize(filepath)
 
             archive_members.append((filepath, filename))

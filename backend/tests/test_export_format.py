@@ -74,3 +74,33 @@ def test_markdown_export_still_zips(monkeypatch, tmp_path):
     assert any(f.endswith(".md") for f in files), files
     assert any(f.endswith(".zip") for f in files), files
     assert result["zip_filename"] == "Satori.zip"
+
+
+def test_markdown_export_zips_images_without_staging(monkeypatch, tmp_path):
+    """Images are written into the zip DIRECTLY from media — the export dir must
+    NOT hold an uncompressed images/ staging tree (the 2x footprint that
+    overflowed the exports volume on image-heavy sources)."""
+    import types
+    import zipfile
+
+    media = tmp_path / "media"
+    exports = tmp_path / "exports"
+    media.mkdir()
+    exports.mkdir()
+    monkeypatch.setattr(export_engine, "export_dir", str(exports))
+    monkeypatch.setattr(export_engine, "media_root", str(media))
+
+    art = _fake_article("Athena", "body with an image")
+    art.images = [types.SimpleNamespace(local_filename="pic.png", local_path="/media/x/pic.png")]
+    (media / str(art.id)).mkdir()
+    (media / str(art.id) / "pic.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 64)
+
+    result = export_engine._generate_export(
+        [[art]], "Satori", uuid.uuid4(), "markdown", lambda ids: [art]
+    )
+    subdir = exports / str(result["export_id"])
+
+    with zipfile.ZipFile(subdir / "Satori.zip") as zf:
+        names = zf.namelist()
+    assert f"images/{art.id}/pic.png" in names       # image bundled into the zip
+    assert not (subdir / "images").exists()          # but NOT staged uncompressed on disk
