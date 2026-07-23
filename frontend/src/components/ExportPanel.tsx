@@ -24,6 +24,7 @@ export default function ExportPanel({ source }: Props) {
   const [splitBy, setSplitBy] = useState<"" | "size" | "articles" | "tokens">("");
   const [splitValue, setSplitValue] = useState(50);
   const [respectChapters, setRespectChapters] = useState(false);
+  const [includeImages, setIncludeImages] = useState(true);
   const [format, setFormat] = useState<"markdown" | "pdf">("markdown");
   const [exporting, setExporting] = useState(false);
   const [jobStatusMsg, setJobStatusMsg] = useState<string | null>(null);
@@ -100,6 +101,7 @@ export default function ExportPanel({ source }: Props) {
           splitBy === "tokens" ? splitValue : undefined,
         respect_chapters: splitBy ? respectChapters : undefined,
         format,
+        include_images: format === "pdf" ? undefined : includeImages,
       });
       jobId = created.export_job_id;
     } catch (e) {
@@ -260,6 +262,20 @@ export default function ExportPanel({ source }: Props) {
           <option value="markdown">Markdown</option>
           <option value="pdf">PDF</option>
         </select>
+        {format === "markdown" && (
+          <label className="chapter-toggle">
+            <input
+              type="checkbox"
+              checked={includeImages}
+              onChange={(e) => setIncludeImages(e.target.checked)}
+            />
+            Include images
+            <span className="hint">
+              {" "}— bundle images in a zip; uncheck for a smaller markdown-only
+              export (image-heavy sources can be very large)
+            </span>
+          </label>
+        )}
       </div>
 
       <div className="split-options">

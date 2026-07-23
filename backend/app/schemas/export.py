@@ -39,6 +39,11 @@ class ExportRequest(BaseModel):
     respect_chapters: bool = False
     # Output format. "pdf" renders each group to a self-contained PDF.
     format: str = "markdown"  # "markdown" | "pdf"
+    # Markdown only: when False, the export is the .md file(s) alone (no images,
+    # no zip). Image-heavy sources can produce image bundles far larger than the
+    # exports volume, so this lets a text-only export always succeed. Ignored for
+    # PDF (images are embedded in the PDF itself).
+    include_images: bool = True
 
 
 class ExportResponse(BaseModel):

@@ -392,11 +392,13 @@ class ExportEngine:
         source_id: uuid.UUID,
         format: str,
         load_content,                          # Callable[[list[uuid.UUID]], list[Article]]
+        include_images: bool = True,
     ) -> dict:
         """Generate export files from resolved article groups.
 
         *groups* contains metadata-only Article rows from the plan pass.
         *load_content* is called per render-chunk to fetch full content.
+        *include_images* False → markdown only: no image bundling, no zip.
         """
         export_id = uuid.uuid4()
         export_subdir = os.path.join(self.export_dir, str(export_id))
@@ -450,8 +452,9 @@ class ExportEngine:
                                 f"{settings.media_url_prefix}/", "images/"
                             )
                             f.write(section + "\n")
-                            for image in a.images:
-                                self._register_image(a.id, image, archive_members, seen_images)
+                            if include_images:
+                                for image in a.images:
+                                    self._register_image(a.id, image, archive_members, seen_images)
                 file_size = os.path.getsize(filepath)
 
             archive_members.append((filepath, filename))
@@ -467,7 +470,7 @@ class ExportEngine:
         # PDF is already self-contained (images embedded), so wrapping it in a zip
         # just produces a redundant download the user never asked for.
         zip_filename = None
-        if format != "pdf":
+        if format != "pdf" and include_images:
             zip_filename = f"{base_name}.zip"
             zip_path = os.path.join(export_subdir, zip_filename)
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -497,6 +500,7 @@ class ExportEngine:
         max_tokens_per_file: int | None = None,
         respect_chapters: bool = False,
         format: str = "markdown",
+        include_images: bool = True,
     ) -> dict:
         """Execute an export and return metadata about the generated files.
 
@@ -532,7 +536,8 @@ class ExportEngine:
             groups = [articles]
 
         return self._generate_export(
-            groups, source.name, source_id, format, functools.partial(self._load_chunk_sync, db)
+            groups, source.name, source_id, format,
+            functools.partial(self._load_chunk_sync, db), include_images,
         )
 
 
