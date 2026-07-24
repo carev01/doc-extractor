@@ -79,6 +79,28 @@ _BOILERPLATE_IMG_RE = re.compile(
 # base64 never bloats the served/exported markdown.
 _DATA_URI_IMG_RE = re.compile(r"data:image/([A-Za-z0-9.+-]+);base64,(.+)", re.DOTALL)
 
+# A query string tacked onto an image-asset URL (…/foo.png?sv=…&sig=…). Many CDNs
+# serve images via short-lived signed URLs (e.g. Azure Blob SAS on Document360,
+# where `st`/`se`/`sig` are re-minted every scrape). Those tokens are volatile but
+# reference the *same* image, so they must be neutralised before hashing — otherwise
+# every scrape yields a different content_hash and the page is perpetually flagged
+# "changed". Anchored on the file extension so a path containing parens
+# (…/1(2).png?…) is handled correctly; the query runs to the closing markdown ")".
+_VOLATILE_IMG_QUERY_RE = re.compile(
+    r"(\.(?:png|jpe?g|gif|svg|webp|bmp|ico|tiff?|avif))\?[^\s)\"']*",
+    re.IGNORECASE,
+)
+
+
+def _normalize_for_change_hash(content: str) -> str:
+    """Neutralise volatile-but-meaningless bits before change-detection hashing.
+
+    Currently strips signed/cache-busting query strings from image-asset URLs so a
+    re-minted CDN token doesn't masquerade as a content change. Fingerprint-only —
+    the stored/served markdown keeps its original URLs (and is later rewritten to
+    stable /media paths regardless)."""
+    return _VOLATILE_IMG_QUERY_RE.sub(r"\1", content)
+
 
 def compute_content_hash(content: str) -> str:
     """SHA-256 hex digest of markdown content used for change detection."""
@@ -725,7 +747,9 @@ class FirecrawlService:
             return None
         ext = {"jpeg": ".jpg", "jpg": ".jpg", "gif": ".gif",
                "svg+xml": ".svg", "webp": ".webp"}.get(fmt, ".png")
-        filename = f"{uuid.uuid4().hex[:12]}{ext}"
+        # Content-address by the decoded bytes (see _download_image) so an
+        # unchanged inline image keeps the same filename across scrapes.
+        filename = f"{hashlib.sha256(raw).hexdigest()[:16]}{ext}"
         try:
             os.makedirs(article_dir, exist_ok=True)
             with open(os.path.join(article_dir, filename), "wb") as f:
@@ -762,7 +786,13 @@ class FirecrawlService:
             elif "webp" in content_type:
                 ext = ".webp"
 
-            filename = f"{uuid.uuid4().hex[:12]}{ext}"
+            # Content-address the file by its bytes, not a random UUID: the same
+            # image then resolves to the same filename on every scrape, so the
+            # rewritten /media URL is stable across runs (no phantom content
+            # change) and re-downloads overwrite in place instead of piling up
+            # orphaned duplicates that grow the media volume unbounded.
+            sha = hashlib.sha256(resp.content).hexdigest()
+            filename = f"{sha[:16]}{ext}"
             filepath = os.path.join(article_dir, filename)
 
             os.makedirs(article_dir, exist_ok=True)
@@ -901,7 +931,7 @@ class FirecrawlService:
                 "change_status 'same' but no stored article for %s — persisting", url
             )
 
-        content_hash = compute_content_hash(markdown_content)
+        content_hash = compute_content_hash(_normalize_for_change_hash(markdown_content))
 
         existing_result = await db.execute(
             select(Article).where(
@@ -1053,6 +1083,9 @@ class FirecrawlService:
         if doc_html:
             img_soup = BeautifulSoup(doc_html, "html.parser")
             article_img_dir = os.path.join(media_root, str(article.id))
+            # Filenames referenced by this scrape; anything else in the dir is a
+            # stale orphan from a previous run and is pruned below.
+            kept_filenames: set[str] = set()
 
             # Collect the content images to fetch, skipping decorative skin/system
             # images (Flare chrome that repeats on every page) and de-duplicating
@@ -1072,6 +1105,7 @@ class FirecrawlService:
                     seen_src.add(src)
                     fn = self._save_data_uri_image(src, article_img_dir)
                     if fn:
+                        kept_filenames.add(fn)
                         served_url = f"{settings.media_url_prefix}/{article.id}/{fn}"
                         db.add(ArticleImage(
                             article_id=article.id, original_url="data:image",
@@ -1099,6 +1133,7 @@ class FirecrawlService:
 
             for (j, src, alt, full_src), local_filename in zip(to_fetch, filenames):
                 if local_filename:
+                    kept_filenames.add(local_filename)
                     served_url = (
                         f"{settings.media_url_prefix}/{article.id}/{local_filename}"
                     )
@@ -1116,6 +1151,21 @@ class FirecrawlService:
                     markdown_content = markdown_content.replace(full_src, served_url)
                     if src != full_src and src.startswith(("/", "./", "../")):
                         markdown_content = markdown_content.replace(src, served_url)
+
+            # Prune orphaned files left by previous scrapes (removed images, or
+            # duplicates from the pre-content-addressing random-UUID naming) so the
+            # media volume doesn't grow without bound on re-extraction. Guard against
+            # a transient wipe: if images WERE present on the page but every download
+            # failed this run (e.g. an expired SAS token mid-scrape), keep the prior
+            # files rather than nuking the whole article's images — a later run heals.
+            attempted = len(to_fetch) + sum(1 for s in seen_src if s.startswith("data:image/"))
+            if os.path.isdir(article_img_dir) and (kept_filenames or attempted == 0):
+                for stale in os.listdir(article_img_dir):
+                    if stale not in kept_filenames:
+                        try:
+                            os.remove(os.path.join(article_img_dir, stale))
+                        except OSError:
+                            pass
 
         elif pdf_images is not None:
             # PDF source images: content-addressed bytes produced by pdf_convert
