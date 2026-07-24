@@ -192,6 +192,15 @@ class ExportEngine:
             slug = slug.replace("--", "-")
         return slug.strip("-")
 
+    @staticmethod
+    def _fname_part(text: str) -> str:
+        """Filesystem-safe filename component (preserves case): alnum/dash/dot kept,
+        everything else (incl. spaces) → underscore, collapsed and trimmed."""
+        out = "".join(c if (c.isalnum() or c in "-.") else "_" for c in (text or "").strip())
+        while "__" in out:
+            out = out.replace("__", "_")
+        return out.strip("_") or "export"
+
     # ------------------------------------------------------------------ #
     #  Splitting helpers                                                   #
     # ------------------------------------------------------------------ #
@@ -393,12 +402,15 @@ class ExportEngine:
         format: str,
         load_content,                          # Callable[[list[uuid.UUID]], list[Article]]
         include_images: bool = True,
+        file_base: "str | None" = None,
     ) -> dict:
         """Generate export files from resolved article groups.
 
         *groups* contains metadata-only Article rows from the plan pass.
         *load_content* is called per render-chunk to fetch full content.
         *include_images* False → markdown only: no image bundling, no zip.
+        *file_base* names the output files (e.g. ``Vendor_Product_Source``);
+        falls back to the source name when not supplied.
         """
         export_id = uuid.uuid4()
         export_subdir = os.path.join(self.export_dir, str(export_id))
@@ -408,7 +420,7 @@ class ExportEngine:
         seen_images: set[str] = set()
         files_info: list[dict] = []
         total_size = 0
-        base_name = source_name.replace(" ", "_")
+        base_name = file_base or source_name.replace(" ", "_")
         ext = "pdf" if format == "pdf" else "md"
 
         for gi, group in enumerate(groups, 1):
@@ -515,6 +527,19 @@ class ExportEngine:
         if not source:
             raise ValueError(f"Source {source_id} not found")
 
+        # Output files are named <Vendor>_<Product>_<Source>.<ext> (a source name
+        # like "User Guide" repeats across products, so the vendor+product prefix
+        # disambiguates downloads). Missing ancestors are simply omitted.
+        product = source.product
+        vendor = product.vendor if product is not None else None
+        file_base = "_".join(
+            self._fname_part(p) for p in (
+                vendor.name if vendor is not None else None,
+                product.name if product is not None else None,
+                source.name,
+            ) if p
+        )
+
         articles = self._resolve_articles_sync(
             db, source_id, article_ids, toc_entry_ids, topic_query, meta_only=True
         )
@@ -539,6 +564,7 @@ class ExportEngine:
         return self._generate_export(
             groups, source.name, source_id, format,
             functools.partial(self._load_chunk_sync, db), include_images,
+            file_base=file_base,
         )
 
 
