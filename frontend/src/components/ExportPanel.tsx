@@ -342,18 +342,16 @@ export default function ExportPanel({ source }: Props) {
                 className="btn-primary"
                 onClick={() => download(() => downloadExportZip(exportResult.export_id))}
               >
-                Download ZIP (markdown + images)
+                Download all as ZIP
               </button>
             </p>
           )}
           <ul>
-            {exportResult.files.map((f, i) => (
+            {exportResult.files.map((f) => (
               <li key={f.filename}>
                 <button
                   type="button"
-                  className={
-                    !exportResult.zip_filename && i === 0 ? "btn-primary" : "link-btn"
-                  }
+                  className={exportResult.zip_filename ? "link-btn" : "btn-primary"}
                   onClick={() =>
                     download(() => downloadExportFile(exportResult.export_id, f.filename))
                   }

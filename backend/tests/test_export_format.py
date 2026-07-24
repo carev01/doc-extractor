@@ -129,6 +129,57 @@ def test_markdown_export_without_images_is_md_only(monkeypatch, tmp_path):
     subdir = exports / str(result["export_id"])
     files = os.listdir(subdir)
     assert any(f.endswith(".md") for f in files), files
-    assert not any(f.endswith(".zip") for f in files), files   # no zip when no images
+    assert not any(f.endswith(".zip") for f in files), files   # no zip: single file, no images
     assert result["zip_filename"] is None
     assert not (subdir / "images").exists()
+
+
+def test_markdown_multiple_files_zip_even_without_images(monkeypatch, tmp_path):
+    """A split (multi-file) markdown export bundles a zip even with images off, so
+    all parts download at once; the .md files are still offered individually."""
+    import zipfile
+
+    monkeypatch.setattr(export_engine, "export_dir", str(tmp_path))
+    g1 = [_fake_article("Athena", "athena body")]
+    g2 = [_fake_article("Redshift", "redshift body")]
+    by_id = {a.id: a for a in g1 + g2}
+
+    result = export_engine._generate_export(
+        [g1, g2], "Satori", uuid.uuid4(), "markdown",
+        lambda ids: [by_id[i] for i in ids], include_images=False,
+    )
+    subdir = tmp_path / str(result["export_id"])
+
+    assert result["file_count"] == 2
+    assert result["zip_filename"] == "Satori.zip"
+    with zipfile.ZipFile(subdir / "Satori.zip") as zf:
+        names = zf.namelist()
+    assert sum(1 for n in names if n.endswith(".md")) == 2   # both parts bundled
+    assert not any(n.startswith("images/") for n in names)   # but no images
+
+
+def test_fname_part_sanitizes():
+    fp = export_engine._fname_part
+    assert fp("Cohesity") == "Cohesity"           # case preserved
+    assert fp("Data Protect") == "Data_Protect"   # spaces → _
+    assert fp("A/B: C") == "A_B_C"                # unsafe chars → _, collapsed
+    assert fp("  ") == "export"                   # empty → fallback
+
+
+def test_file_base_names_output_files(monkeypatch, tmp_path):
+    """Output file (and zip) names use the supplied file_base
+    (Vendor_Product_Source), not just the source name."""
+    monkeypatch.setattr(export_engine, "export_dir", str(tmp_path))
+    g1 = [_fake_article("Intro", "a")]
+    g2 = [_fake_article("Setup", "b")]
+    by_id = {a.id: a for a in g1 + g2}
+    result = export_engine._generate_export(
+        [g1, g2], "User Guide", uuid.uuid4(), "markdown",
+        lambda ids: [by_id[i] for i in ids], include_images=False,
+        file_base="Cohesity_DataProtect_User_Guide",
+    )
+    subdir = tmp_path / str(result["export_id"])
+    files = set(os.listdir(subdir))
+    assert "Cohesity_DataProtect_User_Guide_part001.md" in files, files
+    assert "Cohesity_DataProtect_User_Guide_part002.md" in files, files
+    assert result["zip_filename"] == "Cohesity_DataProtect_User_Guide.zip"
