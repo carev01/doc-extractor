@@ -49,6 +49,26 @@ async def test_download_image_rejects_non_image_login_page(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_download_image_filename_is_content_addressed(tmp_path):
+    # The saved filename is derived from the image bytes, not a random UUID: the
+    # same image resolves to the same name on every scrape (stable /media URL → no
+    # phantom content change) and a different image to a different name.
+    def handler(req):
+        body = b"\x89PNG\r\n\x1a\n" + req.url.params.get("body", "A").encode()
+        return httpx.Response(200, content=body, headers={"content-type": "image/png"})
+
+    svc = FirecrawlService()
+    svc.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    a1 = await svc._download_image("https://cdn/x.png?body=A", str(tmp_path))
+    a2 = await svc._download_image("https://cdn/x.png?body=A", str(tmp_path))
+    b1 = await svc._download_image("https://cdn/x.png?body=B", str(tmp_path))
+    assert a1 == a2            # identical bytes → identical filename (deterministic)
+    assert a1 != b1            # different bytes → different filename
+    assert os.listdir(str(tmp_path)).count(a1) == 1  # no duplicate accumulation
+    await svc.client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_download_image_no_cookie_header_when_unauthenticated(tmp_path):
     seen = {}
 
