@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import base64
 import logging
 import os
 import re
@@ -74,6 +75,9 @@ _BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHT
 _BOILERPLATE_IMG_RE = re.compile(
     r"/_SystemImages/|/Skins/|/ui-icons/|/transparent\.gif$", re.IGNORECASE
 )
+# A base64-encoded inline image (data URI). Extracted to a stored file so the raw
+# base64 never bloats the served/exported markdown.
+_DATA_URI_IMG_RE = re.compile(r"data:image/([A-Za-z0-9.+-]+);base64,(.+)", re.DOTALL)
 
 
 def compute_content_hash(content: str) -> str:
@@ -704,6 +708,32 @@ class FirecrawlService:
             )
         return markdown, html, change_status, diff_text
 
+    def _save_data_uri_image(self, data_uri: str, article_dir: str) -> "str | None":
+        """Decode a ``data:image/<fmt>;base64,<b64>`` URI and store it like a
+        downloaded image (so a huge base64 blob never survives inline in the
+        stored/exported markdown). Returns the local filename, or None if it isn't
+        a decodable base64 image."""
+        m = _DATA_URI_IMG_RE.match(data_uri)
+        if not m:
+            return None
+        fmt = m.group(1).lower()
+        try:
+            raw = base64.b64decode("".join(m.group(2).split()))
+        except Exception:  # noqa: BLE001 — malformed base64 → leave it alone
+            return None
+        if not raw:
+            return None
+        ext = {"jpeg": ".jpg", "jpg": ".jpg", "gif": ".gif",
+               "svg+xml": ".svg", "webp": ".webp"}.get(fmt, ".png")
+        filename = f"{uuid.uuid4().hex[:12]}{ext}"
+        try:
+            os.makedirs(article_dir, exist_ok=True)
+            with open(os.path.join(article_dir, filename), "wb") as f:
+                f.write(raw)
+        except OSError:
+            return None
+        return filename
+
     async def _download_image(self, img_url: str, article_dir: str,
                               auth_cookies: list[dict] | None = None) -> str | None:
         try:
@@ -1032,6 +1062,23 @@ class FirecrawlService:
             for j, img in enumerate(img_soup.find_all("img")):
                 src = img.get("src", "")
                 if not src:
+                    continue
+                # Inline base64 image: decode + store it (rewriting the markdown to
+                # a /media link) instead of leaving the raw data URI inline. Done
+                # here so the huge base64 blob never reaches the stored markdown.
+                if src.startswith("data:image/"):
+                    if src in seen_src:
+                        continue
+                    seen_src.add(src)
+                    fn = self._save_data_uri_image(src, article_img_dir)
+                    if fn:
+                        served_url = f"{settings.media_url_prefix}/{article.id}/{fn}"
+                        db.add(ArticleImage(
+                            article_id=article.id, original_url="data:image",
+                            local_filename=fn, local_path=served_url,
+                            alt_text=img.get("alt", ""), sort_order=j,
+                        ))
+                        markdown_content = markdown_content.replace(src, served_url)
                     continue
                 full_src = urljoin(url, src)
                 if not full_src.startswith(("http://", "https://")):
