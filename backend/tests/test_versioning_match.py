@@ -111,6 +111,74 @@ async def test_url_fallback_heals_drifted_literal_key(db_session):
     assert arts[0].topic_key == key     # key normalised to {version}
 
 
+async def test_bump_heals_drifted_literal_key_across_version_change(db_session):
+    # The hard case both earlier fallbacks miss: the stored key is a drifted
+    # LITERAL-version key (pre-fix run) AND the version bumps, so the URL changes
+    # too. Neither topic_key nor exact-URL matches — only the version-independent
+    # URL-pattern fallback can link new→old. Must update in place (history kept),
+    # not duplicate. (Regression: the Commvault Cloud / CommCell 11.44→11.46 all-new.)
+    svc, source = await make_service_and_source(db_session, url_template=TMPL, version="10.0")
+    old_url = TMPL.replace("{version}", "10.0")
+
+    run1 = await _make_run(db_session, source)
+    await svc.process_article_result(
+        db=db_session, source_id=source.id, run_id=run1.id,
+        url=old_url, topic_key=old_url,  # LITERAL key (drifted, pre-fix)
+        markdown_content="body v10", doc_html="", toc_entry_id=None,
+        sort_order=0, title="Install",
+    )
+
+    new_url = TMPL.replace("{version}", "11.0")
+    key = derive_topic_key(new_url, TMPL, "11.0")
+    assert "{version}" in key
+    run2 = await _make_run(db_session, source)
+    outcome = await svc.process_article_result(
+        db=db_session, source_id=source.id, run_id=run2.id,
+        url=new_url, topic_key=key,  # correct templated key + bumped URL
+        markdown_content="body v11 changed", doc_html="", toc_entry_id=None,
+        sort_order=0, title="Install",
+    )
+    assert outcome == "updated"  # matched the drifted v10 row, not re-created
+    arts = (await db_session.execute(select(Article).where(Article.source_id == source.id))).scalars().all()
+    assert len(arts) == 1                    # no duplicate
+    assert arts[0].topic_key == key          # key normalised to {version}
+    assert "11.0" in arts[0].source_url      # advanced to the new version
+    versions = (await db_session.execute(
+        select(ArticleVersion).where(ArticleVersion.article_id == arts[0].id)
+    )).scalars().all()
+    assert len(versions) == 1                # v10 snapshot archived → history preserved
+
+
+async def test_bump_fallback_leaves_genuinely_new_page_as_new(db_session):
+    # The version-bump fallback must not over-match: a page that only exists at the
+    # new version (no counterpart at the old version) has no URL-pattern match and
+    # must be created as new, never adopting an unrelated page.
+    svc, source = await make_service_and_source(db_session, url_template=TMPL, version="10.0")
+    old_url = TMPL.replace("{version}", "10.0")
+    run1 = await _make_run(db_session, source)
+    await svc.process_article_result(
+        db=db_session, source_id=source.id, run_id=run1.id,
+        url=old_url, topic_key=old_url,
+        markdown_content="body v10", doc_html="", toc_entry_id=None,
+        sort_order=0, title="Install",
+    )
+
+    # A different page path, only present at v11.0.
+    other_tmpl = "https://docs.example.com/UDP/Available/{version}/ENU/SolG/brand_new.htm"
+    other_url = other_tmpl.replace("{version}", "11.0")
+    key = derive_topic_key(other_url, other_tmpl, "11.0")
+    run2 = await _make_run(db_session, source)
+    outcome = await svc.process_article_result(
+        db=db_session, source_id=source.id, run_id=run2.id,
+        url=other_url, topic_key=key,
+        markdown_content="brand new page", doc_html="", toc_entry_id=None,
+        sort_order=1, title="Brand New",
+    )
+    assert outcome == "new"  # no false adoption of the Install page
+    arts = (await db_session.execute(select(Article).where(Article.source_id == source.id))).scalars().all()
+    assert len(arts) == 2
+
+
 async def test_url_fallback_skipped_when_url_is_ambiguous(db_session):
     # PDF-safety: when several live articles share a source_url (outline sections
     # on the same #page), the URL fallback must NOT fire — otherwise a section

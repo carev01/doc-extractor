@@ -45,7 +45,11 @@ import app.services.profiles.llm as llm_mod
 from app.services.profiles.scraper import Scraper
 from app.services.sanitize import sanitize_markdown
 from app.services.toc_checkpoint import TocBuildCheckpoint
-from app.services.versioning import derive_topic_key, detect_version_token
+from app.services.versioning import (
+    VERSION_PLACEHOLDER,
+    derive_topic_key,
+    detect_version_token,
+)
 from app.core.database import async_session
 
 # Default content scrape options when no profile config is supplied (legacy #doc).
@@ -968,6 +972,37 @@ class FirecrawlService:
             # sibling; leave those to topic_key matching.
             if len(url_matches) == 1:
                 existing_article = url_matches[0]
+
+        # Second fallback: match ACROSS a version bump. When the stored key is a
+        # drifted literal-version key (from a pre-fix run) AND the URL also moved
+        # because the version bumped, neither the topic_key nor the exact-URL match
+        # above can link new→old — so the page re-creates and the whole source
+        # duplicates (the CommCell / Commvault-Cloud transition). The version-
+        # independent identity is match_key with {version} treated as a wildcard: a
+        # stored page at ANY version whose URL fits that shape is the same article.
+        # Adopt it (and normalise its key to the templated match_key below) only
+        # when the match is unambiguous. Skipped for non-versioned sources
+        # (match_key has no placeholder) and once keys are templated on both sides
+        # (the topic_key match above already succeeds, so we never reach here).
+        if existing_article is None and VERSION_PLACEHOLDER in match_key:
+            # Build a LIKE pattern from the key: escape LIKE metacharacters first
+            # (doc URLs commonly contain "_"), then turn the {version} placeholder
+            # into a "%" wildcard so it spans whatever version segment is stored.
+            esc = match_key.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            pattern = esc.replace(VERSION_PLACEHOLDER, "%")
+            ver_matches = (
+                await db.execute(
+                    select(Article)
+                    .where(
+                        Article.source_id == source_id,
+                        Article.removed_at.is_(None),
+                        Article.source_url.like(pattern, escape="\\"),
+                    )
+                    .limit(2)
+                )
+            ).scalars().all()
+            if len(ver_matches) == 1:
+                existing_article = ver_matches[0]
 
         # For "new" or None change_status fall back to hash comparison. "new" happens
         # on the first extraction after changeTracking was enabled (Firecrawl has no
