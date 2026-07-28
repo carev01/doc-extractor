@@ -1851,6 +1851,37 @@ a.btn-primary {
   background: var(--ink-1);
 }
 
+/* Recent-history filter bar */
+.run-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.8rem;
+  margin-bottom: 0.7rem;
+}
+.run-filters label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.run-filters select,
+.run-filters input[type="date"] {
+  padding: 0.2rem 0.4rem;
+}
+
+/* Blocked-page list inside a run's warning box */
+.blocked-list {
+  margin: 0.4rem 0 0;
+  padding-left: 1.1rem;
+  max-height: 16rem;
+  overflow-y: auto;
+  font-size: 0.85rem;
+}
+.blocked-list li {
+  margin: 0.15rem 0;
+  word-break: break-all;
+}
+
 /* Run detail stat grid */
 .stat-grid {
   display: grid;

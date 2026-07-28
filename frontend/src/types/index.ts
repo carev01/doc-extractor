@@ -129,6 +129,9 @@ export interface ExtractionRun {
   /** Completed run with pages blocked by bot protection — eligible for retry. */
   blocked_warning?: boolean;
   blocked_count?: number;
+  /** The blocked pages themselves — only populated by the single-run detail
+   *  endpoint (GET /runs/{id}), not the all-runs listing. */
+  blocked_pages?: { url: string; title: string | null }[];
   current_phase:
     | "toc_discovery"
     | "content_scraping"
