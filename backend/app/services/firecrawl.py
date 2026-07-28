@@ -1553,6 +1553,7 @@ class FirecrawlService:
                             try:
                                 outcome = await self.process_article_result(
                                     db=db, source_id=source_id, run_id=run_id, url=url,
+                                    topic_key=entry.get("topic_key"),
                                     markdown_content=md, doc_html=body_html,
                                     toc_entry_id=entry.get("toc_entry_id"),
                                     sort_order=entry.get("sort_order", 0),
