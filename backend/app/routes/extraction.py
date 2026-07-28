@@ -349,6 +349,14 @@ async def get_run_status(
         "escalation_warning": bool(run.escalation_pending),
         "blocked_warning": bool(run.blocked_pending),
         "blocked_count": len(run.blocked_pending) if run.blocked_pending else 0,
+        # The blocked pages themselves (url + title) so the UI can list exactly
+        # which pages were skipped, not just how many. Only on the single-run
+        # detail endpoint — the list can hold up to _BLOCKED_PENDING_CAP items,
+        # too heavy to inline in the all-runs listing.
+        "blocked_pages": [
+            {"url": b.get("url"), "title": b.get("title")}
+            for b in (run.blocked_pending or [])
+        ],
         "current_phase": run.current_phase,
         "firecrawl_job_id": run.firecrawl_job_id,
         "articles_extracted": run.articles_extracted,

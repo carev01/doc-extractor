@@ -111,6 +111,41 @@ async def test_retry_blocked_enqueues_run_and_carries_list(client):
 
 
 @pytest.mark.asyncio
+async def test_run_status_exposes_blocked_pages_list(client):
+    """The single-run detail endpoint lists which pages were blocked (url+title),
+    so the UI can show them — not just blocked_count."""
+    c, factory = client
+    pending = [
+        {"url": "https://docs.example.com/a", "title": "Alpha",
+         "toc_entry_id": None, "sort_order": 1, "topic_key": None},
+        {"url": "https://docs.example.com/b", "title": "Bravo",
+         "toc_entry_id": None, "sort_order": 2, "topic_key": None},
+    ]
+    sid, rid = await _web_source_with_run(factory, pending)
+
+    resp = await c.get(f"/api/extraction/runs/{rid}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["blocked_warning"] is True
+    assert body["blocked_count"] == 2
+    assert body["blocked_pages"] == [
+        {"url": "https://docs.example.com/a", "title": "Alpha"},
+        {"url": "https://docs.example.com/b", "title": "Bravo"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_status_blocked_pages_empty_when_none(client):
+    c, factory = client
+    sid, rid = await _web_source_with_run(factory, None)
+    resp = await c.get(f"/api/extraction/runs/{rid}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["blocked_warning"] is False
+    assert body["blocked_pages"] == []
+
+
+@pytest.mark.asyncio
 async def test_retry_blocked_409_when_nothing_blocked(client):
     c, factory = client
     sid, rid = await _web_source_with_run(factory, None)

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import type { ExtractionRun, ExportJobItem, JobRunItem } from "../types";
 import {
   listRuns,
+  getRunStatus,
   getRunLogs,
   listExportJobs,
   cancelExportJob,
@@ -119,6 +120,11 @@ export default function JobsView() {
   const [enrichStats, setEnrichStats] = useState<Record<string, EnrichStat>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState("");
+  // Recent-history filters (client-side over the fetched runs).
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [dateFrom, setDateFrom] = useState<string>("");
+  const [dateTo, setDateTo] = useState<string>("");
+  const [sortNewest, setSortNewest] = useState(true);
 
   const refresh = useCallback(async () => {
     try {
@@ -182,6 +188,30 @@ export default function JobsView() {
 
   const active = runs.filter((r) => ACTIVE.has(r.status));
   const recent = runs.filter((r) => !ACTIVE.has(r.status));
+
+  // A completed run carrying a warning surfaces as its own "warning" status for
+  // filtering, matching the amber badge the list shows.
+  const effStatus = (r: ExtractionRun) =>
+    r.status === "completed" && (r.escalation_warning || r.blocked_warning)
+      ? "warning"
+      : r.status;
+
+  const recentFiltered = recent
+    .filter((r) => {
+      if (statusFilter !== "all" && effStatus(r) !== statusFilter) return false;
+      if (dateFrom && (!r.started_at || new Date(r.started_at) < new Date(dateFrom))) return false;
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setHours(23, 59, 59, 999);
+        if (!r.started_at || new Date(r.started_at) > end) return false;
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      const ta = a.started_at ? new Date(a.started_at).getTime() : 0;
+      const tb = b.started_at ? new Date(b.started_at).getTime() : 0;
+      return sortNewest ? tb - ta : ta - tb;
+    });
 
   return (
     <div className="jobs-view">
@@ -324,10 +354,50 @@ export default function JobsView() {
       </section>
 
       <section className="jobs-section">
-        <h3>Recent ({recent.length})</h3>
+        <h3>
+          Recent ({recentFiltered.length}
+          {recentFiltered.length !== recent.length ? ` of ${recent.length}` : ""})
+        </h3>
+        <div className="run-filters">
+          <label className="sub">
+            Status{" "}
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+              <option value="all">All</option>
+              <option value="completed">Completed</option>
+              <option value="warning">Warning</option>
+              <option value="failed">Failed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </label>
+          <label className="sub">
+            From <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+          </label>
+          <label className="sub">
+            To <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+          </label>
+          <label className="sub">
+            Sort{" "}
+            <select value={sortNewest ? "newest" : "oldest"} onChange={(e) => setSortNewest(e.target.value === "newest")}>
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+            </select>
+          </label>
+          {(statusFilter !== "all" || dateFrom || dateTo || !sortNewest) && (
+            <button
+              type="button"
+              className="link-btn"
+              onClick={() => { setStatusFilter("all"); setDateFrom(""); setDateTo(""); setSortNewest(true); }}
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
         {recent.length === 0 && <p className="empty">No past runs.</p>}
+        {recent.length > 0 && recentFiltered.length === 0 && (
+          <p className="empty">No runs match the current filters.</p>
+        )}
         <ul className="item-list">
-          {recent.map((run) => (
+          {recentFiltered.map((run) => (
             <li key={run.id} onClick={() => setSelectedId(run.id)}>
               <div className="item-info">
                 <strong>{path(run)}</strong>
@@ -362,8 +432,21 @@ function RunDetail({ run, onBack }: { run: ExtractionRun; onBack: () => void }) 
   const [loadingLogs, setLoadingLogs] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState("");
+  const [blockedPages, setBlockedPages] = useState<{ url: string; title: string | null }[]>([]);
+  const [showBlocked, setShowBlocked] = useState(false);
   const logBoxRef = useRef<HTMLPreElement | null>(null);
   const isActive = ACTIVE.has(run.status);
+
+  // The all-runs listing carries only blocked_count; fetch the single-run detail
+  // to get the actual blocked-page list (url + title) when there is one.
+  useEffect(() => {
+    if (!run.blocked_warning) return;
+    let cancelled = false;
+    getRunStatus(run.id)
+      .then((d) => { if (!cancelled) setBlockedPages(d.blocked_pages ?? []); })
+      .catch(() => { /* non-fatal; the count + retry button still work */ });
+    return () => { cancelled = true; };
+  }, [run.id, run.blocked_warning]);
 
   const handleRetryEscalation = async () => {
     setRetrying(true);
@@ -484,9 +567,34 @@ function RunDetail({ run, onBack }: { run: ExtractionRun; onBack: () => void }) 
           {run.status === "completed" && run.blocked_warning && (
             <div className="warning-box" style={{ marginTop: "0.8rem" }}>
               <strong>⚠ {run.blocked_count} page(s) blocked by bot protection.</strong>{" "}
-              Some pages couldn't be scraped because the site's bot protection
-              blocked the request. The rest of the document was extracted
-              normally. You can retry just the blocked pages.
+              These pages couldn't be scraped because the site's bot protection
+              blocked the request; the rest of the document was extracted normally.
+              Small blocks (≤5% of pages) are retried automatically at the end of a
+              run — a larger block like this usually means the source needs a
+              warm-up/stealth profile, so a plain retry may not clear it.
+              {blockedPages.length > 0 && (
+                <div style={{ marginTop: "0.5rem" }}>
+                  <button
+                    type="button"
+                    className="link-btn"
+                    onClick={() => setShowBlocked((v) => !v)}
+                  >
+                    {showBlocked ? "▾" : "▸"} {showBlocked ? "Hide" : "Show"} blocked pages ({blockedPages.length})
+                  </button>
+                  {showBlocked && (
+                    <ul className="blocked-list">
+                      {blockedPages.map((p) => (
+                        <li key={p.url}>
+                          <a href={p.url} target="_blank" rel="noopener noreferrer">
+                            {p.title || p.url}
+                          </a>
+                          {p.title && <span className="sub"> — {p.url}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
               <div style={{ marginTop: "0.5rem" }}>
                 <button
                   className="btn-primary-sm"
