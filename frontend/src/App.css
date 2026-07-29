@@ -865,6 +865,26 @@ a.btn-primary {
   border-bottom-color: var(--amber);
 }
 
+/* Count pill shown next to a tab label (e.g. Jobs view sections). */
+.source-tabs .tab-count {
+  display: inline-block;
+  min-width: 1.5em;
+  padding: 0 6px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: var(--ink-3);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  line-height: 1.55;
+  text-align: center;
+  vertical-align: middle;
+}
+.source-tabs button.active .tab-count {
+  background: var(--amber-ghost);
+  color: var(--amber-hi);
+}
+
 /* ============================================================
    Changelog
    ============================================================ */
@@ -1856,17 +1876,54 @@ a.btn-primary {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.8rem;
-  margin-bottom: 0.7rem;
+  gap: 14px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  background: var(--ink-1);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
 }
 .run-filters label {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 8px;
+  font-family: var(--font-display);
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
 }
 .run-filters select,
 .run-filters input[type="date"] {
-  padding: 0.2rem 0.4rem;
+  padding: 8px 10px;
+  background: var(--ink-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 0.88rem;
+  text-transform: none;
+  letter-spacing: normal;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.run-filters select:hover,
+.run-filters input[type="date"]:hover {
+  border-color: var(--text-faint);
+}
+.run-filters select:focus,
+.run-filters input[type="date"]:focus {
+  outline: none;
+  border-color: var(--amber);
+  box-shadow: 0 0 0 3px var(--amber-ghost);
+}
+/* Tint the date picker's calendar glyph so it reads on the dark control. */
+.run-filters input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.7);
+  cursor: pointer;
+}
+.run-filters .clear-filters {
+  margin-left: auto;
 }
 
 /* Blocked-page list inside a run's warning box */

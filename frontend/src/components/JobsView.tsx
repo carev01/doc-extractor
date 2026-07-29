@@ -113,7 +113,9 @@ function EnrichProgress({ stat }: { stat: EnrichStat | undefined }) {
 }
 
 export default function JobsView() {
-  const [tab, setTab] = useState<"activity" | "jobs">("activity");
+  const [tab, setTab] = useState<
+    "active" | "recent" | "jobruns" | "exports" | "manage"
+  >("active");
   const [runs, setRuns] = useState<ExtractionRun[]>([]);
   const [exportJobs, setExportJobs] = useState<ExportJobItem[]>([]);
   const [jobRuns, setJobRuns] = useState<JobRunItem[]>([]);
@@ -217,210 +219,223 @@ export default function JobsView() {
     <div className="jobs-view">
       <h2>Jobs</h2>
       <nav className="source-tabs" style={{ marginBottom: "1rem" }}>
-        <button className={tab === "activity" ? "active" : ""} onClick={() => setTab("activity")}>
-          Activity
+        <button className={tab === "active" ? "active" : ""} onClick={() => setTab("active")}>
+          Active <span className="tab-count">{active.length}</span>
         </button>
-        <button className={tab === "jobs" ? "active" : ""} onClick={() => setTab("jobs")}>
+        <button className={tab === "recent" ? "active" : ""} onClick={() => setTab("recent")}>
+          Recent <span className="tab-count">{recent.length}</span>
+        </button>
+        <button className={tab === "jobruns" ? "active" : ""} onClick={() => setTab("jobruns")}>
+          Job runs <span className="tab-count">{jobRuns.length}</span>
+        </button>
+        <button className={tab === "exports" ? "active" : ""} onClick={() => setTab("exports")}>
+          Exports <span className="tab-count">{exportJobs.length}</span>
+        </button>
+        <button className={tab === "manage" ? "active" : ""} onClick={() => setTab("manage")}>
           Manage Jobs
         </button>
       </nav>
       {error && <div className="error">{error}</div>}
 
-      {tab === "jobs" && <JobsManager />}
+      {tab === "manage" && <JobsManager />}
 
-      {tab === "activity" && (
-        <>
-      <section className="jobs-section">
-        <h3>Active, queued &amp; paused ({active.length})</h3>
-        {active.length === 0 && <p className="empty">Nothing running.</p>}
-        <ul className="item-list">
-          {active.map((run) => {
-            const pct = pctOf(run);
-            return (
+      {tab === "active" && (
+        <section className="jobs-section">
+          {active.length === 0 && <p className="empty">Nothing running.</p>}
+          <ul className="item-list">
+            {active.map((run) => {
+              const pct = pctOf(run);
+              return (
+                <li key={run.id} onClick={() => setSelectedId(run.id)}>
+                  <div className="item-info">
+                    <strong>{path(run)}</strong>
+                    <div className="item-meta">
+                      {runStatusBadge(run)}
+                      {kindBadge(run)}
+                      {run.control && (
+                        <span className="sub" style={{ color: "var(--amber)" }}>
+                          {run.control === "cancel" ? "cancelling…" : "pausing…"}
+                        </span>
+                      )}
+                      <span className="sub">{run.current_phase || "—"}</span>
+                      <span className="sub">{run.trigger}</span>
+                      <span className="sub">elapsed {fmtDuration(run.started_at, null)}</span>
+                    </div>
+                    {run.kind === "enrich" ? (
+                      <EnrichProgress stat={enrichStats[run.source_id]} />
+                    ) : (
+                      <>
+                        <span className="sub">
+                          {processed(run)} / {run.articles_total || "?"} articles
+                          {pct !== null ? ` (${pct}%)` : ""}
+                        </span>
+                        {pct !== null && (
+                          <div className="progress-bar">
+                            <div className="progress-fill" style={{ width: `${pct}%` }} />
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                  <div className="item-actions" onClick={(e) => e.stopPropagation()}>
+                    {run.status === "paused" ? (
+                      <button className="btn-primary-sm" onClick={() => runAction(resumeRun, run.id, "resume")}>
+                        Resume
+                      </button>
+                    ) : (
+                      <button
+                        className="btn-secondary-sm"
+                        disabled={!!run.control}
+                        onClick={() => runAction(pauseRun, run.id, "pause")}
+                      >
+                        Pause
+                      </button>
+                    )}
+                    <button
+                      className="btn-danger-sm"
+                      disabled={run.control === "cancel"}
+                      onClick={() => runAction(cancelRun, run.id, "cancel")}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
+
+      {tab === "jobruns" && (
+        <section className="jobs-section">
+          {jobRuns.length === 0 && <p className="empty">No job runs yet.</p>}
+          <ul className="item-list">
+            {jobRuns.map((jr) => (
+              <li key={jr.id} className="non-clickable">
+                <div className="item-info">
+                  <strong>{jr.job_name ?? "(deleted job)"}</strong>
+                  <div className="item-meta">
+                    {statusBadge(jr.status)}
+                    <span className="sub">{jr.trigger}</span>
+                    <span className="sub">
+                      {jr.sources_done}/{jr.sources_total} done
+                      {jr.sources_failed > 0 ? `, ${jr.sources_failed} failed` : ""}
+                    </span>
+                    <span className="sub">
+                      {jr.created_at ? new Date(jr.created_at).toLocaleString() : "—"}
+                    </span>
+                    <span className="sub">took {fmtDuration(jr.started_at, jr.completed_at)}</span>
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {tab === "exports" && (
+        <section className="jobs-section">
+          {exportJobs.length === 0 && <p className="empty">No export jobs.</p>}
+          <ul className="item-list">
+            {exportJobs.map((j) => (
+              <li key={j.id} className="non-clickable">
+                <div className="item-info">
+                  <strong>{[j.vendor_name, j.product_name, j.source_name].join(" › ")}</strong>
+                  <div className="item-meta">
+                    {statusBadge(j.status)}
+                    <span className="sub">{j.format}</span>
+                    <span className="sub">
+                      {j.created_at ? new Date(j.created_at).toLocaleString() : "—"}
+                    </span>
+                  </div>
+                  {j.status === "failed" && j.error_message && (
+                    <span className="sub">{j.error_message}</span>
+                  )}
+                </div>
+                {j.status === "pending" && (
+                  <div className="item-actions">
+                    <button className="btn-danger-sm" onClick={() => cancelExport(j.id)}>
+                      Cancel
+                    </button>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {tab === "recent" && (
+        <section className="jobs-section">
+          <div className="run-filters">
+            <label>
+              Status
+              <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+                <option value="all">All</option>
+                <option value="completed">Completed</option>
+                <option value="warning">Warning</option>
+                <option value="failed">Failed</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+            </label>
+            <label>
+              From
+              <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+            </label>
+            <label>
+              To
+              <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+            </label>
+            <label>
+              Sort
+              <select value={sortNewest ? "newest" : "oldest"} onChange={(e) => setSortNewest(e.target.value === "newest")}>
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+              </select>
+            </label>
+            {(statusFilter !== "all" || dateFrom || dateTo || !sortNewest) && (
+              <button
+                type="button"
+                className="link-btn clear-filters"
+                onClick={() => { setStatusFilter("all"); setDateFrom(""); setDateTo(""); setSortNewest(true); }}
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
+          <p className="sub" style={{ marginBottom: "0.6rem" }}>
+            Showing {recentFiltered.length}
+            {recentFiltered.length !== recent.length ? ` of ${recent.length}` : ""} run
+            {recent.length === 1 ? "" : "s"}
+          </p>
+          {recent.length === 0 && <p className="empty">No past runs.</p>}
+          {recent.length > 0 && recentFiltered.length === 0 && (
+            <p className="empty">No runs match the current filters.</p>
+          )}
+          <ul className="item-list">
+            {recentFiltered.map((run) => (
               <li key={run.id} onClick={() => setSelectedId(run.id)}>
                 <div className="item-info">
                   <strong>{path(run)}</strong>
                   <div className="item-meta">
                     {runStatusBadge(run)}
                     {kindBadge(run)}
-                    {run.control && (
-                      <span className="sub" style={{ color: "var(--amber)" }}>
-                        {run.control === "cancel" ? "cancelling…" : "pausing…"}
-                      </span>
-                    )}
-                    <span className="sub">{run.current_phase || "—"}</span>
                     <span className="sub">{run.trigger}</span>
-                    <span className="sub">elapsed {fmtDuration(run.started_at, null)}</span>
+                    <span className="sub">
+                      {run.started_at ? new Date(run.started_at).toLocaleString() : "—"}
+                    </span>
+                    <span className="sub">took {fmtDuration(run.started_at, run.completed_at)}</span>
                   </div>
-                  {run.kind === "enrich" ? (
-                    <EnrichProgress stat={enrichStats[run.source_id]} />
-                  ) : (
-                    <>
-                      <span className="sub">
-                        {processed(run)} / {run.articles_total || "?"} articles
-                        {pct !== null ? ` (${pct}%)` : ""}
-                      </span>
-                      {pct !== null && (
-                        <div className="progress-bar">
-                          <div className="progress-fill" style={{ width: `${pct}%` }} />
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-                <div className="item-actions" onClick={(e) => e.stopPropagation()}>
-                  {run.status === "paused" ? (
-                    <button className="btn-primary-sm" onClick={() => runAction(resumeRun, run.id, "resume")}>
-                      Resume
-                    </button>
-                  ) : (
-                    <button
-                      className="btn-secondary-sm"
-                      disabled={!!run.control}
-                      onClick={() => runAction(pauseRun, run.id, "pause")}
-                    >
-                      Pause
-                    </button>
-                  )}
-                  <button
-                    className="btn-danger-sm"
-                    disabled={run.control === "cancel"}
-                    onClick={() => runAction(cancelRun, run.id, "cancel")}
-                  >
-                    Cancel
-                  </button>
+                  <span className="sub">
+                    {run.status === "failed" && run.error_message
+                      ? run.error_message
+                      : `${run.articles_extracted} new · ${run.articles_updated ?? 0} updated · ${run.articles_unchanged ?? 0} unchanged (of ${run.articles_total})`}
+                  </span>
                 </div>
               </li>
-            );
-          })}
-        </ul>
-      </section>
-
-      <section className="jobs-section">
-        <h3>Job runs ({jobRuns.length})</h3>
-        {jobRuns.length === 0 && <p className="empty">No job runs yet.</p>}
-        <ul className="item-list">
-          {jobRuns.map((jr) => (
-            <li key={jr.id} className="non-clickable">
-              <div className="item-info">
-                <strong>{jr.job_name ?? "(deleted job)"}</strong>
-                <div className="item-meta">
-                  {statusBadge(jr.status)}
-                  <span className="sub">{jr.trigger}</span>
-                  <span className="sub">
-                    {jr.sources_done}/{jr.sources_total} done
-                    {jr.sources_failed > 0 ? `, ${jr.sources_failed} failed` : ""}
-                  </span>
-                  <span className="sub">
-                    {jr.created_at ? new Date(jr.created_at).toLocaleString() : "—"}
-                  </span>
-                  <span className="sub">took {fmtDuration(jr.started_at, jr.completed_at)}</span>
-                </div>
-              </div>
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      <section className="jobs-section">
-        <h3>Exports ({exportJobs.length})</h3>
-        {exportJobs.length === 0 && <p className="empty">No export jobs.</p>}
-        <ul className="item-list">
-          {exportJobs.map((j) => (
-            <li key={j.id} className="non-clickable">
-              <div className="item-info">
-                <strong>{[j.vendor_name, j.product_name, j.source_name].join(" › ")}</strong>
-                <div className="item-meta">
-                  {statusBadge(j.status)}
-                  <span className="sub">{j.format}</span>
-                  <span className="sub">
-                    {j.created_at ? new Date(j.created_at).toLocaleString() : "—"}
-                  </span>
-                </div>
-                {j.status === "failed" && j.error_message && (
-                  <span className="sub">{j.error_message}</span>
-                )}
-              </div>
-              {j.status === "pending" && (
-                <div className="item-actions">
-                  <button className="btn-danger-sm" onClick={() => cancelExport(j.id)}>
-                    Cancel
-                  </button>
-                </div>
-              )}
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      <section className="jobs-section">
-        <h3>
-          Recent ({recentFiltered.length}
-          {recentFiltered.length !== recent.length ? ` of ${recent.length}` : ""})
-        </h3>
-        <div className="run-filters">
-          <label className="sub">
-            Status{" "}
-            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-              <option value="all">All</option>
-              <option value="completed">Completed</option>
-              <option value="warning">Warning</option>
-              <option value="failed">Failed</option>
-              <option value="cancelled">Cancelled</option>
-            </select>
-          </label>
-          <label className="sub">
-            From <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
-          </label>
-          <label className="sub">
-            To <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
-          </label>
-          <label className="sub">
-            Sort{" "}
-            <select value={sortNewest ? "newest" : "oldest"} onChange={(e) => setSortNewest(e.target.value === "newest")}>
-              <option value="newest">Newest first</option>
-              <option value="oldest">Oldest first</option>
-            </select>
-          </label>
-          {(statusFilter !== "all" || dateFrom || dateTo || !sortNewest) && (
-            <button
-              type="button"
-              className="link-btn"
-              onClick={() => { setStatusFilter("all"); setDateFrom(""); setDateTo(""); setSortNewest(true); }}
-            >
-              Clear filters
-            </button>
-          )}
-        </div>
-        {recent.length === 0 && <p className="empty">No past runs.</p>}
-        {recent.length > 0 && recentFiltered.length === 0 && (
-          <p className="empty">No runs match the current filters.</p>
-        )}
-        <ul className="item-list">
-          {recentFiltered.map((run) => (
-            <li key={run.id} onClick={() => setSelectedId(run.id)}>
-              <div className="item-info">
-                <strong>{path(run)}</strong>
-                <div className="item-meta">
-                  {runStatusBadge(run)}
-                  {kindBadge(run)}
-                  <span className="sub">{run.trigger}</span>
-                  <span className="sub">
-                    {run.started_at ? new Date(run.started_at).toLocaleString() : "—"}
-                  </span>
-                  <span className="sub">took {fmtDuration(run.started_at, run.completed_at)}</span>
-                </div>
-                <span className="sub">
-                  {run.status === "failed" && run.error_message
-                    ? run.error_message
-                    : `${run.articles_extracted} new · ${run.articles_updated ?? 0} updated · ${run.articles_unchanged ?? 0} unchanged (of ${run.articles_total})`}
-                </span>
-              </div>
-            </li>
-          ))}
-        </ul>
-      </section>
-        </>
+            ))}
+          </ul>
+        </section>
       )}
     </div>
   );
