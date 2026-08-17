@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.config import settings
 from app.core.database import Base
+from app.core.sql import BIND_PARAM_LIMIT
 from app.models import Vendor, Product, DocumentationSource, ExtractionRun, Article
 from app.services.media_gc import gc_orphaned_media
 
@@ -74,3 +75,28 @@ async def test_gc_handles_missing_media_dir(factory, tmp_path):
     async with factory() as s:
         removed = await gc_orphaned_media(s, str(tmp_path / "does-not-exist"))
     assert removed == 0
+
+
+async def test_gc_survives_more_dirs_than_the_bind_param_cap(factory, tmp_path):
+    """One media dir exists per article, so the id lookup scales with the corpus.
+
+    An IN list binds one parameter per id and asyncpg hard-caps a statement at
+    32767, so past that every sweep raised
+    ``InterfaceError: the number of query arguments cannot exceed 32767`` and no
+    media was ever collected (observed in production). Drive the real function with
+    more dirs than the cap; it must complete and still spare the live article.
+    """
+    media = str(tmp_path)
+    live_id = await _article(factory)
+    live = _mkdir(media, str(live_id))
+
+    # Just over the cap. Empty dirs keep this cheap — gc only needs isdir().
+    orphan_count = BIND_PARAM_LIMIT + 3
+    for _ in range(orphan_count):
+        os.mkdir(os.path.join(media, str(uuid.uuid4())))
+
+    async with factory() as s:
+        removed = await gc_orphaned_media(s, media)
+
+    assert removed == orphan_count      # completed instead of raising
+    assert os.path.isdir(live)          # live article's media untouched
