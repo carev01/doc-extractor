@@ -10,6 +10,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.sql import any_of
 from app.models.article import Article
 
 logger = logging.getLogger(__name__)
@@ -34,9 +35,13 @@ async def gc_orphaned_media(db: AsyncSession, media_dir: str) -> int:
     if not candidates:
         return 0
 
+    # One array parameter, not one per id: there is a media dir per article, so an
+    # IN list here scales with the whole corpus and blows asyncpg's 32767
+    # bind-parameter cap (which it did — every sweep raised InterfaceError, so no
+    # media was ever collected). See app/core/sql.any_of.
     existing = set(
         (await db.execute(
-            select(Article.id).where(Article.id.in_(list(candidates)))
+            select(Article.id).where(any_of(Article.id, candidates))
         )).scalars()
     )
 

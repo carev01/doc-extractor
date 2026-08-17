@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.authz import Principal, get_principal, authorize_source, authorize_article
 from app.core.database import get_db
+from app.core.sql import any_of
 from app.models.article import Article
 from app.models.article_version import ArticleVersion
 from app.models.extraction_run import ExtractionRun, RunStatus
@@ -557,10 +558,13 @@ async def get_toc(
         entry_map[entry.id] = resp
 
     # Second pass: get article IDs for article entries
+    # any_of (one array param) rather than in_ (one param per entry): this covers
+    # every TOC entry of the source, so an IN list would break on a large doc set
+    # once it passes asyncpg's 32767 bind-parameter cap.
     article_result = await db.execute(
         select(Article.id, Article.toc_entry_id).where(
             Article.source_id == source_id,
-            Article.toc_entry_id.in_([e.id for e in entries]),
+            any_of(Article.toc_entry_id, [e.id for e in entries]),
         )
     )
     article_toc_map: dict[uuid.UUID, uuid.UUID] = {}
