@@ -1332,6 +1332,47 @@ class FirecrawlService:
         if ctrl:
             raise RunControlSignal(ctrl)
 
+    CONTROL_POLL_INTERVAL = 5.0  # seconds between control checks during a long await
+
+    async def _await_watching_control(
+        self, run_id: uuid.UUID, coro: Awaitable, poll_interval: float | None = None
+    ):
+        """Await ``coro`` while polling for a cancel/pause signal, aborting it if one
+        arrives.
+
+        The chunk-boundary ``_raise_if_controlled`` checks only cover the content
+        phase. TOC discovery is a *single* long await (a full sidebar expansion can
+        run for minutes), so a cancel issued during discovery would otherwise not be
+        observed until that call returned — the run looks unkillable, and the API's
+        cooperative cancel silently does nothing. Racing the work against a poller
+        makes discovery cancellable too.
+
+        Polls on its own short-lived session so it never touches the caller's
+        transaction concurrently (asyncpg forbids concurrent ops on one connection).
+        """
+        interval = poll_interval or self.CONTROL_POLL_INTERVAL
+        task = asyncio.ensure_future(coro)
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=interval)
+                if task in done:
+                    return task.result()
+                async with async_session() as probe:
+                    ctrl = (
+                        await probe.execute(
+                            select(ExtractionRun.control).where(ExtractionRun.id == run_id)
+                        )
+                    ).scalar_one_or_none()
+                if ctrl:
+                    raise RunControlSignal(ctrl)
+        finally:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
     async def _scrape_via_browserless(
         self,
         db: AsyncSession,
@@ -2379,8 +2420,14 @@ class FirecrawlService:
             # it. Uses its own sessions so progress is independent of this run's
             # transaction.
             checkpoint = TocBuildCheckpoint(async_session, source_id)
-            toc_objs = await profile.build_toc(
-                source.base_url, Scraper(self, checkpoint=checkpoint, auth_cookies=auth_cookies)
+            # Watched so a cancel/pause issued *during* discovery aborts the build
+            # instead of being ignored until this single long call returns.
+            toc_objs = await self._await_watching_control(
+                run_pk,
+                profile.build_toc(
+                    source.base_url,
+                    Scraper(self, checkpoint=checkpoint, auth_cookies=auth_cookies),
+                ),
             )
             toc_entries = [
                 {
