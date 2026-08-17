@@ -78,6 +78,38 @@ async def test_expand_toc_uses_long_session_timeout_and_returns_nodes():
 
 
 @pytest.mark.asyncio
+async def test_expand_salesforce_tree_passes_anchor_and_long_timeout():
+    cap = {}
+    nodes = [{"href": "articleView?id=a.htm", "title": "A", "level": 0},
+             {"href": "articleView?id=b.htm", "title": "B", "level": 1}]
+    resp = _FakeResp(body={"data": {"toc": nodes}})
+    client = BrowserlessClient(url="http://bl:3000", token="tok", wait_ms=9000)
+    out = await client.expand_salesforce_tree(
+        "https://help.salesforce.com/s/articleView?id=a.htm&type=5",
+        anchor_id="a.htm", client=_FakeClient(resp, cap),
+    )
+    # Long session timeout via ?timeout=, token header-only, anchor + wait passed.
+    assert "?timeout=" in cap["url"] and "tok" not in cap["url"]
+    assert cap["headers"] == {"Authorization": "Bearer tok"}
+    assert cap["json"]["context"]["anchorId"] == "a.htm"
+    assert cap["json"]["context"]["waitMs"] == 9000
+    assert out == nodes
+
+
+def test_salesforce_tree_snippet_targets_slds_tree_not_treeitem():
+    # The xcloud tree dropped role="treeitem"; the expander must key off the
+    # SLDS tree markup (ul.tree / .slds-tree__item / aria-expanded toggles) and
+    # scope to the anchor article id.
+    from app.services.browserless import _SF_TREE_EXPAND_CODE
+
+    assert "ul.tree" in _SF_TREE_EXPAND_CODE
+    assert ".slds-tree__item" in _SF_TREE_EXPAND_CODE
+    assert "aria-expanded" in _SF_TREE_EXPAND_CODE
+    assert "anchorId" in _SF_TREE_EXPAND_CODE
+    assert "role" not in _SF_TREE_EXPAND_CODE  # no longer relies on role="treeitem"
+
+
+@pytest.mark.asyncio
 async def test_render_raises_on_non_dict_payload():
     cap = {}
     resp = _FakeResp(body=["not", "a", "dict"])
