@@ -109,6 +109,48 @@ def test_salesforce_tree_snippet_targets_slds_tree_not_treeitem():
     assert "role" not in _SF_TREE_EXPAND_CODE  # no longer relies on role="treeitem"
 
 
+def test_salesforce_tree_uses_data_is_link_as_leaf_test():
+    # Every <li> in the tree (leaves included) carries a button[aria-expanded], so
+    # the toggle can't be the parent test — data-is-link marks a leaf. Regression:
+    # clicking all 452 leaves and polling 6s each took ~45min and blew the session.
+    from app.services.browserless import _SF_TREE_EXPAND_CODE
+
+    assert "data-is-link" in _SF_TREE_EXPAND_CODE
+    # The walk must be able to descend without clicking (children are CSS-collapsed,
+    # already in the DOM) and must bound itself.
+    assert "childUlOf" in _SF_TREE_EXPAND_CODE
+    assert "budgetMs" in _SF_TREE_EXPAND_CODE
+    assert "truncated" in _SF_TREE_EXPAND_CODE
+
+
+@pytest.mark.asyncio
+async def test_expand_salesforce_tree_raises_on_truncation():
+    # A budget overrun must fail loudly, never return a partial TOC (a short TOC
+    # reads as a shrunken doc set and would mass-remove articles).
+    cap = {}
+    resp = _FakeResp(body={"data": {"toc": [{"href": "articleView?id=a.htm", "title": "A", "level": 0}],
+                                    "truncated": True, "clicks": 3}})
+    client = BrowserlessClient(url="http://bl:3000", token="tok")
+    with pytest.raises(BrowserlessError, match="partial TOC"):
+        await client.expand_salesforce_tree("https://help.salesforce.com/s/articleView?id=a.htm",
+                                           anchor_id="a.htm", client=_FakeClient(resp, cap))
+
+
+@pytest.mark.asyncio
+async def test_expand_salesforce_tree_passes_budget_under_session_timeout():
+    cap = {}
+    resp = _FakeResp(body={"data": {"toc": [], "truncated": False, "clicks": 0}})
+    client = BrowserlessClient(url="http://bl:3000", token="tok")
+    await client.expand_salesforce_tree("https://help.salesforce.com/s/articleView?id=a.htm",
+                                       anchor_id="a.htm", client=_FakeClient(resp, cap))
+    from app.core.config import settings
+    budget = cap["json"]["context"]["budgetMs"]
+    # Budget must leave headroom inside the Browserless session, so the walk's own
+    # cap trips before the session 408s (which the retry logic would amplify ×3).
+    assert budget < settings.browserless_toc_timeout_ms
+    assert budget >= 60_000
+
+
 @pytest.mark.asyncio
 async def test_render_raises_on_non_dict_payload():
     cap = {}

@@ -339,23 +339,43 @@ export default async function ({ page, context }) {
 """
 
 
-# Browserless /function that expands a Salesforce Help (xcloud) SLDS nav tree and
-# returns its ordered nodes. The newer "xcloud" tree renders as
+# Browserless /function that reads a Salesforce Help (xcloud) SLDS nav tree and
+# returns its ordered nodes. The tree renders as
 # ``ul.tree > li[aria-level] > div.slds-tree__item > (button[aria-expanded], a)``
-# with NO ``role="treeitem"`` (the old fingerprint), and it is **lazy**: a
-# collapsed parent's child ``<ul>`` is not mounted until its toggle is clicked.
+# with NO ``role="treeitem"`` (the pre-xcloud fingerprint).
+#
+# The tree is **CSS-collapsed, not lazy**: a collapsed parent's child ``<ul>`` is
+# already server-rendered in the DOM, just visually hidden. Measured live on both
+# doc sets: xcloud 814 nodes / 164 parents and platform ("Own") 537 nodes / 85
+# parents — in both, *every* parent already had its children mounted
+# (``unmountedParents == 0``). So the walk needs **no clicking at all**.
+#
+# Crucially, **every** ``<li>`` carries a ``button[aria-expanded]`` — leaves get
+# one too, with a CSS-hidden chevron — so "has a toggle" is NOT a parent test.
+# The reliable discriminator is the ``data-is-link`` attribute: it marks a leaf
+# (verified: 452/452 and 650/650 ``data-is-link`` nodes have no children, and
+# every non-``data-is-link`` node has children). Treating leaves as parents is
+# what made this pathological: clicking each leaf then polling for children that
+# never arrive cost ~6s × 452 leaves ≈ 45min for "Own", overrunning the 30-min
+# Browserless session cap → 408 → transient retry ×3.
+#
+# A single bounded click remains as a safety net for the case Salesforce *does*
+# lazy-mount a branch: only for a genuine parent (no ``data-is-link``) whose child
+# ``<ul>`` is actually absent, with a short poll. In-page ``el.click()`` (not
+# ``page.click``) so below-the-fold toggles fire.
 #
 # ``anchorId`` (an ``id=<KEY>`` article key) scopes the walk to a single subtree:
 # we locate the ``<li>`` whose direct link is that article and emit only it plus
 # its descendants (the caller's requirement: "the children of this page, not its
-# siblings"). Without an anchor we walk the whole ``ul.tree``. Expansion runs
-# entirely in-page (one ``page.evaluate``): depth-first, click each collapsed
-# toggle, poll for the lazily-mounted child ``<ul>``, recurse. In-page
-# ``el.click()`` (not ``page.click``) so below-the-fold toggles fire, matching the
-# other lazy-tree crawlers. Depth is 0-based relative to the anchor.
+# siblings"). Without an anchor we walk the whole ``ul.tree``. Depth is 0-based
+# relative to the anchor.
+#
+# ``budgetMs`` hard-caps the in-page walk and sets ``truncated`` when hit; the
+# caller raises rather than returning a partial tree, so a truncated TOC can never
+# be mistaken for a shrunken doc set (which would mass-remove articles).
 _SF_TREE_EXPAND_CODE = r"""
 export default async function ({ page, context }) {
-  const { url, anchorId, waitMs } = context;
+  const { url, anchorId, waitMs, budgetMs } = context;
   const authState = context.authState;
   if (authState) {
     if (authState.cookies && authState.cookies.length) await page.setCookie(...authState.cookies);
@@ -370,7 +390,9 @@ export default async function ({ page, context }) {
   await new Promise(r => setTimeout(r, waitMs || 9000));
   try { await page.waitForSelector('ul.tree', { timeout: 30000 }); } catch (e) {}
 
-  const toc = await page.evaluate(async (anchorId) => {
+  const result = await page.evaluate(async (cfg) => {
+    const { anchorId, budgetMs } = cfg;
+    const deadline = Date.now() + (budgetMs || 600000);
     function* walk(root) {
       const els = root.querySelectorAll('*');
       for (const el of els) { yield el; if (el.shadowRoot) yield* walk(el.shadowRoot); }
@@ -384,20 +406,28 @@ export default async function ({ page, context }) {
       const m = ARTICLE_ID_RE.exec(a.getAttribute('href') || '');
       return m ? m[1] : null;
     };
-
-    // Wait for a collapsed node's child <ul> to lazily mount after a toggle click.
-    async function waitChildUl(li) {
-      for (let i = 0; i < 40; i++) {
-        const ul = [...li.children].find(c => c.tagName === 'UL');
-        if (ul && [...ul.children].some(c => c.tagName === 'LI')) return ul;
-        await sleep(150);
+    // A child <ul> only counts once it actually holds <li> children.
+    const childUlOf = (li) => {
+      const ul = [...li.children].find(c => c.tagName === 'UL');
+      return (ul && [...ul.children].some(c => c.tagName === 'LI')) ? ul : null;
+    };
+    // Safety net only: poll briefly for a genuine parent's children to mount.
+    async function waitChildUl(li, budget) {
+      const until = Date.now() + budget;
+      while (Date.now() < until) {
+        const ul = childUlOf(li);
+        if (ul) return ul;
+        await sleep(100);
       }
-      return [...li.children].find(c => c.tagName === 'UL') || null;
+      return childUlOf(li);
     }
 
     const out = [];
     const seen = new Set();  // article keys, dedup (an article can repeat in the tree)
+    let clicks = 0;
+    let truncated = false;
     async function collect(li, depth) {
+      if (Date.now() > deadline) { truncated = true; return; }
       const item = li.querySelector(':scope > .slds-tree__item');
       const a = item ? item.querySelector(':scope > a[href]') : null;
       const href = a ? a.getAttribute('href') : null;
@@ -407,18 +437,25 @@ export default async function ({ page, context }) {
         seen.add(aid);
         out.push({ title, href, level: depth });
       }
-      const btn = item ? item.querySelector(':scope > button[aria-expanded]') : null;
-      if (btn) {
-        if (btn.getAttribute('aria-expanded') !== 'true') {
-          try { btn.scrollIntoView({ block: 'center' }); btn.click(); } catch (e) {}
-          await waitChildUl(li);
+      // data-is-link marks a LEAF. Every <li> (leaves included) has a
+      // button[aria-expanded], so never use the button as the parent test —
+      // clicking leaves and waiting for children is what blew the session budget.
+      if (li.hasAttribute('data-is-link')) return;
+
+      // Normal path: children are already server-rendered, just CSS-collapsed.
+      let childUl = childUlOf(li);
+      if (!childUl) {
+        // Genuine parent with nothing mounted — the only case worth a click.
+        const btn = item ? item.querySelector(':scope > button[aria-expanded]') : null;
+        if (btn && btn.getAttribute('aria-expanded') !== 'true') {
+          try { btn.scrollIntoView({ block: 'center' }); btn.click(); clicks++; } catch (e) {}
+          childUl = await waitChildUl(li, 2000);
         }
-        const childUl = [...li.children].find(c => c.tagName === 'UL');
-        if (childUl) {
-          for (const cl of [...childUl.children].filter(c => c.tagName === 'LI')) {
-            await collect(cl, depth + 1);
-          }
-        }
+      }
+      if (!childUl) return;
+      for (const cl of [...childUl.children].filter(c => c.tagName === 'LI')) {
+        await collect(cl, depth + 1);
+        if (truncated) return;
       }
     }
 
@@ -438,13 +475,16 @@ export default async function ({ page, context }) {
         if (el.tagName === 'UL' && (el.className || '').split(/\s+/).includes('tree')) { rootUl = el; break; }
       }
       if (rootUl) {
-        for (const li of [...rootUl.children].filter(c => c.tagName === 'LI')) await collect(li, 0);
+        for (const li of [...rootUl.children].filter(c => c.tagName === 'LI')) {
+          await collect(li, 0);
+          if (truncated) break;
+        }
       }
     }
-    return out;
-  }, anchorId || null);
+    return { toc: out, clicks, truncated };
+  }, { anchorId: anchorId || null, budgetMs: budgetMs || 600000 });
 
-  return { data: { toc }, type: 'application/json' };
+  return { data: result, type: 'application/json' };
 }
 """
 
@@ -706,24 +746,39 @@ class BrowserlessClient:
     async def expand_salesforce_tree(self, target_url: str, anchor_id: str | None = None,
                                      client: httpx.AsyncClient | None = None,
                                      auth_state: dict | None = None) -> list[dict]:
-        """Expand a Salesforce Help (xcloud) SLDS nav tree and return ordered nodes.
+        """Read a Salesforce Help (xcloud) SLDS nav tree and return ordered nodes.
 
         Each node is ``{href, title, level}`` (level 0-based). ``anchor_id`` scopes
         the walk to the subtree rooted at that article key (``id=<KEY>``), emitting
         only it and its descendants; without it, the whole ``ul.tree`` is walked.
-        The tree is lazy (children mount on toggle click), so this uses the long
-        TOC session timeout. ``auth_state`` injects cookies/localStorage."""
+        The tree is CSS-collapsed rather than lazy, so this is a DOM walk that
+        normally clicks nothing. ``auth_state`` injects cookies/localStorage.
+
+        The in-page walk is capped by a budget well under the Browserless session
+        timeout; if it is hit we raise rather than return a partial tree, so a
+        truncated TOC can't be mistaken for a shrunken doc set (mass removal)."""
         timeout_ms = settings.browserless_toc_timeout_ms
+        # Leave headroom for navigation + hydration inside the same session.
+        budget_ms = max(60_000, timeout_ms - 120_000)
         data = await self._post(
             _SF_TREE_EXPAND_CODE,
             {"url": target_url, "anchorId": anchor_id, "waitMs": self.wait_ms,
-             "authState": auth_state},
+             "budgetMs": budget_ms, "authState": auth_state},
             target_url, client,
             session_timeout_ms=timeout_ms,
             http_timeout_s=timeout_ms / 1000 + 30,
         )
         toc = data.get("toc")
-        return toc if isinstance(toc, list) else []
+        toc = toc if isinstance(toc, list) else []
+        if data.get("truncated"):
+            raise BrowserlessError(
+                f"Salesforce tree walk hit its {budget_ms}ms budget for {target_url} "
+                f"after {len(toc)} nodes — refusing to return a partial TOC"
+            )
+        if data.get("clicks"):
+            logger.info("Salesforce tree walk for %s needed %s expand click(s)",
+                        target_url, data.get("clicks"))
+        return toc
 
     async def warmup_render(self, target_url: str, selector: str | None = None,
                             warmup_url: str | None = None, wait_ms: int | None = None,
