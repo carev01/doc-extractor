@@ -62,6 +62,16 @@ class Scraper:
             url, section_id=section_id, auth_state=self._auth_state
         )
 
+    async def expand_salesforce_tree(self, url: str, anchor_id: str | None = None) -> list[dict]:
+        """Expand a Salesforce Help (xcloud) SLDS nav tree via Browserless and
+        return ordered ``{href, title, level}`` nodes. ``anchor_id`` scopes to the
+        subtree rooted at that article key (its descendants only); the tree is
+        lazy (children mount on toggle click)."""
+        from app.services.browserless import browserless_client
+        return await browserless_client.expand_salesforce_tree(
+            url, anchor_id=anchor_id, auth_state=self._auth_state
+        )
+
     async def gitbook_sidebars(self, urls: list[str]) -> dict[str, str]:
         """Visit each URL via Browserless and return {url: table-of-contents HTML}
         — for reconstructing a GitBook tree whose sidebar is contextual."""
@@ -105,6 +115,7 @@ class FakeScraper:
         render_by_url: dict[str, dict] | None = None,
         rendered_html_by_url: dict[str, str] | None = None,
         toc_by_url: dict[str, list] | None = None,
+        salesforce_tree_by_url: dict[str, list] | None = None,
         gitbook_sidebars_by_url: dict[str, str] | None = None,
         docusaurus_sidebar_by_url: dict[str, str] | None = None,
         collapsible_sidebar_by_url: dict[str, str] | None = None,
@@ -117,6 +128,7 @@ class FakeScraper:
         self._render = render_by_url or {}
         self._rendered_html = rendered_html_by_url or {}
         self._toc = toc_by_url or {}
+        self._salesforce_tree = salesforce_tree_by_url or {}
         self._gitbook = gitbook_sidebars_by_url or {}
         self._docusaurus = docusaurus_sidebar_by_url or {}
         self._collapsible = collapsible_sidebar_by_url or {}
@@ -144,6 +156,10 @@ class FakeScraper:
         # Keyed by section_id when given (so the full-mode "__TOP__" + per-section
         # orchestration is testable), else by url.
         return self._toc.get(section_id if section_id else url, [])
+
+    async def expand_salesforce_tree(self, url: str, anchor_id: str | None = None) -> list[dict]:
+        # Keyed by anchor_id when given (so subtree-scoping is testable), else url.
+        return self._salesforce_tree.get(anchor_id if anchor_id else url, [])
 
     async def gitbook_sidebars(self, urls: list[str]) -> dict[str, str]:
         return {u: self._gitbook[u] for u in urls if u in self._gitbook}

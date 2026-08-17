@@ -1,9 +1,11 @@
 """Tests for the Salesforce Help extraction profile.
 
 Salesforce Help renders its nav tree and article body inside shadow DOM
-(Lightning Web Components), so the profile builds its TOC from the structured
-data Browserless extracts via ``scraper.render`` ({toc:[{title,href,level}]}),
-not from Firecrawl HTML. detect() still keys off the raw page markers.
+(Lightning Web Components). The newer "xcloud" tree is also lazy (children mount
+on toggle click) and no longer carries ``role="treeitem"``, so the profile builds
+its TOC from ``scraper.expand_salesforce_tree`` — a depth-first Browserless
+expansion that returns ``{title, href, level}`` (0-based level) scoped to the
+subtree rooted at the source URL. detect() still keys off the raw page markers.
 """
 
 import os
@@ -26,28 +28,25 @@ OTHER_FIXTURES = [
     "confluence.html",
 ]
 
-ROOT = "https://help.salesforce.com/s/articleView?id=platform.own_from_salesforce.htm&type=5"
+ANCHOR_ID = "platform.own_from_salesforce.htm"
+ROOT = f"https://help.salesforce.com/s/articleView?id={ANCHOR_ID}&type=5"
 
 
 def _av(article_id: str) -> str:
     return f"articleView?id={article_id}&type=5"
 
 
-# Canned Browserless render result mirroring the real shadow-DOM tree: a root
-# (aria-level 1), the active article repeated at the top (dedup), and nested
-# children at deeper aria-levels.
-RENDER = {
-    ROOT: {
-        "toc": [
-            {"title": "Own from Salesforce", "href": _av("platform.own_from_salesforce.htm"), "level": 1},
-            # Active article repeats at the top of the tree — must dedup away.
-            {"title": "Own from Salesforce", "href": _av("platform.own_from_salesforce.htm"), "level": 1},
-            {"title": "Own from Salesforce Administration", "href": _av("platform.own_admin.htm"), "level": 2},
-            {"title": "Manage API Tokens", "href": _av("platform.own_api_tokens.htm"), "level": 3},
-            {"title": "Backups", "href": _av("platform.own_backups.htm"), "level": 2},
-        ]
-    }
-}
+# Canned Browserless subtree-expansion result mirroring the real xcloud tree:
+# the anchor page at depth 0 (repeated once at the top — must dedup), then nested
+# descendants at deeper depths. Levels are already 0-based (relative to anchor).
+TREE = [
+    {"title": "Own from Salesforce", "href": _av("platform.own_from_salesforce.htm"), "level": 0},
+    # Anchor repeats at the top of its own subtree — must dedup away.
+    {"title": "Own from Salesforce", "href": _av("platform.own_from_salesforce.htm"), "level": 0},
+    {"title": "Own from Salesforce Administration", "href": _av("platform.own_admin.htm"), "level": 1},
+    {"title": "Manage API Tokens", "href": _av("platform.own_api_tokens.htm"), "level": 2},
+    {"title": "Backups", "href": _av("platform.own_backups.htm"), "level": 1},
+]
 EXPECTED_ENTRY_COUNT = 4  # 5 raw items, 1 duplicate
 
 
@@ -56,7 +55,9 @@ def _read(path: str) -> str:
 
 
 def _scraper():
-    return FakeScraper({}, render_by_url=RENDER)
+    # Keyed by anchor id: proves the profile derives the anchor from the URL and
+    # scopes the expansion to that subtree.
+    return FakeScraper({}, salesforce_tree_by_url={ANCHOR_ID: TREE})
 
 
 # ── Detection ──────────────────────────────────────────────────────────────
@@ -89,7 +90,7 @@ def test_uses_browserless_render_engine():
     assert SalesforceProfile().render_engine == "browserless"
 
 
-# ── TOC building (from Browserless render data) ──────────────────────────────
+# ── TOC building (from Browserless subtree expansion) ────────────────────────
 
 @pytest.mark.asyncio
 async def test_build_toc_dedup_and_count():
@@ -102,9 +103,9 @@ async def test_build_toc_levels_and_titles():
     toc = await SalesforceProfile().build_toc(ROOT, _scraper())
     got = [(e.title, e.level) for e in toc]
     assert got == [
-        ("Own from Salesforce", 0),                 # aria-level 1 -> 0
-        ("Own from Salesforce Administration", 1),  # aria-level 2 -> 1
-        ("Manage API Tokens", 2),                   # aria-level 3 -> 2
+        ("Own from Salesforce", 0),                 # anchor at depth 0
+        ("Own from Salesforce Administration", 1),
+        ("Manage API Tokens", 2),
         ("Backups", 1),
     ]
 
@@ -135,6 +136,17 @@ async def test_build_toc_absolute_articleview_urls_no_dup_ids():
 
 
 @pytest.mark.asyncio
-async def test_build_toc_empty_render_returns_empty():
-    toc = await SalesforceProfile().build_toc(ROOT, FakeScraper({}, render_by_url={ROOT: {}}))
+async def test_build_toc_scopes_to_subtree_anchor():
+    # The profile must derive the anchor key from the source URL and request only
+    # that subtree — the tree is keyed by anchor id, so an unkeyed url lookup
+    # would come back empty.
+    scraper = FakeScraper({}, salesforce_tree_by_url={ANCHOR_ID: TREE})
+    toc = await SalesforceProfile().build_toc(ROOT, scraper)
+    assert [e.title for e in toc][0] == "Own from Salesforce"
+    assert len(toc) == EXPECTED_ENTRY_COUNT
+
+
+@pytest.mark.asyncio
+async def test_build_toc_empty_expansion_returns_empty():
+    toc = await SalesforceProfile().build_toc(ROOT, FakeScraper({}, salesforce_tree_by_url={ANCHOR_ID: []}))
     assert toc == []

@@ -339,6 +339,116 @@ export default async function ({ page, context }) {
 """
 
 
+# Browserless /function that expands a Salesforce Help (xcloud) SLDS nav tree and
+# returns its ordered nodes. The newer "xcloud" tree renders as
+# ``ul.tree > li[aria-level] > div.slds-tree__item > (button[aria-expanded], a)``
+# with NO ``role="treeitem"`` (the old fingerprint), and it is **lazy**: a
+# collapsed parent's child ``<ul>`` is not mounted until its toggle is clicked.
+#
+# ``anchorId`` (an ``id=<KEY>`` article key) scopes the walk to a single subtree:
+# we locate the ``<li>`` whose direct link is that article and emit only it plus
+# its descendants (the caller's requirement: "the children of this page, not its
+# siblings"). Without an anchor we walk the whole ``ul.tree``. Expansion runs
+# entirely in-page (one ``page.evaluate``): depth-first, click each collapsed
+# toggle, poll for the lazily-mounted child ``<ul>``, recurse. In-page
+# ``el.click()`` (not ``page.click``) so below-the-fold toggles fire, matching the
+# other lazy-tree crawlers. Depth is 0-based relative to the anchor.
+_SF_TREE_EXPAND_CODE = r"""
+export default async function ({ page, context }) {
+  const { url, anchorId, waitMs } = context;
+  const authState = context.authState;
+  if (authState) {
+    if (authState.cookies && authState.cookies.length) await page.setCookie(...authState.cookies);
+    if (authState.origins) {
+      for (const o of authState.origins) {
+        await page.goto(o.origin, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.evaluate((items) => { for (const [k, v] of items) localStorage.setItem(k, v); }, o.localStorage || []);
+      }
+    }
+  }
+  await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+  await new Promise(r => setTimeout(r, waitMs || 9000));
+  try { await page.waitForSelector('ul.tree', { timeout: 30000 }); } catch (e) {}
+
+  const toc = await page.evaluate(async (anchorId) => {
+    function* walk(root) {
+      const els = root.querySelectorAll('*');
+      for (const el of els) { yield el; if (el.shadowRoot) yield* walk(el.shadowRoot); }
+    }
+    const ARTICLE_ID_RE = /[?&]id=([^&]+)/;
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const articleId = (li) => {
+      const item = li.querySelector(':scope > .slds-tree__item');
+      const a = item ? item.querySelector(':scope > a[href]') : null;
+      if (!a) return null;
+      const m = ARTICLE_ID_RE.exec(a.getAttribute('href') || '');
+      return m ? m[1] : null;
+    };
+
+    // Wait for a collapsed node's child <ul> to lazily mount after a toggle click.
+    async function waitChildUl(li) {
+      for (let i = 0; i < 40; i++) {
+        const ul = [...li.children].find(c => c.tagName === 'UL');
+        if (ul && [...ul.children].some(c => c.tagName === 'LI')) return ul;
+        await sleep(150);
+      }
+      return [...li.children].find(c => c.tagName === 'UL') || null;
+    }
+
+    const out = [];
+    const seen = new Set();  // article keys, dedup (an article can repeat in the tree)
+    async function collect(li, depth) {
+      const item = li.querySelector(':scope > .slds-tree__item');
+      const a = item ? item.querySelector(':scope > a[href]') : null;
+      const href = a ? a.getAttribute('href') : null;
+      const aid = articleId(li);
+      const title = a ? (a.textContent || '').trim() : (li.getAttribute('title') || '').trim();
+      if (href && aid && title && !seen.has(aid)) {
+        seen.add(aid);
+        out.push({ title, href, level: depth });
+      }
+      const btn = item ? item.querySelector(':scope > button[aria-expanded]') : null;
+      if (btn) {
+        if (btn.getAttribute('aria-expanded') !== 'true') {
+          try { btn.scrollIntoView({ block: 'center' }); btn.click(); } catch (e) {}
+          await waitChildUl(li);
+        }
+        const childUl = [...li.children].find(c => c.tagName === 'UL');
+        if (childUl) {
+          for (const cl of [...childUl.children].filter(c => c.tagName === 'LI')) {
+            await collect(cl, depth + 1);
+          }
+        }
+      }
+    }
+
+    if (anchorId) {
+      // Subtree mode: capture only the anchor page + its descendants. If the
+      // anchor isn't in the tree (unexpected markup change), return empty rather
+      // than silently falling back to the whole doc set.
+      let anchor = null;
+      for (const el of walk(document)) {
+        if (el.tagName === 'LI' && el.hasAttribute('aria-level') && articleId(el) === anchorId) { anchor = el; break; }
+      }
+      if (anchor) await collect(anchor, 0);
+    } else {
+      // Whole-tree mode (source URL carries no article key): walk every top node.
+      let rootUl = null;
+      for (const el of walk(document)) {
+        if (el.tagName === 'UL' && (el.className || '').split(/\s+/).includes('tree')) { rootUl = el; break; }
+      }
+      if (rootUl) {
+        for (const li of [...rootUl.children].filter(c => c.tagName === 'LI')) await collect(li, 0);
+      }
+    }
+    return out;
+  }, anchorId || null);
+
+  return { data: { toc }, type: 'application/json' };
+}
+"""
+
+
 # Browserless /function that performs a **warm-up navigation** before fetching
 # the target, defeating WAFs that reject a cold hit (e.g. a support site behind
 # Akamai returns "Access Denied" on a direct scrape). It sets a realistic desktop UA,
@@ -592,6 +702,28 @@ class BrowserlessClient:
             http_timeout_s=timeout_ms / 1000 + 30,
         )
         return data.get("html", "")
+
+    async def expand_salesforce_tree(self, target_url: str, anchor_id: str | None = None,
+                                     client: httpx.AsyncClient | None = None,
+                                     auth_state: dict | None = None) -> list[dict]:
+        """Expand a Salesforce Help (xcloud) SLDS nav tree and return ordered nodes.
+
+        Each node is ``{href, title, level}`` (level 0-based). ``anchor_id`` scopes
+        the walk to the subtree rooted at that article key (``id=<KEY>``), emitting
+        only it and its descendants; without it, the whole ``ul.tree`` is walked.
+        The tree is lazy (children mount on toggle click), so this uses the long
+        TOC session timeout. ``auth_state`` injects cookies/localStorage."""
+        timeout_ms = settings.browserless_toc_timeout_ms
+        data = await self._post(
+            _SF_TREE_EXPAND_CODE,
+            {"url": target_url, "anchorId": anchor_id, "waitMs": self.wait_ms,
+             "authState": auth_state},
+            target_url, client,
+            session_timeout_ms=timeout_ms,
+            http_timeout_s=timeout_ms / 1000 + 30,
+        )
+        toc = data.get("toc")
+        return toc if isinstance(toc, list) else []
 
     async def warmup_render(self, target_url: str, selector: str | None = None,
                             warmup_url: str | None = None, wait_ms: int | None = None,

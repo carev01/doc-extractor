@@ -1,21 +1,32 @@
 """Salesforce Help documentation profile.
 
 Salesforce Help (help.salesforce.com) is a Lightning/Experience-Cloud SPA.
-The doc-set TOC renders as an SLDS tree:
+The doc-set TOC renders as an SLDS tree. In the newer "xcloud" experience the
+markup is:
 
     <ul class="tree opened-tree">
-        <li role="treeitem" aria-level="1"> … </li>
-        <li role="treeitem" aria-level="2"> … </li>
+        <li aria-level="1" title="…">
+            <div class="slds-tree__item">
+                <button aria-expanded="true|false">…</button>   (parents only)
+                <a href="…articleView?id=<KEY>&type=5">Title</a>
+            </div>
+            <ul class="opened-tree"> … child <li> … </ul>          (when expanded)
+        </li>
         …
     </ul>
 
-Each ``<li>`` has an ``aria-level`` attribute (values 1–8) encoding depth.
-All items link to ``…articleView?id=<KEY>.htm&type=5``.
+Two things changed from the older tree and broke the previous extractor:
+1. ``<li>`` no longer carries ``role="treeitem"`` (it was the sole fingerprint),
+   only ``aria-level``.
+2. The tree is **lazy**: a collapsed parent's child ``<ul>`` is not in the DOM
+   until its toggle is clicked. A single render therefore exposes only the branch
+   already expanded to the active page.
 
-The same article can appear multiple times in the rendered tree (e.g. the
-currently active article appears at the top).  Deduplication is done by the
-``id=<KEY>`` query-parameter value, preserving the first occurrence (document
-order).
+So TOC discovery now depth-first *expands* the tree via Browserless
+(``expand_salesforce_tree``) rather than reading a one-shot render. The source
+URL is the **subtree anchor**: we capture that page and its descendants only,
+identified by the ``id=<KEY>`` query param. The same article can appear multiple
+times in the tree, so it is deduplicated by key, keeping the first occurrence.
 
 Content body is in ``.slds-text-longform``; the page title is in ``<h1>``.
 
@@ -61,17 +72,22 @@ class SalesforceProfile:
         return "slds-" in root_html and "articleView" in root_html
 
     async def build_toc(self, root_url: str, scraper) -> list[TocEntry]:
-        """Build the ordered TOC from the shadow-DOM nav tree via Browserless.
+        """Build the ordered TOC from the lazy SLDS nav tree via Browserless.
 
-        ``scraper.render`` returns the SLDS tree items (extracted through shadow
-        DOM) as ``{title, href, level}`` in document order. We:
-        1. Deduplicate by article id (``id=<KEY>`` query param), keeping the
-           first occurrence (the active article repeats at the top).
-        2. Convert aria-level (1-based) to a 0-based depth.
-        3. Assign parent_url via a level stack.
+        The source URL is treated as the **subtree anchor**: we capture that page
+        plus its descendants, but not its siblings or the parent chain (the
+        caller's requirement — "only the TOC below this URL"). The article key is
+        the ``id=<KEY>`` query param; when the URL carries no key (a doc-set root),
+        the whole ``ul.tree`` is walked.
+
+        ``scraper.expand_salesforce_tree`` depth-first expands the (lazy) tree and
+        returns ``{title, href, level}`` with a 0-based depth relative to the
+        anchor. We then:
+        1. Deduplicate by article id, keeping the first occurrence.
+        2. Assign parent_url via a level stack.
         """
-        data = await scraper.render(root_url)
-        items = (data or {}).get("toc") or []
+        anchor_id = _article_id(root_url)
+        items = await scraper.expand_salesforce_tree(root_url, anchor_id)
 
         entries: list[TocEntry] = []
         seen_ids: set[str] = set()          # article key strings
@@ -91,10 +107,9 @@ class SalesforceProfile:
             url = urljoin(root_url, href)
 
             try:
-                raw_level = int(item.get("level", 1))
+                level = max(0, int(item.get("level", 0)))
             except (ValueError, TypeError):
-                raw_level = 1
-            level = max(0, raw_level - 1)
+                level = 0
 
             parent_url: str | None = level_stack.get(level - 1) if level > 0 else None
             level_stack[level] = url
