@@ -80,6 +80,9 @@ async def test_data_uri_image_extracted_not_inlined(factory, tmp_path, monkeypat
         # the decoded bytes were written to the article's media dir
         art_dir = os.path.join(str(tmp_path), str(art.id))
         assert os.path.isdir(art_dir) and os.listdir(art_dir)
+        # …and the row records their real size, not the column default of 0.
+        on_disk = os.path.getsize(os.path.join(art_dir, imgs[0].local_filename))
+        assert imgs[0].file_size_bytes == on_disk > 0
 
 
 async def test_data_uri_example_in_prose_is_left_alone(factory, tmp_path, monkeypatch):
