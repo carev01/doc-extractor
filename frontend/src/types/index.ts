@@ -128,6 +128,10 @@ export interface ExtractionRun {
   escalation_warning?: boolean;
   /** Completed run with pages blocked by bot protection — eligible for retry. */
   blocked_warning?: boolean;
+  /** Failed on the TOC-collapse data-loss guard — eligible for "Extract anyway". */
+  toc_collapsed?: boolean;
+  /** This run was triggered with the TOC-collapse guard overridden. */
+  allow_toc_collapse?: boolean;
   blocked_count?: number;
   /** The blocked pages themselves — only populated by the single-run detail
    *  endpoint (GET /runs/{id}), not the all-runs listing. */

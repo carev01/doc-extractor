@@ -26,7 +26,9 @@ from app.schemas.export import ExtractionTriggerResponse
 from app.services.auth.session import session_expired
 from app.services.diffing import compute_unified_diff
 from app.services import pdf_cache
-from app.services.firecrawl import compute_content_hash, firecrawl_service
+from app.services.firecrawl import (
+    TOC_COLLAPSE_PREFIX, compute_content_hash, firecrawl_service,
+)
 from app.services.queue import enqueue_run, ActiveRunExists
 from app.services.sanitize import sanitize_markdown
 
@@ -35,10 +37,22 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/extraction", tags=["extraction"])
 
 
+def _is_toc_collapse(run: ExtractionRun) -> bool:
+    """True when this run failed the TOC-collapse guard, so the UI can offer the
+    one-click override. Keyed off the message prefix rather than a failure-kind
+    column: the guard is the only raiser of that prefix, and the message itself
+    already has to carry the numbers the operator needs to make the call."""
+    return bool(
+        run.status == RunStatus.FAILED
+        and (run.error_message or "").startswith(TOC_COLLAPSE_PREFIX)
+    )
+
+
 @router.post("/trigger/{source_id}", response_model=ExtractionTriggerResponse)
 async def trigger_extraction(
     source_id: uuid.UUID,
     force: bool = False,
+    allow_toc_collapse: bool = False,
     db: AsyncSession = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
@@ -50,6 +64,11 @@ async def trigger_extraction(
     source it bypasses the byte-identical fast path so the document is re-converted
     and re-segmented (use this to re-apply a conversion/segmentation fix to a PDF
     whose bytes haven't changed).
+
+    ``allow_toc_collapse=true`` overrides the TOC-collapse data-loss guard for this
+    run only, so a doc set that genuinely shrank can be extracted (pages absent
+    from the new TOC are then marked removed). Use after reading the guard's
+    numbers — it is deliberately not a setting.
     """
     await authorize_source(db, principal, source_id, write=True)
 
@@ -72,7 +91,11 @@ async def trigger_extraction(
             )
 
     try:
-        run = await enqueue_run(db, source_id, trigger="force" if force else "manual")
+        run = await enqueue_run(
+            db, source_id,
+            trigger="force" if force else "manual",
+            allow_toc_collapse=allow_toc_collapse,
+        )
     except ActiveRunExists:
         raise HTTPException(
             status_code=409,
@@ -348,6 +371,9 @@ async def get_run_status(
         "kind": run.kind,
         "escalation_warning": bool(run.escalation_pending),
         "blocked_warning": bool(run.blocked_pending),
+        # Failed on the TOC-collapse guard ⇒ the UI offers "Extract anyway".
+        "toc_collapsed": _is_toc_collapse(run),
+        "allow_toc_collapse": run.allow_toc_collapse,
         "blocked_count": len(run.blocked_pending) if run.blocked_pending else 0,
         # The blocked pages themselves (url + title) so the UI can list exactly
         # which pages were skipped, not just how many. Only on the single-run
@@ -434,6 +460,10 @@ async def list_runs(
                 # and a Retry-blocked-pages action.
                 "blocked_warning": bool(r.blocked_pending),
                 "blocked_count": len(r.blocked_pending) if r.blocked_pending else 0,
+                # Failed on the TOC-collapse guard ⇒ the UI offers "Extract anyway"
+                # (an override is only meaningful for this specific failure).
+                "toc_collapsed": _is_toc_collapse(r),
+                "allow_toc_collapse": r.allow_toc_collapse,
                 "current_phase": r.current_phase,
                 "firecrawl_job_id": r.firecrawl_job_id,
                 "articles_extracted": r.articles_extracted,

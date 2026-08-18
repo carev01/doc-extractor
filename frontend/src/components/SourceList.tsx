@@ -332,6 +332,11 @@ function SourceItem({
     activeRun?.status === "running" ||
     activeRun?.status === "pending";
 
+  // The *latest* run aborted on the TOC-collapse data-loss guard → offer a
+  // one-click override. Deliberately only the latest: once a later run succeeds
+  // (or is queued) the offer to bypass the guard disappears again.
+  const tocCollapsed = !!(activeRun ?? history[0])?.toc_collapsed;
+
   const loadHistory = useCallback(async () => {
     try {
       const data = await listRuns(source.id);
@@ -386,10 +391,10 @@ function SourceItem({
   // Clean up any timer on unmount.
   useEffect(() => stopPolling, [stopPolling]);
 
-  const handleExtract = async (force = false) => {
+  const handleExtract = async (force = false, allowTocCollapse = false) => {
     setItemError("");
     try {
-      const res = await triggerExtraction(source.id, force);
+      const res = await triggerExtraction(source.id, force, allowTocCollapse);
       setActiveRun(null);
       setRunId(res.run_id);
       onSourceChanged();
@@ -776,6 +781,33 @@ function SourceItem({
         >
           {isExtracting ? "Extracting..." : "Extract"}
         </button>
+        {tocCollapsed && (
+          <button
+            className="btn-secondary-sm"
+            title={
+              "The last run aborted: the rebuilt table of contents was far " +
+              "smaller than the previously-extracted set, which usually means " +
+              "scraping failed. Extract anyway if the doc set really did shrink."
+            }
+            disabled={isExtracting}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (
+                !confirm(
+                  "The safety guard stopped the last run because the new table " +
+                    "of contents was much smaller than what is already stored.\n\n" +
+                    "Extracting anyway will mark every stored page that is absent " +
+                    "from the new table of contents as removed. Only do this if " +
+                    "the documentation really did shrink.\n\nContinue?"
+                )
+              )
+                return;
+              handleExtract(false, true);
+            }}
+          >
+            Extract anyway
+          </button>
+        )}
         {source.source_type === "pdf" && (
           <button
             className="btn-secondary-sm"

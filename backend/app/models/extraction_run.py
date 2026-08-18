@@ -5,7 +5,8 @@ from datetime import datetime
 from enum import Enum
 
 from sqlalchemy import (
-    DateTime, Enum as SAEnum, ForeignKey, Index, Integer, String, Text, func, text,
+    Boolean, DateTime, Enum as SAEnum, ForeignKey, Index, Integer, String, Text,
+    func, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -81,6 +82,13 @@ class ExtractionRun(Base):
 
     # Product version captured at run time (NULL for non-versioned products).
     version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Per-run override of the TOC-collapse data-loss guard. Set only by an explicit
+    # "Extract anyway" trigger, so a genuinely-shrunken doc set (or a stale
+    # baseline) can be extracted without disabling the guard globally. One-shot: it
+    # lives on this run, so the next ordinary/scheduled run is protected again.
+    allow_toc_collapse: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
 
     articles_extracted: Mapped[int] = mapped_column(Integer, default=0)
     articles_total: Mapped[int] = mapped_column(Integer, default=0)

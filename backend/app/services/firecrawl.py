@@ -197,22 +197,52 @@ class RawContentScrapeError(Exception):
     """
 
 
+# Every TOC-collapse failure message starts with this, so the API can flag the
+# run as overridable ("Extract anyway") without a second failure-kind column.
+TOC_COLLAPSE_PREFIX = "TOC discovery collapsed"
+
+
 class TocCollapseError(Exception):
     """Raised when a run's rebuilt TOC is drastically smaller than the source's
     prior live-article count — TOC discovery almost certainly failed (overloaded
     Firecrawl/Browserless, empty nav, upstream change). Raised BEFORE the
     destructive TOC rebuild so extract_source's generic handler fails the run
     without wiping the previously-good content.
+
+    Overridable per run: trigger with ``allow_toc_collapse=true`` when the smaller
+    TOC is real (the upstream doc genuinely shrank) or the baseline is stale.
     """
 
 
-def _toc_collapsed(scrapable_total: int, prior_live: int, ratio: float, min_prior: int) -> bool:
+def _collapse_baseline(prior_live: int, last_ok_total: int | None) -> int:
+    """The page count to measure a rebuilt TOC against.
+
+    The live-article count alone is a poor baseline: it counts every live row,
+    including duplicates a *past* bug left behind. Arcserve "Agent for Linux
+    Guide" held 518 live articles for 259 distinct URLs (each page stored twice
+    after the pre-#189 raw_http path keyed pages by their literal-version URL), so
+    a healthy 255-page TOC read as 255 < 50% of 518 and every run aborted — the
+    guard blocking the very run that would have re-matched and retired the
+    duplicates.
+
+    The last successful extraction's ``articles_total`` is the honest "how many
+    pages did this doc have last time discovery worked" figure and is immune to
+    duplicate rows, so take whichever is *lower*: a real collapse (an empty nav
+    yielding 0–1 pages) trips against either, while neither a duplicated corpus
+    nor a stale run total can manufacture a false positive on its own.
+    """
+    if last_ok_total is None or last_ok_total <= 0:
+        return prior_live
+    return min(prior_live, last_ok_total)
+
+
+def _toc_collapsed(scrapable_total: int, baseline: int, ratio: float, min_prior: int) -> bool:
     """True when a rebuilt TOC looks catastrophically smaller than the prior
     corpus (data-loss guard). Only engages once the source had a meaningful prior
-    corpus (``prior_live >= min_prior``); tiny/new sources never trip it."""
-    if prior_live < min_prior:
+    corpus (``baseline >= min_prior``); tiny/new sources never trip it."""
+    if baseline < min_prior:
         return False
-    return scrapable_total < prior_live * ratio
+    return scrapable_total < baseline * ratio
 
 
 def _cookie_header(cookies: list[dict] | None) -> str | None:
@@ -2477,17 +2507,49 @@ class FirecrawlService:
                     .where(Article.source_id == source_id, Article.removed_at.is_(None))
                 )
             ).scalar() or 0
+            # Page count of the last extraction that actually completed. Only
+            # kind="extract" runs discover a TOC (escalate/enrich leave
+            # articles_total at 0), so restrict to those with a real total.
+            last_ok_total = (
+                await db.execute(
+                    select(ExtractionRun.articles_total)
+                    .where(
+                        ExtractionRun.source_id == source_id,
+                        ExtractionRun.id != run_pk,
+                        ExtractionRun.status == RunStatus.COMPLETED,
+                        ExtractionRun.kind == "extract",
+                        ExtractionRun.articles_total > 0,
+                    )
+                    .order_by(ExtractionRun.started_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            baseline = _collapse_baseline(prior_live, last_ok_total)
             if _toc_collapsed(
-                scrapable_total, prior_live,
+                scrapable_total, baseline,
                 settings.toc_collapse_min_ratio, settings.toc_collapse_min_prior,
             ):
-                raise TocCollapseError(
-                    f"TOC discovery collapsed for '{source.name}': found "
-                    f"{scrapable_total} scrapable page(s) vs {prior_live} previously "
-                    f"live (< {settings.toc_collapse_min_ratio:.0%}). Aborting before "
-                    f"any removal to avoid wiping good content — likely a scraper or "
-                    f"upstream (Firecrawl/Browserless) failure. Re-run when healthy."
-                )
+                if run.allow_toc_collapse:
+                    # Explicit per-run override: the operator has seen the numbers
+                    # and accepts that pages absent from the new TOC get retired.
+                    logger.warning(
+                        "TOC-collapse guard OVERRIDDEN for %s: proceeding with %d "
+                        "scrapable page(s) against a baseline of %d — pages missing "
+                        "from the rebuilt TOC will be marked removed",
+                        source.name, scrapable_total, baseline,
+                    )
+                else:
+                    raise TocCollapseError(
+                        f"{TOC_COLLAPSE_PREFIX} for '{source.name}': found "
+                        f"{scrapable_total} scrapable page(s) vs a baseline of "
+                        f"{baseline} (< {settings.toc_collapse_min_ratio:.0%}; "
+                        f"{prior_live} live article(s), last completed run had "
+                        f"{last_ok_total if last_ok_total else 'no'} page(s)). "
+                        f"Aborting before any removal to avoid wiping good content — "
+                        f"likely a scraper or upstream (Firecrawl/Browserless) "
+                        f"failure. Re-run when healthy, or use Extract anyway to "
+                        f"override if the doc set really did shrink."
+                    )
 
             # ── Persist TOC entries ─────────────────────────────────────────
             toc_db_map = await self._persist_toc(db, source_id, toc_entries)
