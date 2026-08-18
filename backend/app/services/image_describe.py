@@ -215,7 +215,12 @@ def _caption_block(description: str) -> str:
 # URL itself may be wrapped in <>. Matching only "](url)" silently skipped every
 # such image — the description was stored and counted as done, but no caption ever
 # reached the content.
-_MD_TITLE = r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?"
+# The quoted alternatives allow escaped-quote runs (\" / \'), not just "no quote at
+# all": an HTML title itself containing a double quote (e.g. an alt/title copied
+# from quoted UI text) comes through markdownify as \" and a bare [^"]* stops at
+# the first one, well short of the real closing quote — same silent-skip failure
+# as an unhandled title form.
+_MD_TITLE = r"(?:\s+(?:\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'|\([^)]*\)))?"
 
 
 def _link_target_re(image_url: str) -> str:
