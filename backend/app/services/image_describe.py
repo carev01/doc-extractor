@@ -13,11 +13,12 @@ import io
 import json
 import logging
 import os
+import re
 import uuid
 from dataclasses import dataclass
 
 import httpx
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -208,6 +209,27 @@ def _caption_block(description: str) -> str:
     return f"> **Figure:** {one_line}"
 
 
+# Markdown title on an image reference: markdownify renders <img title="…"> as
+# ![alt](src "title"), and some vendors (AvePoint, Securiti, Veeam Help Center)
+# set title on every screenshot. The title may also be '…' or (…) quoted, and the
+# URL itself may be wrapped in <>. Matching only "](url)" silently skipped every
+# such image — the description was stored and counted as done, but no caption ever
+# reached the content.
+_MD_TITLE = r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?"
+
+
+def _link_target_re(image_url: str) -> str:
+    """Regex source for ``](image_url "optional title")`` — the reference tail
+    shared by an image token and a bare link. Anchored on the closing paren so a
+    different image whose path merely *starts* with this one can't match."""
+    return r"\]\(\s*<?" + re.escape(image_url) + r">?" + _MD_TITLE + r"\s*\)"
+
+
+def _image_token_re(image_url: str) -> "re.Pattern[str]":
+    """Regex for a whole ``![alt](image_url "optional title")`` token."""
+    return re.compile(r"!\[[^\]]*" + _link_target_re(image_url))
+
+
 def inject_caption(markdown: str, image_url: str, description: str) -> str:
     """Insert (or replace) a '> **Figure:** …' caption immediately below the first
     markdown image reference to *image_url*.
@@ -221,23 +243,30 @@ def inject_caption(markdown: str, image_url: str, description: str) -> str:
     (image, text): a re-run sees the already-isolated image and just refreshes
     the caption."""
     lines = markdown.split("\n")
-    needle = f"]({image_url})"
-    idx = next((i for i, ln in enumerate(lines) if needle in ln), None)
-    if idx is None:
-        return markdown
+    tok_re = _image_token_re(image_url)
+    match = None
+    for i, ln in enumerate(lines):
+        match = tok_re.search(ln)
+        if match:
+            idx = i
+            break
+    if match is None:
+        # The URL is a reference target but not an image token (e.g. a bare link) —
+        # keep the whole line and just place the caption after it.
+        link_re = re.compile(_link_target_re(image_url))
+        idx = next((i for i, ln in enumerate(lines) if link_re.search(ln)), None)
+        if idx is None:
+            return markdown
 
     block = _caption_block(description)
     line = lines[idx]
-    p = line.find(needle)
-    istart = line.rfind("![", 0, p)
-    if istart < 0:
-        # The URL is on the line but not as an image token (e.g. a bare link) —
-        # keep the whole line and just place the caption after it.
+    if match is None:
         before, image_tok, after = "", line, ""
     else:
-        before = line[:istart].rstrip()
-        image_tok = line[istart:p + len(needle)]
-        after = line[p + len(needle):].strip()
+        start, end = match.span()
+        before = line[:start].rstrip()
+        image_tok = line[start:end]
+        after = line[end:].strip()
 
     # Image already alone on its line: refresh an existing caption run, else add.
     if not before and not after:
@@ -264,6 +293,64 @@ def inject_caption(markdown: str, image_url: str, description: str) -> str:
     return "\n".join(lines)
 
 
+async def repair_missing_captions(
+    db: AsyncSession, source_id: uuid.UUID, run_id: uuid.UUID
+) -> int:
+    """Re-inject captions for already-described images whose caption never made it
+    into the markdown. Returns the number of articles repaired.
+
+    Needed because the describe pass only revisits images with no description: an
+    image that was described while inject_caption still failed to match its
+    reference (see _MD_TITLE) would keep its stored description — and stay counted
+    as done — with no caption in the content, forever. Descriptions are reused from
+    the rows themselves, so this costs no VLM calls.
+
+    Scoped in SQL to articles holding a *titled* image reference, the only form the
+    old matcher missed, so a healthy source loads nothing. Those articles are
+    re-scanned on every run even once repaired (the title stays in the reference),
+    but injection is idempotent: the markdown comes back identical, so there is no
+    write and no outbox row."""
+    titled_ref = Article.content_markdown.like(
+        func.concat("%](", ArticleImage.local_path, " %")
+    )
+    art_ids = (await db.execute(
+        select(Article.id).distinct()
+        .join(ArticleImage, ArticleImage.article_id == Article.id)
+        .where(
+            Article.source_id == source_id,
+            Article.removed_at.is_(None),
+            ArticleImage.description.is_not(None),
+            titled_ref,
+        )
+    )).scalars().all()
+
+    repaired = 0
+    for art_id in art_ids:
+        article = await db.get(Article, art_id)
+        if article is None:
+            continue
+        imgs = (await db.execute(
+            select(ArticleImage)
+            .where(ArticleImage.article_id == art_id, ArticleImage.description.is_not(None))
+            .order_by(ArticleImage.sort_order)
+        )).scalars().all()
+        markdown = article.content_markdown
+        for img in imgs:
+            markdown = inject_caption(markdown, img.local_path, img.description)
+        if markdown != article.content_markdown:
+            article.content_markdown = markdown
+            await change_log.record_change(
+                db, article=article, change_type="updated", run_id=run_id)
+            repaired += 1
+        await db.commit()
+    if repaired:
+        logger.info(
+            "re-injected missing image captions into %d article(s) of source %s",
+            repaired, source_id,
+        )
+    return repaired
+
+
 async def enrich_run_images(db: AsyncSession, source_id: uuid.UUID, run_id: uuid.UUID, *,
                             describe=None, max_new: int | None = None) -> int:
     """Enrichment phase: describe meaningful images of this source's articles, inject
@@ -279,6 +366,10 @@ async def enrich_run_images(db: AsyncSession, source_id: uuid.UUID, run_id: uuid
         described = 0
         consecutive_failures = 0
         media_root = os.path.abspath(settings.media_dir)
+
+        # First heal any described-but-uncaptioned images (free — no VLM calls),
+        # before the budget/circuit-breaker can cut this phase short.
+        await repair_missing_captions(db, source_id, run_id)
 
         # VLM describe calls are network-bound and slow; run them concurrently
         # (bounded). DB writes stay serialized on the single session below.

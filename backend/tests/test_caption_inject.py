@@ -60,3 +60,51 @@ def test_inline_image_idempotent():
     twice = inject_caption(once, URL, "Desc.")
     assert once == twice
     assert once.count("> **Figure:**") == 1
+
+
+# ── Titled image references ──────────────────────────────────────────────────
+# markdownify renders <img title="…"> as ![alt](src "title"); AvePoint, Securiti
+# and others set title on every screenshot. The old "](url)" needle never matched
+# those, so the description was stored (and counted as done) while no caption ever
+# reached the content.
+
+def test_caption_injected_for_titled_image_reference():
+    md = f'# Title\n\n![Rapid recovery jobs]({URL} "Rapid recovery jobs.")\n\nBody text.'
+    out = inject_caption(md, URL, "Screenshot of the rapid recovery jobs screen.")
+    assert "> **Figure:** Screenshot of the rapid recovery jobs screen." in out
+    # The title is preserved — only a caption is added.
+    assert f'![Rapid recovery jobs]({URL} "Rapid recovery jobs.")' in out
+    assert out.index("> **Figure:**") > out.index(URL)
+    assert out.index("> **Figure:**") < out.index("Body text.")
+
+
+def test_titled_image_idempotent_and_refreshable():
+    md = f'![t]({URL} "A title")\n\nBody.'
+    once = inject_caption(md, URL, "Desc one.")
+    assert inject_caption(once, URL, "Desc one.") == once
+    twice = inject_caption(once, URL, "Desc two.")
+    assert "Desc two." in twice and "Desc one." not in twice
+    assert twice.count("> **Figure:**") == 1
+
+
+def test_titled_inline_image_is_isolated():
+    md = f'Intro. ![alt]({URL} \'single quoted\')Trailing prose.'
+    out = inject_caption(md, URL, "A diagram.")
+    lines = out.split("\n")
+    img_i = next(i for i, ln in enumerate(lines) if URL in ln)
+    assert lines[img_i].strip() == f"![alt]({URL} 'single quoted')"
+    assert lines[img_i + 2] == "> **Figure:** A diagram."
+    assert out.index("Trailing prose") > out.index("> **Figure:**")
+
+
+def test_paren_quoted_title_and_angle_bracket_url():
+    for ref in (f"![a]({URL} (paren title))", f"![a](<{URL}>)"):
+        out = inject_caption(f"{ref}\n\nBody.", URL, "Desc.")
+        assert "> **Figure:** Desc." in out, ref
+        assert ref in out, ref
+
+
+def test_longer_path_with_same_prefix_is_not_matched():
+    # A different image whose path merely starts with URL must not be captioned.
+    md = f"![other]({URL}.thumb.png)\n\nBody."
+    assert inject_caption(md, URL, "Desc.") == md

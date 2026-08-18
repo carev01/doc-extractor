@@ -245,6 +245,19 @@ def _toc_collapsed(scrapable_total: int, baseline: int, ratio: float, min_prior:
     return scrapable_total < baseline * ratio
 
 
+def _saved_image_size(article_dir: str, filename: str) -> int:
+    """Byte size of an image just written under *article_dir* (0 if unstat-able).
+
+    ArticleImage.file_size_bytes defaults to 0 and the web scrape paths never set
+    it, so every web-sourced image reported zero bytes through the article API.
+    The size is read back from the file rather than threaded out of the download
+    helpers, which return only the filename (and are called from several paths)."""
+    try:
+        return os.path.getsize(os.path.join(article_dir, filename))
+    except OSError:
+        return 0
+
+
 def _cookie_header(cookies: list[dict] | None) -> str | None:
     """Build a ``Cookie`` request-header value from a realm cookie list."""
     if not cookies:
@@ -1176,6 +1189,7 @@ class FirecrawlService:
                             article_id=article.id, original_url="data:image",
                             local_filename=fn, local_path=served_url,
                             alt_text=img.get("alt", ""), sort_order=j,
+                            file_size_bytes=_saved_image_size(article_img_dir, fn),
                         ))
                         markdown_content = markdown_content.replace(src, served_url)
                     continue
@@ -1209,6 +1223,8 @@ class FirecrawlService:
                         local_path=served_url,
                         alt_text=alt,
                         sort_order=j,
+                        file_size_bytes=_saved_image_size(
+                            article_img_dir, local_filename),
                     ))
                     # Replace the resolved absolute URL first. Only fall back to
                     # the raw src for non-trivial relative paths, to avoid a
