@@ -234,10 +234,15 @@ export async function deleteSource(id: string): Promise<void> {
 
 export async function triggerExtraction(
   sourceId: string,
-  force = false
+  force = false,
+  allowTocCollapse = false
 ): Promise<ExtractionTrigger> {
+  const params: Record<string, boolean> = {};
+  if (force) params.force = true;
+  // Overrides the TOC-collapse data-loss guard for this run only.
+  if (allowTocCollapse) params.allow_toc_collapse = true;
   const res = await api.post(`/extraction/trigger/${sourceId}`, null, {
-    params: force ? { force: true } : undefined,
+    params: Object.keys(params).length ? params : undefined,
   });
   return res.data;
 }
