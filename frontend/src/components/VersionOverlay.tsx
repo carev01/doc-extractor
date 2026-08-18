@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import type { ArticleVersion, ArticleVersionDetail, VersionDiff } from "../types";
 import {
   listArticleVersions,
@@ -58,7 +59,11 @@ export default function VersionOverlay({
       .catch(() => setError("Failed to load version history"));
   }, [articleId, selectVersion]);
 
-  return (
+  // Rendered into <body> rather than in place: the backdrop is position:fixed,
+  // so any ancestor with a transform (a wrapper mid- or post-animation) would
+  // become its containing block and centre it inside the — for a long article,
+  // very tall — content instead of the viewport, pushing it off-screen.
+  return createPortal(
     <div className="overlay-backdrop" onClick={onClose}>
       <div className="overlay-panel" onClick={(e) => e.stopPropagation()}>
         <header className="overlay-header">
@@ -163,6 +168,7 @@ export default function VersionOverlay({
           </section>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

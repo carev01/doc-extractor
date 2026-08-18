@@ -27,7 +27,7 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
 @router.get("/sources", response_model=DashboardResponse)
 async def dashboard_sources(
-    stale_days: int = Query(30, ge=1),
+    stale_days: int = Query(90, ge=1),
     db: AsyncSession = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
@@ -190,7 +190,7 @@ async def dashboard_enrichment(
 
 @router.get("/overview", response_model=DashboardOverviewResponse)
 async def dashboard_overview(
-    stale_days: int = Query(30, ge=1),
+    stale_days: int = Query(90, ge=1),
     db: AsyncSession = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):

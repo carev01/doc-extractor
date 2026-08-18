@@ -121,7 +121,11 @@ export default function Dashboard({
   const [error, setError] = useState("");
   const [enrMsg, setEnrMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [enriching, setEnriching] = useState<string | null>(null);
-  const staleSeconds = 30 * 86400;
+  // Must mirror the backend's stale_days default (dashboard.py) — the
+  // aggregate tile count comes from the API while the per-row "stale"
+  // badge/filter is computed here, so a mismatch shows a count that
+  // disagrees with the rows it filters to.
+  const staleSeconds = 90 * 86400;
 
   const [search, setSearch] = useState("");
   const [vendors, setVendors] = useState<string[]>([]);
@@ -245,7 +249,7 @@ export default function Dashboard({
   const tiles = [
     { id: "sources", label: "Sources", count: agg.total, cls: "" },
     { id: "never", label: "Never extracted", count: agg.never_extracted, cls: "warn" },
-    { id: "stale", label: "Stale (>30d)", count: agg.stale, cls: "warn" },
+    { id: "stale", label: "Stale (>90d)", count: agg.stale, cls: "warn" },
     { id: "failing", label: "Failing", count: agg.failing, cls: "bad" },
     { id: "running", label: "Running", count: agg.running, cls: "" },
     {
