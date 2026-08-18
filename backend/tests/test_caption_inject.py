@@ -104,6 +104,19 @@ def test_paren_quoted_title_and_angle_bracket_url():
         assert ref in out, ref
 
 
+def test_titled_image_with_escaped_quote_in_title():
+    # markdownify escapes a double quote embedded in the source <img title="…">
+    # as \" — a bare [^"]* alternative stops at that first escaped quote, well
+    # short of the real closing quote, so the whole token never matches (same
+    # silent-skip failure the titled-reference fix above addresses).
+    title = 'Error: \\"Entity is unavailable\\" shown to the user'
+    md = f'![alt]({URL} "{title}")\n\nBody text.'
+    out = inject_caption(md, URL, "A screenshot of the error dialog.")
+    assert "> **Figure:** A screenshot of the error dialog." in out
+    assert f'![alt]({URL} "{title}")' in out
+    assert out.index("> **Figure:**") > out.index(URL)
+
+
 def test_longer_path_with_same_prefix_is_not_matched():
     # A different image whose path merely starts with URL must not be captioned.
     md = f"![other]({URL}.thumb.png)\n\nBody."
