@@ -36,17 +36,17 @@ export function Admin({ meId }: { meId: string | null }) {
 
       <CreateUser onCreated={refresh} />
 
-      <h3 style={{ marginTop: "1.5em" }}>Users</h3>
-      <table style={{ width: "100%", fontSize: "0.9em", borderCollapse: "collapse" }}>
+      <h3>Users</h3>
+      <table className="admin-table">
         <thead>
-          <tr style={{ textAlign: "left", color: "#888" }}>
+          <tr>
             <th>Email</th><th>Name</th><th>Role</th><th>Active</th><th>Sign-in</th><th></th>
           </tr>
         </thead>
         <tbody>
           {users.map((u) => (
-            <tr key={u.id} style={{ opacity: u.is_active ? 1 : 0.5 }}>
-              <td>{u.email}{u.id === meId && <span className="sub"> (you)</span>}</td>
+            <tr key={u.id} className={u.is_active ? "" : "is-inactive"}>
+              <td className="admin-email">{u.email}{u.id === meId && <span className="sub"> (you)</span>}</td>
               <td>{u.display_name}</td>
               <td>
                 <select value={u.role} disabled={u.id === meId} onChange={(e) => setRole(u, e.target.value as Role)}>
@@ -62,10 +62,12 @@ export function Admin({ meId }: { meId: string | null }) {
               </td>
               <td className="sub">{u.oauth_provider ?? "password"}</td>
               <td>
-                <button className="btn-secondary-sm" disabled={u.role === "admin"} title={u.role === "admin" ? "Admins see all vendors" : ""} onClick={() => setEditingPerms(u)}>
-                  Vendor access
-                </button>{" "}
-                <button className="btn-danger-sm" disabled={u.id === meId} onClick={() => del(u)}>Delete</button>
+                <div className="cell-actions">
+                  <button className="btn-secondary-sm" disabled={u.role === "admin"} title={u.role === "admin" ? "Admins see all vendors" : ""} onClick={() => setEditingPerms(u)}>
+                    Vendor access
+                  </button>
+                  <button className="btn-danger-sm" disabled={u.id === meId} onClick={() => del(u)}>Delete</button>
+                </div>
               </td>
             </tr>
           ))}
@@ -97,7 +99,7 @@ function CreateUser({ onCreated }: { onCreated: () => void }) {
   };
 
   return (
-    <form onSubmit={submit} className="add-form" style={{ display: "flex", gap: "0.5em", flexWrap: "wrap" }}>
+    <form onSubmit={submit} className="add-form">
       <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required />
       <input placeholder="Display name" value={name} onChange={(e) => setName(e.target.value)} required />
       <input type="password" placeholder="Temp password (min 8)" value={password} minLength={8} onChange={(e) => setPassword(e.target.value)} required />
@@ -147,42 +149,44 @@ function VendorPermsEditor({ user, onClose }: { user: AuthUser; onClose: () => v
   };
 
   return (
-    <div style={{ margin: "1em 0", padding: "1em", border: "1px solid #444", borderRadius: 6 }}>
-      <div style={{ display: "flex", justifyContent: "space-between" }}>
+    <div className="perms-panel">
+      <div className="perms-head">
         <h3>Vendor access — {user.email} <span className="sub">(global role: {user.role})</span></h3>
-        <button onClick={onClose}>Close</button>
+        <button className="btn-secondary-sm" onClick={onClose}>Close</button>
       </div>
-      <p className="sub">Ungranted vendors are invisible to this user.</p>
-      <table style={{ width: "100%", fontSize: "0.9em" }}>
-        <tbody>
-          {vendors.map((v) => {
-            const lvl = levels[v.id] ?? "none";
-            return (
-              <tr key={v.id}>
-                <td>{v.name}</td>
-                <td style={{ textAlign: "right" }}>
-                  <select value={lvl} onChange={(e) => setLevels({ ...levels, [v.id]: e.target.value as Level })}>
-                    <option value="none">No access</option>
-                    <option value="read_only">Read-only</option>
-                    <option value="read_write" disabled={!rwAllowed}>Read-write</option>
-                  </select>
-                </td>
-              </tr>
-            );
-          })}
-          {/* Don't claim the list is empty when we simply failed to load it —
-              that read as "this install has no vendors" while 40 existed. */}
-          {vendors.length === 0 && (
-            <tr><td className="sub">
-              {err ? "Could not load the vendor list — nothing to grant until it loads." : "No vendors exist yet."}
-            </td></tr>
-          )}
-        </tbody>
-      </table>
-      <div style={{ marginTop: "0.6em" }}>
+      <p className="sub perms-hint">
+        Ungranted vendors are invisible to this user.
+        {!rwAllowed && " Read-write is unavailable because their global role is read_only."}
+      </p>
+      <div className="perms-grid">
+        {vendors.map((v) => {
+          const lvl = levels[v.id] ?? "none";
+          return (
+            <label key={v.id} className={`perms-row${lvl === "none" ? "" : " is-granted"}`}>
+              <span className="perms-vendor" title={v.name}>{v.name}</span>
+              <select
+                value={lvl}
+                onChange={(e) => setLevels({ ...levels, [v.id]: e.target.value as Level })}
+              >
+                <option value="none">No access</option>
+                <option value="read_only">Read-only</option>
+                <option value="read_write" disabled={!rwAllowed}>Read-write</option>
+              </select>
+            </label>
+          );
+        })}
+      </div>
+      {/* Don't claim the list is empty when we simply failed to load it — that
+          read as "this install has no vendors" while 40 existed. */}
+      {vendors.length === 0 && (
+        <p className="sub">
+          {err ? "Could not load the vendor list — nothing to grant until it loads." : "No vendors exist yet."}
+        </p>
+      )}
+      <div className="perms-foot">
         <button className="btn-primary-sm" onClick={save}>Save access</button>
-        {saved && <span className="sub"> Saved.</span>}
-        {err && <span className="error"> {err}</span>}
+        {saved && <span className="sub">Saved.</span>}
+        {err && <span className="error">{err}</span>}
       </div>
     </div>
   );

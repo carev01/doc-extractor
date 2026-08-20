@@ -2,14 +2,20 @@ import { useState, useEffect, useCallback } from "react";
 import type { Vendor, Product } from "../types";
 import { listProducts, createProduct, updateProduct, deleteProduct } from "../api/client";
 import { apiError } from "../api/errors";
+import type { Access } from "../access";
 
 interface Props {
   vendor: Vendor;
   onSelect: (product: Product) => void;
   selectedId?: string;
+  access: Access;
 }
 
-export default function ProductList({ vendor, onSelect, selectedId }: Props) {
+export default function ProductList({ vendor, onSelect, selectedId, access }: Props) {
+  // Product writes need a read_write grant on the owning vendor
+  // (require_vendor_write). Read-only access leaves the rows navigable and
+  // nothing else.
+  const canWrite = access.canWriteVendor(vendor.id);
   const [products, setProducts] = useState<Product[]>([]);
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
@@ -73,18 +79,20 @@ export default function ProductList({ vendor, onSelect, selectedId }: Props) {
 
       {error && <div className="error">{error}</div>}
 
-      <form onSubmit={handleCreate} className="add-form">
-        <input
-          type="text"
-          placeholder="Product name (e.g. 'NetBackup')"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          required
-        />
-        <button type="submit" disabled={loading}>
-          {loading ? "Adding..." : "Add Product"}
-        </button>
-      </form>
+      {canWrite && (
+        <form onSubmit={handleCreate} className="add-form">
+          <input
+            type="text"
+            placeholder="Product name (e.g. 'NetBackup')"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            required
+          />
+          <button type="submit" disabled={loading}>
+            {loading ? "Adding..." : "Add Product"}
+          </button>
+        </form>
+      )}
 
       <ul className="item-list">
         {products.map((p) => (
@@ -96,31 +104,35 @@ export default function ProductList({ vendor, onSelect, selectedId }: Props) {
             <div className="item-info">
               <strong>{p.name}</strong>
             </div>
-            <div className="item-actions">
-              <button
-                className="btn-secondary-sm"
-                title="Rename"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleRename(p.id, p.name);
-                }}
-              >
-                ✎
-              </button>
-              <button
-                className="btn-danger-sm"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleDelete(p.id);
-                }}
-              >
-                ×
-              </button>
-            </div>
+            {canWrite && (
+              <div className="item-actions">
+                <button
+                  className="btn-secondary-sm"
+                  title="Rename"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleRename(p.id, p.name);
+                  }}
+                >
+                  ✎
+                </button>
+                <button
+                  className="btn-danger-sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDelete(p.id);
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            )}
           </li>
         ))}
         {products.length === 0 && (
-          <li className="empty">No products yet. Add one above.</li>
+          <li className="empty">
+            {canWrite ? "No products yet. Add one above." : "No products for this vendor yet."}
+          </li>
         )}
       </ul>
     </div>

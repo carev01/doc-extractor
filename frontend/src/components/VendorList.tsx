@@ -3,13 +3,19 @@ import type { Vendor } from "../types";
 import { listVendors, createVendor, updateVendor, deleteVendor } from "../api/client";
 import { apiError } from "../api/errors";
 import BulkImport from "./BulkImport";
+import type { Access } from "../access";
 
 interface Props {
   onSelect: (vendor: Vendor) => void;
   selectedId?: string;
+  access: Access;
 }
 
-export default function VendorList({ onSelect, selectedId }: Props) {
+export default function VendorList({ onSelect, selectedId, access }: Props) {
+  // Vendor create/rename/delete and the CSV import are all admin-only on the
+  // server (require_admin), so a non-admin got controls that could only 403.
+  // Rows stay clickable for everyone — that is how you reach the doc viewer.
+  const canManage = access.canManageVendors;
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [name, setName] = useState("");
   const [website, setWebsite] = useState("");
@@ -74,13 +80,16 @@ export default function VendorList({ onSelect, selectedId }: Props) {
     <div className="vendor-list">
       <div className="dashboard-header">
         <h2>Vendors</h2>
-        <button className="btn-primary-sm" onClick={() => setShowImport(true)}>
-          Import CSV
-        </button>
+        {canManage && (
+          <button className="btn-primary-sm" onClick={() => setShowImport(true)}>
+            Import CSV
+          </button>
+        )}
       </div>
 
       {error && <div className="error">{error}</div>}
 
+      {canManage && (
       <form onSubmit={handleCreate} className="add-form">
         <input
           type="text"
@@ -99,6 +108,7 @@ export default function VendorList({ onSelect, selectedId }: Props) {
           {loading ? "Adding..." : "Add Vendor"}
         </button>
       </form>
+      )}
 
       <ul className="item-list">
         {vendors.map((v) => (
@@ -111,31 +121,35 @@ export default function VendorList({ onSelect, selectedId }: Props) {
               <strong>{v.name}</strong>
               {v.website && <span className="sub">{v.website}</span>}
             </div>
-            <div className="item-actions">
-              <button
-                className="btn-secondary-sm"
-                title="Rename"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleRename(v.id, v.name);
-                }}
-              >
-                ✎
-              </button>
-              <button
-                className="btn-danger-sm"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleDelete(v.id);
-                }}
-              >
-                ×
-              </button>
-            </div>
+            {canManage && (
+              <div className="item-actions">
+                <button
+                  className="btn-secondary-sm"
+                  title="Rename"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleRename(v.id, v.name);
+                  }}
+                >
+                  ✎
+                </button>
+                <button
+                  className="btn-danger-sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDelete(v.id);
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            )}
           </li>
         ))}
         {vendors.length === 0 && (
-          <li className="empty">No vendors yet. Add one above.</li>
+          <li className="empty">
+            {canManage ? "No vendors yet. Add one above." : "No vendors have been shared with you yet."}
+          </li>
         )}
       </ul>
       {showImport && (

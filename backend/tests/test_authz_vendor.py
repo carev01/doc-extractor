@@ -248,3 +248,81 @@ async def test_delete_user_with_key_and_grant_cascades(client):
     assert (await client.delete(f"/api/auth/users/{uid}", headers=admin)).status_code == 204
     emails = [u["email"] for u in (await client.get("/api/auth/users", headers=admin)).json()["users"]]
     assert "rw@t.com" not in emails
+
+
+# ── GET /api/auth/my-access (self-service, drives UI control gating) ─────────
+
+async def test_my_access_admin_sees_all_no_grants(client):
+    admin = _bearer(await _bootstrap_admin(client))
+    await _vendor_with_source(client, admin, "v1")
+
+    body = (await client.get("/api/auth/my-access", headers=admin)).json()
+    # Admins are unrestricted, so grants don't apply and none are reported.
+    assert body["see_all"] is True
+    assert body["role"] == "admin"
+    assert body["vendors"] == []
+
+
+async def test_my_access_reports_own_grants_and_levels(client):
+    """A non-admin gets exactly their own grants — the levels the UI keys off."""
+    admin = _bearer(await _bootstrap_admin(client))
+    v1, _, _ = await _vendor_with_source(client, admin, "v1")
+    v2, _, _ = await _vendor_with_source(client, admin, "v2")
+    v3, _, _ = await _vendor_with_source(client, admin, "v3")
+    uid, rw = await _make_user(client, admin, "rw@t.com", "read_write")
+    await client.put(f"/api/auth/users/{uid}/vendor-permissions", json={"permissions": [
+        {"vendor_id": v1, "level": "read_write"},
+        {"vendor_id": v2, "level": "read_only"},
+    ]}, headers=admin)
+
+    body = (await client.get("/api/auth/my-access", headers=_bearer(rw))).json()
+    assert body["see_all"] is False
+    assert body["role"] == "read_write"
+    levels = {v["vendor_id"]: v["level"] for v in body["vendors"]}
+    assert levels == {v1: "read_write", v2: "read_only"}
+    # v3 was never granted — it must not appear at all (invisible, not "none").
+    assert v3 not in levels
+
+
+async def test_my_access_matches_what_writes_actually_allow(client):
+    """The reported level must agree with enforcement, or the UI would hide a
+    usable control (or show an unusable one)."""
+    admin = _bearer(await _bootstrap_admin(client))
+    v_rw, p_rw, _ = await _vendor_with_source(client, admin, "vrw")
+    v_ro, p_ro, _ = await _vendor_with_source(client, admin, "vro")
+    uid, rw = await _make_user(client, admin, "rw2@t.com", "read_write")
+    await client.put(f"/api/auth/users/{uid}/vendor-permissions", json={"permissions": [
+        {"vendor_id": v_rw, "level": "read_write"},
+        {"vendor_id": v_ro, "level": "read_only"},
+    ]}, headers=admin)
+    H = _bearer(rw)
+
+    levels = {v["vendor_id"]: v["level"]
+              for v in (await client.get("/api/auth/my-access", headers=H)).json()["vendors"]}
+    # read_write vendor → the write really succeeds.
+    assert levels[v_rw] == "read_write"
+    assert (await client.post("/api/products", json={"vendor_id": v_rw, "name": "ok"},
+                              headers=H)).status_code == 201
+    # read_only vendor → the same write is refused.
+    assert levels[v_ro] == "read_only"
+    assert (await client.post("/api/products", json={"vendor_id": v_ro, "name": "no"},
+                              headers=H)).status_code == 403
+    # Vendor CRUD is admin-only regardless of grant level, which is why the UI
+    # gates those controls on the role rather than on a per-vendor level.
+    assert (await client.post("/api/vendors", json={"name": "nope"}, headers=H)).status_code == 403
+
+
+async def test_my_access_reports_downgraded_api_key_role(client):
+    """An admin's read_only key must report the downgrade, so the UI hides write
+    controls that the key cannot use."""
+    admin = _bearer(await _bootstrap_admin(client))
+    ro_key = (await client.post("/api/auth/keys", json={"name": "ro", "role": "read_only"},
+                                headers=admin)).json()["raw_key"]
+
+    body = (await client.get("/api/auth/my-access", headers={"X-API-Key": ro_key})).json()
+    assert body["see_all"] is True       # admin owner still sees every vendor
+    assert body["role"] == "read_only"   # but writes are capped
+
+
+async def test_my_access_requires_authentication(client):
+    assert (await client.get("/api/auth/my-access")).status_code == 401

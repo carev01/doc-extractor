@@ -45,6 +45,7 @@ import type {
   TokenResponse,
   AuthUser,
   VendorPermissionList,
+  MyAccess,
   ApiKeyItem,
   ApiKeyCreated,
   AdminApiKey,
@@ -676,6 +677,8 @@ export const authApi = {
     return r.data;
   },
   me: () => api.get<AuthUser>("/auth/me").then((r) => r.data),
+  /** The caller's own effective access, for hiding controls they can't use. */
+  myAccess: () => api.get<MyAccess>("/auth/my-access").then((r) => r.data),
   logout: () => clearTokens(),
 };
 

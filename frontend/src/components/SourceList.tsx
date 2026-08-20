@@ -30,6 +30,7 @@ import {
   enrichSource,
 } from "../api/client";
 import ProductVersionBar from "./ProductVersionBar";
+import type { Access } from "../access";
 import { apiError } from "../api/errors";
 
 // The platform options are fetched from the backend profile registry
@@ -44,6 +45,7 @@ interface Props {
   product: Product;
   onSelectSource: (source: DocumentationSource) => void;
   selectedSourceId?: string;
+  access: Access;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -70,7 +72,12 @@ export default function SourceList({
   product,
   onSelectSource,
   selectedSourceId,
+  access,
 }: Props) {
+  // Everything mutating under a source needs a read_write grant on the owning
+  // vendor (require_vendor_write). Without it the card shows status and run
+  // history only, and the row still opens the doc viewer.
+  const canWrite = access.canWriteVendor(product.vendor_id);
   const [sources, setSources] = useState<DocumentationSource[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [authRealms, setAuthRealms] = useState<AuthRealm[]>([]);
@@ -187,11 +194,14 @@ export default function SourceList({
 
   return (
     <div className="source-list">
-      <ProductVersionBar key={product.id} product={product} sources={sources} onChanged={fetchSources} />
+      {canWrite && (
+        <ProductVersionBar key={product.id} product={product} sources={sources} onChanged={fetchSources} />
+      )}
       <h2>Documentation Sources — {product.name}</h2>
 
       {error && <div className="error">{error}</div>}
 
+      {canWrite && (
       <form onSubmit={handleCreate} className="add-form">
         <input
           type="text"
@@ -260,6 +270,7 @@ export default function SourceList({
           {loading ? "Adding..." : "Add Source"}
         </button>
       </form>
+      )}
 
       <ul className="item-list">
         {sources.map((s) => (
@@ -276,11 +287,14 @@ export default function SourceList({
             productVersion={product.version}
             enrichment={enrichment.get(s.id)}
             onEnriched={refreshEnrichment}
+            canWrite={canWrite}
           />
         ))}
         {sources.length === 0 && (
           <li className="empty">
-            No documentation sources yet. Add one above.
+            {canWrite
+              ? "No documentation sources yet. Add one above."
+              : "No documentation sources for this product yet."}
           </li>
         )}
       </ul>
@@ -300,6 +314,7 @@ interface SourceItemProps {
   productVersion: string | null;
   enrichment?: SourceEnrichment;
   onEnriched: () => void;
+  canWrite: boolean;
 }
 
 function SourceItem({
@@ -314,6 +329,7 @@ function SourceItem({
   productVersion,
   enrichment,
   onEnriched,
+  canWrite,
 }: SourceItemProps) {
   const [activeRun, setActiveRun] = useState<ExtractionRun | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
@@ -595,6 +611,16 @@ function SourceItem({
           )}
         </div>
 
+        {!canWrite && (
+          <div className="item-meta">
+            <span className="sub">
+              Platform: {platformOptions.find((o) => o.value === (source.platform ?? "auto"))?.label
+                ?? source.platform ?? "auto"}
+            </span>
+          </div>
+        )}
+
+        {canWrite && (
         <div className="item-meta">
           <label className="sub" style={{ display: "flex", alignItems: "center", gap: "0.4em" }}>
             Platform:
@@ -674,8 +700,9 @@ function SourceItem({
             </span>
           )}
         </div>
+        )}
 
-        {productVersion && (
+        {productVersion && canWrite && (
           <div className="item-meta">
             <span className="sub" style={{ display: "flex", alignItems: "center", gap: "0.4em" }}>
               Template:
@@ -731,6 +758,12 @@ function SourceItem({
           </div>
         )}
 
+        {productVersion && !canWrite && source.url_template && (
+          <div className="item-meta">
+            <span className="sub">Template: <code>{source.url_template}</code></span>
+          </div>
+        )}
+
         {itemError && <div className="error">{itemError}</div>}
         {resanitizeMsg && <span className="sub run-done">{resanitizeMsg}</span>}
         {enrichMsg && <span className="sub run-done">{enrichMsg}</span>}
@@ -770,6 +803,7 @@ function SourceItem({
         )}
       </div>
 
+      {canWrite && (
       <div className="item-actions">
         <button
           className="btn-primary-sm"
@@ -905,6 +939,7 @@ function SourceItem({
           ×
         </button>
       </div>
+      )}
     </li>
   );
 }
