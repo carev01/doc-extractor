@@ -11,12 +11,17 @@ class Scraper:
     ``checkpoint`` (a TocBuildCheckpoint or None) lets a profile persist
     incremental TOC-build progress so a long expansion can resume after an
     interruption; profiles that don't need it ignore it.
+
+    ``user_agent`` is the resolved profile's ``raw_user_agent`` (when it declares
+    one), so a profile whose platform rejects the default browser UA gets the same
+    UA on its TOC fetches as on its content fetches.
     """
 
-    def __init__(self, firecrawl, checkpoint=None, auth_cookies=None):
+    def __init__(self, firecrawl, checkpoint=None, auth_cookies=None, user_agent=None):
         self._fc = firecrawl
         self.checkpoint = checkpoint
         self._auth_cookies = auth_cookies
+        self._user_agent = user_agent
         # auth_state for Browserless renders (cookie injection) — without this,
         # authenticated JS-rendered sources (e.g. Cohesity's Next.js SPA) render
         # logged-out during TOC discovery.
@@ -31,7 +36,9 @@ class Scraper:
 
     async def get_raw(self, url: str) -> str:
         """Verbatim GET of a static asset (e.g. Flare Data/*.js|xml TOC files)."""
-        return await self._fc.fetch_raw(url, cookies=self._auth_cookies)
+        return await self._fc.fetch_raw(
+            url, cookies=self._auth_cookies, user_agent=self._user_agent
+        )
 
     async def map_urls(self, root_url: str) -> list[str]:
         return await self._fc.map_urls(root_url)

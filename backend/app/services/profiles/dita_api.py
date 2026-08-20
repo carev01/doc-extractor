@@ -29,11 +29,14 @@ Topic bodies are DITA HTML scoped by ``<article>`` (== ``[role=main]``); the
 """
 
 import json
+import logging
 import re
 from urllib.parse import urlparse
 
 from app.services.profiles import registry
 from app.services.profiles.base import TocEntry
+
+logger = logging.getLogger(__name__)
 
 # /docs/<lang>/<product>/<version>[/...] — the public product-landing path.
 _DOCS_PATH_RE = re.compile(r"/docs/([a-z]{2})/([^/]+)/([^/?#]+)")
@@ -44,6 +47,19 @@ class DitaApiProfile:
     # Topic bodies come from the content API as static HTML, fetched per-entry
     # via content_url and scoped by the generic raw_http scoper (content_config).
     content_engine = "raw_http"
+
+    # www.ibm.com sits behind an edge WAF that rejects the default *browser* UA on
+    # both API endpoints with a hard 403 (instantly — no rate-limit, no retry
+    # window), while allowing plain HTTP-client UAs. Counter-intuitively it is the
+    # Chrome UA that is refused: claiming to be a browser invites browser-integrity
+    # checks that a header-less API GET cannot pass, so the honest client UA is the
+    # one that works. Sending our own name alone ("DocExtractor/1.0") is also 403 —
+    # the classifier keys on a recognised client token — so we lead with one and
+    # still identify ourselves. Verified against all 13 IBM sources: 403 -> 200 with
+    # topic counts matching their baselines (e.g. storage-protect 3,625).
+    # This applies to every dita_api fetch: the toc API (build_toc, via the
+    # Scraper) and each topic body (content_url, via the raw_http path).
+    raw_user_agent = "curl/8.7.1 (+DocExtractor)"
 
     MAX_NODES = 20000  # safety bound on tree size
 
@@ -67,7 +83,13 @@ class DitaApiProfile:
         toc_url = f"{origin}/docs/api/v1/toc/{product}/{version}?lang={lang}"
         try:
             data = json.loads(await scraper.get_raw(toc_url))
-        except Exception:
+        except Exception as exc:
+            # Log the cause: an empty TOC here is replaced upstream by a synthetic
+            # single-page "Index" TOC, which then trips the TOC-collapse guard with
+            # a message blaming Firecrawl/Browserless — neither of which this path
+            # even uses. A silent return left the real reason (an edge 403 on the
+            # toc API) visible nowhere.
+            logger.warning("dita_api toc fetch failed for %s: %s", toc_url, exc)
             return []
         root = data.get("toc") if isinstance(data, dict) else None
         if not isinstance(root, dict):

@@ -589,7 +589,8 @@ class FirecrawlService:
             return []
 
     async def fetch_raw(self, url: str, cookies: list[dict] | None = None,
-                        retry_statuses: "set[int] | tuple[int, ...] | None" = None) -> str:
+                        retry_statuses: "set[int] | tuple[int, ...] | None" = None,
+                        user_agent: str | None = None) -> str:
         """Plain GET of a static asset, bypassing Firecrawl's HTML cleaning.
 
         Used for non-HTML resources a profile needs verbatim — e.g. MadCap Flare's
@@ -597,6 +598,10 @@ class FirecrawlService:
         mangle. Sends a browser UA; ``cookies`` (a realm session cookie list)
         are sent as a ``Cookie`` header for authenticated raw_http sources.
         Raises on HTTP error.
+
+        ``user_agent`` overrides the default browser UA for platforms whose edge
+        rejects it (see the ``raw_user_agent`` profile attribute, and dita_api for
+        why a WAF can refuse the *browser* UA specifically).
 
         Retries transient failures (429/5xx, connect/read timeouts) with backoff:
         the raw_http content path fetches hundreds of pages, so without this a
@@ -611,11 +616,12 @@ class FirecrawlService:
         authenticated page that 30x-redirects would otherwise land unauthenticated.
         """
         ck = _cookie_header(cookies)
+        ua = user_agent or _BROWSER_UA
 
         if not ck:
             # No cookies — use automatic redirect following (unchanged behaviour).
             resp = await self._request_with_retry(
-                lambda: self.client.get(url, headers={"User-Agent": _BROWSER_UA}, follow_redirects=True),
+                lambda: self.client.get(url, headers={"User-Agent": ua}, follow_redirects=True),
                 what=f"raw GET {url}",
                 retry_statuses=retry_statuses,
             )
@@ -628,7 +634,7 @@ class FirecrawlService:
         # _request_with_retry raises on a redirect rather than returning it.
         # We catch HTTPStatusError for 3xx codes to extract the redirect response
         # and continue following; real errors (4xx, 5xx) are re-raised.
-        headers = {"User-Agent": _BROWSER_UA, "Cookie": ck}
+        headers = {"User-Agent": ua, "Cookie": ck}
         original_host = httpx.URL(url).host
         current_url = url
         resp = None
@@ -806,9 +812,14 @@ class FirecrawlService:
         return filename
 
     async def _download_image(self, img_url: str, article_dir: str,
-                              auth_cookies: list[dict] | None = None) -> str | None:
+                              auth_cookies: list[dict] | None = None,
+                              user_agent: str | None = None) -> str | None:
         try:
-            headers = {"User-Agent": _BROWSER_UA}
+            # ``user_agent`` mirrors fetch_raw's override: an edge that 403s the
+            # browser UA on a platform's pages does so for its images too, and a
+            # failed download here returns None *silently* — the article would be
+            # stored with every screenshot missing. See dita_api.raw_user_agent.
+            headers = {"User-Agent": user_agent or _BROWSER_UA}
             ck = _cookie_header(auth_cookies)
             if ck:
                 headers["Cookie"] = ck
@@ -868,12 +879,20 @@ class FirecrawlService:
         toc_fragment: str | None = None,
         auth_cookies: list[dict] | None = None,
         detect_blocks: bool = True,
+        image_user_agent: str | None = None,
     ) -> str:
         """Store or skip a single article and atomically increment run counters.
 
         Returns "new" | "updated" | "unchanged" | "empty".
         Used by both the inline polling path and the webhook handler so all
         article processing is consolidated here.
+
+        ``image_user_agent`` overrides the UA used to download this article's
+        images. It comes from the profile's ``raw_user_agent`` and is passed only by
+        the raw_http path — a profile declaring one also sets
+        ``content_engine="raw_http"``, and ``_select_content_path`` routes that
+        unconditionally, so no other path can carry such a page. A future profile
+        needing a custom UA on the Browserless/batch paths must thread it there too.
 
         change_status is the Firecrawl changeTracking verdict ("same"|"new"|"changed"|
         "removed"). When "same", the DB write is skipped entirely — no hash needed.
@@ -1206,7 +1225,8 @@ class FirecrawlService:
             # Download all of a page's images concurrently rather than one-by-one
             # (the sequential round-trips dominated per-page processing time).
             filenames = await asyncio.gather(
-                *(self._download_image(full_src, article_img_dir, auth_cookies=auth_cookies)
+                *(self._download_image(full_src, article_img_dir, auth_cookies=auth_cookies,
+                                       user_agent=image_user_agent)
                   for (_, _, _, full_src) in to_fetch)
             )
 
@@ -1619,6 +1639,7 @@ class FirecrawlService:
         chunk_size = max(1, getattr(profile, "raw_http_concurrency", settings.raw_http_concurrency))
         request_delay = float(getattr(profile, "raw_http_request_delay", 0) or 0)
         retry_statuses = getattr(profile, "raw_http_retry_statuses", None)
+        raw_user_agent = getattr(profile, "raw_user_agent", None)
         # Failure tracking is over pages *attempted this run* (not resumed ones),
         # so the guard reflects the source's current behaviour.
         attempted = 0
@@ -1638,7 +1659,10 @@ class FirecrawlService:
             try:
                 if request_delay:
                     await asyncio.sleep(request_delay)
-                return await self.fetch_raw(url, cookies=auth_cookies, retry_statuses=retry_statuses)
+                return await self.fetch_raw(
+                    url, cookies=auth_cookies, retry_statuses=retry_statuses,
+                    user_agent=raw_user_agent,
+                )
             except Exception as exc:  # network / HTTP error — skip this page
                 logger.warning("Raw fetch failed for %s: %s", url, exc)
                 return None
@@ -1682,6 +1706,7 @@ class FirecrawlService:
                                     title=entry["title"], change_status=None,
                                     toc_fragment=toc_fragment,
                                     auth_cookies=auth_cookies,
+                                    image_user_agent=raw_user_agent,
                                 )
                                 if outcome in ("empty", "blocked"):
                                     failed += 1
@@ -2472,7 +2497,10 @@ class FirecrawlService:
                 run_pk,
                 profile.build_toc(
                     source.base_url,
-                    Scraper(self, checkpoint=checkpoint, auth_cookies=auth_cookies),
+                    Scraper(
+                        self, checkpoint=checkpoint, auth_cookies=auth_cookies,
+                        user_agent=getattr(profile, "raw_user_agent", None),
+                    ),
                 ),
             )
             toc_entries = [

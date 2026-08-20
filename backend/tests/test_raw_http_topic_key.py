@@ -47,7 +47,7 @@ async def test_raw_http_passes_topic_key(monkeypatch):
         captured.append(kwargs)
         return "new"
 
-    async def fake_fetch(url, cookies=None, retry_statuses=None):
+    async def fake_fetch(url, cookies=None, retry_statuses=None, user_agent=None):
         return "<html><body><p>Stable body.</p></body></html>"
 
     async def no_control(*args, **kwargs):
