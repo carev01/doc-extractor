@@ -89,7 +89,7 @@ async def test_refreshed_sas_token_scrapes_as_unchanged(factory, tmp_path, monke
 
     # Content-addressed download without hitting the network (identical bytes each
     # call → identical filename, mirroring the real _download_image).
-    async def fake_dl(self, img_url, article_dir, auth_cookies=None):
+    async def fake_dl(self, img_url, article_dir, auth_cookies=None, user_agent=None):
         os.makedirs(article_dir, exist_ok=True)
         open(os.path.join(article_dir, "cafecafecafecafe.png"), "wb").close()
         return "cafecafecafecafe.png"
@@ -123,7 +123,7 @@ async def test_removed_image_is_pruned_but_transient_failure_keeps_files(
     monkeypatch.setattr(settings, "media_dir", str(tmp_path))
     page_url = "https://helpcenter.securiti.ai/docs/y"
 
-    async def ok_dl(self, img_url, article_dir, auth_cookies=None):
+    async def ok_dl(self, img_url, article_dir, auth_cookies=None, user_agent=None):
         os.makedirs(article_dir, exist_ok=True)
         open(os.path.join(article_dir, "deadbeefdeadbeef.png"), "wb").close()
         return "deadbeefdeadbeef.png"
@@ -157,7 +157,7 @@ async def test_removed_image_is_pruned_but_transient_failure_keeps_files(
     #    Re-seed a prior file, then scrape with a failing downloader.
     open(os.path.join(art_dir, "deadbeefdeadbeef.png"), "wb").close()
 
-    async def fail_dl(self, img_url, article_dir, auth_cookies=None):
+    async def fail_dl(self, img_url, article_dir, auth_cookies=None, user_agent=None):
         return None
 
     monkeypatch.setattr(fc.FirecrawlService, "_download_image", fail_dl)
