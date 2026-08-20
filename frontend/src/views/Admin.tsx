@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { usersApi, listVendors } from "../api/client";
+import { usersApi, listAllVendors } from "../api/client";
 import { apiError } from "../api/errors";
 import type { AuthUser, Vendor } from "../types";
 
@@ -124,10 +124,10 @@ function VendorPermsEditor({ user, onClose }: { user: AuthUser; onClose: () => v
     (async () => {
       try {
         const [vs, perms] = await Promise.all([
-          listVendors(0, 500),
+          listAllVendors(),
           usersApi.getVendorPerms(user.id),
         ]);
-        setVendors(vs.vendors);
+        setVendors(vs);
         const map: Record<string, Level> = {};
         for (const p of perms.permissions) map[p.vendor_id] = p.level as Level;
         setLevels(map);
@@ -170,7 +170,13 @@ function VendorPermsEditor({ user, onClose }: { user: AuthUser; onClose: () => v
               </tr>
             );
           })}
-          {vendors.length === 0 && <tr><td className="sub">No vendors exist yet.</td></tr>}
+          {/* Don't claim the list is empty when we simply failed to load it —
+              that read as "this install has no vendors" while 40 existed. */}
+          {vendors.length === 0 && (
+            <tr><td className="sub">
+              {err ? "Could not load the vendor list — nothing to grant until it loads." : "No vendors exist yet."}
+            </td></tr>
+          )}
         </tbody>
       </table>
       <div style={{ marginTop: "0.6em" }}>

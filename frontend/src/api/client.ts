@@ -114,6 +114,27 @@ export async function listVendors(
   return res.data;
 }
 
+/** Every vendor, following pagination.
+ *
+ * `GET /api/vendors` caps `limit` at 200 and rejects anything larger with a 422
+ * — so a caller that needs the complete list must page rather than ask for one
+ * big page (asking for 500 returned no vendors at all, not a truncated list).
+ * Used where a partial list would be wrong rather than merely short, e.g. the
+ * admin vendor-permissions editor: a vendor missing from that table looks
+ * exactly like a vendor deliberately left ungranted.
+ */
+export async function listAllVendors(): Promise<Vendor[]> {
+  const PAGE = 200;
+  const out: Vendor[] = [];
+  for (let skip = 0; ; skip += PAGE) {
+    const { vendors, total } = await listVendors(skip, PAGE);
+    out.push(...vendors);
+    // Stop on a short/empty page too, so a total that disagrees with the rows
+    // returned can't spin this loop forever.
+    if (out.length >= total || vendors.length < PAGE) return out;
+  }
+}
+
 export async function getVendor(id: string): Promise<Vendor> {
   const res = await api.get(`/vendors/${id}`);
   return res.data;
