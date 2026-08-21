@@ -608,9 +608,19 @@ a.btn-primary {
   color: #0d1316;
 }
 
-/* on/off variants so a caller doesn't have to inline a hex colour */
+/* Semantic variants so a caller doesn't inline a hex colour (which also drifts
+   from the tokens — Logins had #58c08a/#eaa53d/#6f8087/#e0685f hardcoded). */
+.status-badge.is-ok,
 .status-badge.is-on { background: var(--new); }
+.status-badge.is-warn { background: var(--amber); }
+.status-badge.is-muted,
 .status-badge.is-off { background: var(--text-faint); }
+.status-badge.is-bad { background: var(--gone); }
+
+/* Inline text severity, same reason. */
+.text-warn { color: var(--amber); }
+.text-bad { color: var(--gone); }
+.text-muted { color: var(--text-faint); }
 
 .badge-new,
 .badge-upd,
@@ -2920,7 +2930,8 @@ a.btn-primary {
   flex: 2 1 240px;
 }
 
-.webhook-head {
+/* Badge + title + URL row at the top of a list card (webhooks, auth realms). */
+.card-head {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2989,6 +3000,50 @@ a.btn-primary {
   text-transform: uppercase;
   color: var(--text-faint);
   margin-bottom: 4px;
+}
+
+/* ── Auth realms (Logins) ── */
+.console-view textarea {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--ink-0);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.console-view textarea:focus {
+  outline: none;
+  border-color: var(--amber);
+  box-shadow: 0 0 0 3px var(--amber-ghost);
+}
+
+.console-view textarea::placeholder {
+  color: var(--text-faint);
+}
+
+/* Per-row error/notice under a card's header. */
+.item-error {
+  margin-top: 0.3em;
+  font-size: 0.85rem;
+}
+
+.session-block {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.session-hint {
+  margin-bottom: 6px;
+}
+
+.session-actions {
+  margin-top: 6px;
 }
 
 /* ── Vendor-access panel ── */

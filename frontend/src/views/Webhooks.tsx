@@ -281,7 +281,7 @@ export function Webhooks() {
                 </div>
               ) : (
                 <>
-                  <div className="webhook-head">
+                  <div className="card-head">
                     <span className={`status-badge ${w.is_active ? "is-on" : "is-off"}`}>
                       {w.is_active ? "active" : "inactive"}
                     </span>
