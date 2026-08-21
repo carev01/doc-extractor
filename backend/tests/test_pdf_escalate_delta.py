@@ -74,7 +74,7 @@ def _patch(monkeypatch, tmp_path, *, page1_result):
                             table_pages=set(), images=[], engine="docling",
                             page_line_starts=starts)
 
-    async def fake_page(pdf_bytes, p0):
+    async def fake_page(pdf_bytes, p0, **_kw):
         return page1_result  # None (still failing) or (markdown, images)
 
     monkeypatch.setattr(pdf_import, "acquire_pdf", fake_acquire)
@@ -129,5 +129,13 @@ async def test_retry_keeps_pending_when_still_failing(factory, tmp_path, monkeyp
 
     async with factory() as s:
         run = await s.get(ExtractionRun, run_id)
+        # Still COMPLETED by design: the content is intact and the pending list
+        # (plus the dashboard's Escalation tile) carries the warning.
         assert run.status == RunStatus.COMPLETED
         assert run.escalation_pending == [{"page_start": 1, "page_end": 1}]  # still pending
+        # But the run must now say that it recovered nothing, and name the page
+        # as a 1-based number. Previously this was silent and the only record of
+        # the cause lived in docling-serve's container log.
+        assert run.error_message
+        assert "recovered none" in run.error_message
+        assert "page(s) 2" in run.error_message  # 0-based index 1 → page 2

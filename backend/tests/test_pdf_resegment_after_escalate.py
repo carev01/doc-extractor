@@ -44,7 +44,7 @@ async def test_escalation_recovers_azure_as_its_own_article(monkeypatch):
     monkeypatch.setattr(esc.settings, "pdf_vlm_escalation_enabled", True)
     monkeypatch.setattr(esc.settings, "pdf_vlm_max_pages_pct", 100.0)
 
-    async def fake_page(pdf, p0):
+    async def fake_page(pdf, p0, **_kw):
         # The VLM reads the rendered page and emits the Azure heading + content.
         assert p0 == 1                         # only the empty page is escalated
         return "## Azure\n\nProtect Azure workloads with the connector.", []

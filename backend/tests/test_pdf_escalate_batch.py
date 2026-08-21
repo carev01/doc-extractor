@@ -23,7 +23,7 @@ async def test_escalates_only_flagged_pages_and_splices(monkeypatch):
     monkeypatch.setattr(esc.settings, "pdf_vlm_escalation_enabled", True)
     monkeypatch.setattr(esc.settings, "pdf_vlm_max_pages_pct", 100.0)
     calls = []
-    async def fake_page(pdf, p0):
+    async def fake_page(pdf, p0, **_kw):
         calls.append(p0)
         return "## Fixed\n\n| a | b |\n| --- | --- |\n| 1 | 2 |", []
     monkeypatch.setattr(esc, "escalate_page", fake_page)
@@ -44,7 +44,7 @@ async def test_only_restricts_to_target_pages(monkeypatch):
     monkeypatch.setattr(esc.settings, "pdf_vlm_escalation_enabled", True)
     monkeypatch.setattr(esc.settings, "pdf_vlm_max_pages_pct", 100.0)
     calls = []
-    async def ok(pdf, p0):
+    async def ok(pdf, p0, **_kw):
         calls.append(p0); return "## Fixed", []
     monkeypatch.setattr(esc, "escalate_page", ok)
 
@@ -61,7 +61,7 @@ async def test_budget_caps_pages_and_defers_cosmetic(monkeypatch):
     monkeypatch.setattr(esc.settings, "pdf_vlm_escalation_enabled", True)
     monkeypatch.setattr(esc.settings, "pdf_vlm_max_pages_pct", 10.0)
     calls = []
-    async def ok(pdf, p0):
+    async def ok(pdf, p0, **_kw):
         calls.append(p0); return "## Fixed", []
     monkeypatch.setattr(esc, "escalate_page", ok)
 
@@ -79,7 +79,7 @@ async def test_over_budget_content_loss_is_surfaced(monkeypatch):
     monkeypatch.setattr(esc.settings, "pdf_vlm_escalation_enabled", True)
     monkeypatch.setattr(esc.settings, "pdf_vlm_max_pages_pct", 1.0)
     calls = []
-    async def ok(pdf, p0):
+    async def ok(pdf, p0, **_kw):
         calls.append(p0); return "## Fixed", []
     monkeypatch.setattr(esc, "escalate_page", ok)
 
@@ -98,7 +98,7 @@ async def test_circuit_breaker_defers_remaining(monkeypatch):
     monkeypatch.setattr(esc.settings, "pdf_vlm_max_pages_pct", 100.0)
     monkeypatch.setattr(esc.settings, "pdf_vlm_max_consecutive_failures", 3)
     calls = []
-    async def fail(pdf, p0):
+    async def fail(pdf, p0, **_kw):
         calls.append(p0); return None
     monkeypatch.setattr(esc, "escalate_page", fail)
 
@@ -113,7 +113,7 @@ async def test_disabled_is_noop(monkeypatch):
     conv = _conv([_RAGGED], page_texts=["x" * 50])
     monkeypatch.setattr(esc.settings, "pdf_vlm_escalation_enabled", False)
     called = []
-    async def fake(pdf, p0):
+    async def fake(pdf, p0, **_kw):
         called.append(p0); return "x", []
     monkeypatch.setattr(esc, "escalate_page", fake)
     assert await esc.escalate_low_confidence_pages(b"x", conv) == []
@@ -128,7 +128,7 @@ async def test_no_page_offsets_is_noop(monkeypatch):
                         page_line_starts=[])
     monkeypatch.setattr(esc.settings, "pdf_vlm_escalation_enabled", True)
     called = []
-    async def fake(pdf, p0):
+    async def fake(pdf, p0, **_kw):
         called.append(p0); return "x", []
     monkeypatch.setattr(esc, "escalate_page", fake)
     assert await esc.escalate_low_confidence_pages(b"x", conv) == []

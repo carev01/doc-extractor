@@ -33,6 +33,15 @@ _SEP_RE = re.compile(r"^\s*\|?\s*:?-{3,}.*$")
 _CONTENT_LOSS_ISSUES = {"empty_pages", "sparse_text", "missing_table"}
 
 
+def _report(on_error, page0: int, reason: str) -> None:
+    if on_error is None:
+        return
+    try:
+        on_error(page0, reason)
+    except Exception:  # noqa: BLE001 — reporting must never break the drain
+        logger.exception("escalate on_error callback failed")
+
+
 def _cell_count(row: str) -> int:
     return len(row.strip().strip("|").split("|"))
 
@@ -91,17 +100,23 @@ def score_page(page_md: str, page_idx: int, converted: ConvertedDoc) -> list[str
 
 
 from app.services import docling_client
-from app.services.docling_client import DoclingServeError
+from app.services.docling_client import DoclingConversionFailed, DoclingServeError
 from app.services.sanitize import sanitize_markdown
 
 
-async def escalate_page(pdf_bytes: bytes, page0: int) -> "tuple[str, list[RenderedImage]] | None":
+async def escalate_page(
+    pdf_bytes: bytes, page0: int, *, on_error=None,
+) -> "tuple[str, list[RenderedImage]] | None":
     """Re-convert ONE page (0-based) via docling-serve's VLM pipeline.
 
     Returns ``(markdown, images)`` for that page, or ``None`` when docling-serve
     itself failed — so the caller can tell a service failure from a no-op and trip
     its circuit breaker. Images are content-addressed (``<sha>.png``) exactly like
     the main conversion so figures on the page are preserved.
+
+    ``on_error(page0, reason)`` is called with the final failure reason, so the
+    run can record *why* a page is still pending instead of leaving that only in
+    docling-serve's own log.
     """
     # Extract the single page into a standalone PDF and send THAT (docling
     # rejects a large full-doc upload as "Input document is not valid").
@@ -115,6 +130,14 @@ async def escalate_page(pdf_bytes: bytes, page0: int) -> "tuple[str, list[Render
             doc = await docling_client.convert_async(
                 page_bytes, use_vlm_api=True, image_export_mode="embedded",
             )
+        except DoclingConversionFailed as exc:
+            # docling ran the page and its pipeline broke on it. Resubmitting the
+            # same bytes fails identically, so burning the remaining attempts
+            # only delays the run.
+            logger.warning("VLM escalation failed for page %d (not retryable): %s",
+                           page0 + 1, exc)
+            _report(on_error, page0, str(exc))
+            return None
         except DoclingServeError as exc:
             if attempt + 1 < attempts:
                 logger.info("VLM escalation transient failure for page %d "
@@ -124,6 +147,7 @@ async def escalate_page(pdf_bytes: bytes, page0: int) -> "tuple[str, list[Render
                 continue
             logger.warning("VLM escalation failed for page %d after %d attempts: %s",
                            page0 + 1, attempts, exc)
+            _report(on_error, page0, str(exc))
             return None
         md, images = _content_address_data_uris(doc.get("md_content") or "")
         return sanitize_markdown(md), images
@@ -132,6 +156,7 @@ async def escalate_page(pdf_bytes: bytes, page0: int) -> "tuple[str, list[Render
 async def escalate_low_confidence_pages(
     pdf_bytes: bytes, converted: ConvertedDoc, *,
     budget: "int | None" = None, only: "set[int] | None" = None, on_page=None,
+    failures: "dict[int, str] | None" = None,
 ) -> list[dict]:
     """VLM-re-convert low-confidence PAGES in place on ``converted``, BEFORE the
     document is split into articles.
@@ -148,6 +173,10 @@ async def escalate_low_confidence_pages(
     ``[{"page_start", "page_end"}]`` for ``ExtractionRun.escalation_pending``.
     Budget-deferred *cosmetic* pages (e.g. a ragged table on populated content) are
     not surfaced, so a healthy big document doesn't warn just for hitting the cap.
+
+    ``failures``, when given, is filled with ``{page0: reason}`` for every page
+    docling refused, so the caller can record why rather than leaving the reason
+    in docling-serve's log.
     """
     if not settings.pdf_vlm_escalation_enabled:
         return []
@@ -194,7 +223,11 @@ async def escalate_low_confidence_pages(
             if _CONTENT_LOSS_ISSUES.intersection(issues):
                 failed_pages.append(p)
             continue
-        result = await escalate_page(pdf_bytes, p)
+        result = await escalate_page(
+            pdf_bytes, p,
+            on_error=(None if failures is None
+                      else lambda pg, reason: failures.__setitem__(pg, reason)),
+        )
         if result is None:
             consecutive_failures += 1
             failed_pages.append(p)

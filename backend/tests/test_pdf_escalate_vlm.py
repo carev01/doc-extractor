@@ -113,3 +113,79 @@ async def test_escalate_page_recovers_after_transient_failure(monkeypatch):
     md, _ = out
     assert "Recovered" in md
     assert calls["n"] == 2  # retried once, then succeeded
+
+
+# ── Terminal docling failures (the NetWorker "tile cannot extend outside image"
+#    class) must be distinguished from a wobbly service ────────────────────────
+
+@pytest.mark.asyncio
+async def test_terminal_docling_failure_is_not_retried(monkeypatch):
+    """A task docling RAN and failed cannot succeed on resubmit, so the remaining
+    attempts must not be spent on it."""
+    monkeypatch.setattr(esc, "_extract_page_range", lambda *a: b"%PDF-x")
+    monkeypatch.setattr(esc.settings, "pdf_vlm_page_retries", 3)
+    monkeypatch.setattr(esc.settings, "pdf_vlm_page_retry_backoff", 0)
+    calls = []
+
+    async def fake_convert_async(pdf_bytes, **kw):
+        calls.append(1)
+        raise dc.DoclingConversionFailed(
+            "docling-serve task failed: tile cannot extend outside image")
+
+    monkeypatch.setattr(esc.docling_client, "convert_async", fake_convert_async)
+
+    seen: dict[int, str] = {}
+    out = await esc.escalate_page(b"DOC", 7, on_error=lambda p, r: seen.__setitem__(p, r))
+    assert out is None
+    assert len(calls) == 1, "a terminal failure must be attempted exactly once"
+    # …and the reason is handed back rather than left in docling's own log.
+    assert 7 in seen and "tile cannot extend outside image" in seen[7]
+
+
+@pytest.mark.asyncio
+async def test_transient_docling_failure_is_still_retried(monkeypatch):
+    """The retry path must survive: an unreachable/slow service is worth another go."""
+    monkeypatch.setattr(esc, "_extract_page_range", lambda *a: b"%PDF-x")
+    monkeypatch.setattr(esc.settings, "pdf_vlm_page_retries", 2)
+    monkeypatch.setattr(esc.settings, "pdf_vlm_page_retry_backoff", 0)
+    calls = []
+
+    async def fake_convert_async(pdf_bytes, **kw):
+        calls.append(1)
+        if len(calls) < 3:
+            raise dc.DoclingServeError("connection reset")
+        return {"md_content": "## Recovered\n"}
+
+    monkeypatch.setattr(esc.docling_client, "convert_async", fake_convert_async)
+    out = await esc.escalate_page(b"DOC", 0)
+    assert out is not None and "Recovered" in out[0]
+    assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_drain_collects_failure_reasons_per_page(monkeypatch):
+    """escalate_low_confidence_pages fills `failures` so the run can say why."""
+    monkeypatch.setattr(esc, "_extract_page_range", lambda *a: b"%PDF-x")
+    monkeypatch.setattr(esc.settings, "pdf_vlm_page_retries", 0)
+
+    async def fake_convert_async(pdf_bytes, **kw):
+        raise dc.DoclingConversionFailed("tile cannot extend outside image")
+
+    monkeypatch.setattr(esc.docling_client, "convert_async", fake_convert_async)
+
+    from app.services.pdf_convert import ConvertedDoc
+    # Two pages, both empty → both flagged by score_page.
+    converted = ConvertedDoc(
+        markdown="\n\n",
+        headings=[],
+        page_texts=["some text on page one", "some text on page two"],
+        table_pages=set(),
+        page_line_starts=[0, 1],
+    )
+    failures: dict[int, str] = {}
+    ranges = await esc.escalate_low_confidence_pages(
+        b"DOC", converted, only={0, 1}, budget=2, failures=failures)
+
+    assert esc.pages_in_ranges(ranges) == {0, 1}          # both still pending
+    assert set(failures) == {0, 1}                         # …and both explained
+    assert all("tile cannot extend" in r for r in failures.values())
