@@ -109,7 +109,7 @@ export default function VendorList({ onSelect, selectedId, access }: Props) {
           value={website}
           onChange={(e) => setWebsite(e.target.value)}
         />
-        <button type="submit" disabled={loading}>
+        <button type="submit" className="btn-primary" disabled={loading}>
           {loading ? "Adding..." : "Add Vendor"}
         </button>
       </form>

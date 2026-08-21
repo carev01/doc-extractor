@@ -85,7 +85,7 @@ export default function JobsManager() {
           onChange={(e) => setNewName(e.target.value)}
           required
         />
-        <button type="submit">Create job</button>
+        <button type="submit" className="btn-primary">Create job</button>
       </form>
 
       <ul className="item-list">

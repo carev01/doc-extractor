@@ -108,7 +108,7 @@ function CreateUser({ onCreated }: { onCreated: () => void }) {
         <option value="read_write">read_write</option>
         <option value="admin">admin</option>
       </select>
-      <button type="submit">Add user</button>
+      <button type="submit" className="btn-primary">Add user</button>
       {err && <span className="error">{err}</span>}
     </form>
   );

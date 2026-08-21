@@ -180,7 +180,7 @@ export function Logins() {
           value={form.totp_secret ?? ''}
           onChange={(e) => setForm({ ...form, totp_secret: e.target.value || null })}
         />
-        <button type="submit" disabled={adding}>
+        <button type="submit" className="btn-primary" disabled={adding}>
           {adding ? 'Adding...' : 'Add realm'}
         </button>
         {formError && <div className="error">{formError}</div>}

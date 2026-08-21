@@ -66,7 +66,7 @@ export function ApiKeys({ me }: { me: AuthUser | null }) {
         <select value={role} onChange={(e) => setRole(e.target.value as typeof role)}>
           {roleOptions().map((r) => <option key={r} value={r}>{r}</option>)}
         </select>
-        <button type="submit">Create key</button>
+        <button type="submit" className="btn-primary">Create key</button>
         {err && <span className="error">{err}</span>}
       </form>
 

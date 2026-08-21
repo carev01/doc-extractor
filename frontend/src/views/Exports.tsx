@@ -43,7 +43,7 @@ export function Exports() {
   }
 
   return (
-    <div className="exports-view">
+    <div className="exports-view console-view">
       <h2>Exports</h2>
       <p className="sub">
         Generated exports are kept on the server for a limited time, then
@@ -57,25 +57,30 @@ export function Exports() {
           No exports yet. Generate one from a source's Export tab.
         </p>
       ) : (
-        <ul className="recent-exports">
+        <ul className="item-list">
           {exports.map((ex) => (
-            <li key={ex.export_id}>
-              <div>
-                <strong>{ex.source_name}</strong>{" "}
-                <span className="sub">
-                  · {ex.format.toUpperCase()} · {ex.file_count} file(s) ·{" "}
-                  {(ex.total_size_bytes / 1024).toFixed(0)} KB ·{" "}
-                  {new Date(ex.created_at).toLocaleString()}
+            <li key={ex.export_id} className="non-clickable">
+              <div className="item-info">
+                <div className="card-head">
+                  <span className="status-badge is-muted">{ex.format}</span>
+                  <strong>{ex.source_name}</strong>
+                </div>
+                <div className="item-meta">
+                  <span className="sub">{ex.file_count} file(s)</span>
+                  <span className="sub">· {(ex.total_size_bytes / 1024).toFixed(0)} KB</span>
+                  <span className="sub">· {new Date(ex.created_at).toLocaleString()}</span>
                   {ex.expires_at && (
-                    <> · expires {new Date(ex.expires_at).toLocaleDateString()}</>
+                    <span className="sub">
+                      · expires {new Date(ex.expires_at).toLocaleDateString()}
+                    </span>
                   )}
-                </span>
+                </div>
               </div>
               <div className="export-links">
                 {ex.zip_filename ? (
                   <button
                     type="button"
-                    className="link-btn"
+                    className="btn-secondary-sm"
                     onClick={() => download(() => downloadExportZip(ex.export_id))}
                   >
                     Download ZIP
@@ -85,7 +90,8 @@ export function Exports() {
                     <button
                       key={f}
                       type="button"
-                      className="link-btn"
+                      className="btn-secondary-sm export-file"
+                      title={`Download ${f}`}
                       onClick={() => download(() => downloadExportFile(ex.export_id, f))}
                     >
                       {f}
