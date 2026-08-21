@@ -39,6 +39,10 @@
 
   --radius: 10px;
   --radius-sm: 6px;
+
+  /* Shared height for small controls, so a row mixing buttons and selects
+     lines up instead of stepping between five different sizes. */
+  --control-sm-h: 28px;
   --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset,
     0 12px 30px -18px rgba(0, 0, 0, 0.7);
 }
@@ -295,6 +299,39 @@ h3 {
   color: var(--text-faint);
 }
 
+/* Base <select>. Nothing styled bare selects, so every one outside the few
+   contexts with their own rules rendered as a white UA control in Arial on a
+   dark surface (source cards, dashboard filters, export options…). Specificity
+   is (0,0,1), so .split-options/.run-filters/.schedule-fields/.console-view
+   selects continue to win. */
+select {
+  min-height: var(--control-sm-h);
+  padding: 0 8px;
+  background: var(--ink-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+select:hover:not(:disabled) {
+  border-color: var(--text-faint);
+}
+
+select:focus {
+  outline: none;
+  border-color: var(--amber);
+  box-shadow: 0 0 0 3px var(--amber-ghost);
+}
+
+select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ============================================================
    Buttons
    ============================================================ */
@@ -333,7 +370,6 @@ button:active {
 }
 
 .btn-primary-sm {
-  padding: 5px 12px;
   font-size: 0.8rem;
 }
 
@@ -342,13 +378,48 @@ a.btn-primary {
   text-decoration: none;
 }
 
+/* All three small buttons share one box so a footer row aligns; only the glyph
+   size differs (the danger button is an icon). Heights before this were 27 /
+   35 / 23px, plus a 19px select. */
+.btn-primary-sm,
+.btn-secondary-sm,
+.btn-danger-sm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: var(--control-sm-h);
+  padding: 0 12px;
+  line-height: 1;
+}
+
+/* .btn-secondary-sm had no rule anywhere despite 41 uses, so it inherited the
+   browser's default button chrome — light grey, and taller than everything
+   next to it. */
+.btn-secondary-sm {
+  background: var(--ink-2);
+  border-color: var(--line);
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+
+.btn-secondary-sm:hover:not(:disabled) {
+  background: var(--ink-3);
+  border-color: var(--text-faint);
+  color: var(--text);
+}
+
+.btn-secondary-sm:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .btn-danger-sm {
   background: transparent;
   border-color: transparent;
   color: var(--text-faint);
-  padding: 2px 9px;
+  padding: 0 9px;
   font-size: 1.05rem;
-  line-height: 1;
 }
 
 .btn-danger-sm:hover {
@@ -507,6 +578,12 @@ a.btn-primary {
 
 .source-card .item-meta select {
   max-width: 100%;
+}
+
+/* The label wraps the select (and sometimes a button), so align on the control
+   row rather than the text baseline. */
+.source-card .item-meta > label {
+  min-height: var(--control-sm-h);
 }
 
 /* Action buttons: a full-width wrapping footer, visually separated. */
