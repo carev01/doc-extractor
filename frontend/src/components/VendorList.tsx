@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import type { Vendor } from "../types";
-import { listVendors, createVendor, updateVendor, deleteVendor } from "../api/client";
+import { listAllVendors, createVendor, updateVendor, deleteVendor } from "../api/client";
 import { apiError } from "../api/errors";
 import BulkImport from "./BulkImport";
 import type { Access } from "../access";
@@ -23,18 +23,23 @@ export default function VendorList({ onSelect, selectedId, access }: Props) {
   const [error, setError] = useState("");
   const [showImport, setShowImport] = useState(false);
 
-  const fetchVendors = async () => {
+  // listAllVendors pages; a plain listVendors() call defaults to limit=50 and
+  // would silently hide the 51st vendor onward — the same partial-list trap the
+  // admin grant editor hit, and indistinguishable here from "not created yet".
+  const fetchVendors = useCallback(async () => {
     try {
-      const data = await listVendors();
-      setVendors(data.vendors);
+      setVendors(await listAllVendors());
     } catch {
       setError("Failed to load vendors");
     }
-  };
+  }, []);
 
+  // Inline promise chain rather than calling fetchVendors(): the
+  // react-hooks/set-state-in-effect rule rejects invoking a function that
+  // setStates from an effect body. Same shape as ProductList/SourceList.
   useEffect(() => {
-    listVendors()
-      .then((data) => setVendors(data.vendors))
+    listAllVendors()
+      .then(setVendors)
       .catch(() => setError("Failed to load vendors"));
   }, []);
 
@@ -157,9 +162,7 @@ export default function VendorList({ onSelect, selectedId, access }: Props) {
           onClose={() => setShowImport(false)}
           onImported={() => {
             setShowImport(false);
-            listVendors()
-              .then((data) => setVendors(data.vendors))
-              .catch(() => setError("Failed to load vendors"));
+            fetchVendors();
           }}
         />
       )}
