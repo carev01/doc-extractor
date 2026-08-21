@@ -40,8 +40,9 @@
   --radius: 10px;
   --radius-sm: 6px;
 
-  /* Shared height for small controls, so a row mixing buttons and selects
-     lines up instead of stepping between five different sizes. */
+  /* Shared heights so a row mixing inputs, selects and buttons lines up
+     instead of stepping between sizes. -sm is for dense card footers. */
+  --control-h: 42px;
   --control-sm-h: 28px;
   --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset,
     0 12px 30px -18px rgba(0, 0, 0, 0.7);
@@ -299,6 +300,25 @@ h3 {
   color: var(--text-faint);
 }
 
+/* The three control types in an add-form row disagreed: inputs ~45px, the base
+   select 28px, and a classless submit button took whatever the browser's
+   default chrome was. One height, one baseline. */
+.add-form input,
+.add-form select,
+.add-form button {
+  min-height: var(--control-h);
+  padding-block: 0;
+}
+
+.add-form select {
+  padding-inline: 12px;
+  font-size: 0.9rem;
+}
+
+.add-form button {
+  padding-inline: 18px;
+}
+
 /* Base <select>. Nothing styled bare selects, so every one outside the few
    contexts with their own rules rendered as a white UA control in Arial on a
    dark surface (source cards, dashboard filters, export options…). Specificity
@@ -330,6 +350,67 @@ select:focus {
 select:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Inline <code> (header names, CSV columns, tokens). Only .markdown-body styled
+   code, so a bare one anywhere else fell back to the browser's monospace. */
+code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  color: var(--text-dim);
+}
+
+/* Base textarea. Both users hold structured data (a CSV paste, a cookie-state
+   JSON), so monospace is the right default. */
+textarea {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--ink-0);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+textarea:focus {
+  outline: none;
+  border-color: var(--amber);
+  box-shadow: 0 0 0 3px var(--amber-ghost);
+}
+
+textarea::placeholder {
+  color: var(--text-faint);
+}
+
+/* File inputs render as a native light-mode control; only the button part is
+   styleable, so match it to .btn-secondary-sm and quiet the filename text. */
+input[type="file"] {
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  color: var(--text-dim);
+}
+
+input[type="file"]::file-selector-button {
+  margin-right: 10px;
+  padding: 0 12px;
+  min-height: var(--control-sm-h);
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+input[type="file"]::file-selector-button:hover {
+  background: var(--ink-3);
+  border-color: var(--text-faint);
+  color: var(--text);
 }
 
 /* ============================================================
@@ -1958,11 +2039,18 @@ a.btn-primary {
   padding-bottom: 0.3rem;
   margin-bottom: 0.6rem;
 }
-.jobs-view .item-list li.non-clickable {
+/* Rows that aren't a navigation target. Was scoped to .jobs-view, so the same
+   class in Webhooks/Logins/Exports did nothing and those rows still offered a
+   pointer cursor and a hover lift. */
+.item-list li.non-clickable {
   cursor: default;
 }
-.jobs-view .item-list li.non-clickable:hover {
+
+.item-list li.non-clickable:hover {
   background: var(--ink-1);
+  border-color: var(--line-soft);
+  transform: none;
+  box-shadow: none;
 }
 
 /* Recent-history filter bar */
@@ -2213,13 +2301,90 @@ a.btn-primary {
   display: flex; align-items: center; justify-content: center; z-index: 50;
 }
 .picker-panel {
-  background: var(--panel, #1d2630); padding: 1.2rem; border-radius: 8px;
-  width: min(560px, 92vw); max-height: 80vh; display: flex; flex-direction: column;
+  background: linear-gradient(180deg, var(--ink-1) 0%, var(--ink-0) 100%);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  padding: 20px 22px;
+  border-radius: var(--radius);
+  width: min(560px, 92vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  /* Breathing room between heading / hint / controls / actions — these were
+     flush against each other. */
+  gap: 12px;
 }
-.picker-list { list-style: none; margin: 0.6rem 0; padding: 0; overflow-y: auto; }
-.picker-list li { padding: 0.2rem 0; }
-.picker-list label { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
-.picker-actions { display: flex; gap: 0.6rem; justify-content: flex-end; }
+
+/* The panel's own children shouldn't inherit the list margins that assumed no
+   parent gap. */
+.picker-panel > h3,
+.picker-panel > p {
+  margin: 0;
+}
+/* The filter box is a bare <input>, so it never picked up the .add-form input
+   styling and rendered as a UA control inside the panel. */
+.picker-panel > input[type="text"] {
+  min-height: var(--control-sm-h);
+  padding: 0 12px;
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 0.86rem;
+}
+
+.picker-panel > input[type="text"]:focus {
+  outline: none;
+  border-color: var(--amber);
+  box-shadow: 0 0 0 3px var(--amber-ghost);
+}
+
+.picker-panel > input[type="text"]::placeholder {
+  color: var(--text-faint);
+}
+
+.picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  /* Rows were flush against each other with a 0.2rem gap, so a wrapped label ran
+     into its neighbours. Separate them and let the panel scroll. */
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+}
+
+.picker-list li {
+  padding: 0;
+  border-radius: var(--radius-sm);
+}
+
+.picker-list li:hover {
+  background: var(--ink-2);
+}
+
+/* align-items:center keeps the box beside the first line of a label that wraps
+   to two or three lines (long vendor › product › source paths do). */
+.picker-list label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  padding: 7px 10px;
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.picker-actions {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: flex-end;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
 
 .tile-row { display: flex; gap: 0.8rem; flex-wrap: wrap; margin: 1rem 0; }
 .tile {
@@ -2321,7 +2486,7 @@ a.btn-primary {
   top: calc(100% + 4px);
   left: 0;
   z-index: 20;
-  background: var(--panel, #1d2630);
+  background: var(--ink-2);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   padding: 8px;
@@ -2706,7 +2871,62 @@ a.btn-primary {
   font-size: 0.85rem;
 }
 
-.enrichment-section { margin-top: 1.5rem; }
+/* Collapsible secondary panel on the dashboard (image enrichment, and any
+   future summary that shouldn't push the sources table down the page). */
+.side-panel {
+  margin: 0 0 16px;
+  background: var(--ink-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.side-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  flex-wrap: wrap;
+}
+
+.side-panel-head:hover {
+  background: var(--ink-2);
+}
+
+.side-panel-head h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 0.92rem;
+}
+
+.side-panel-caret {
+  color: var(--text-faint);
+  font-size: 0.7rem;
+}
+
+.side-panel-summary {
+  color: var(--text-dim);
+  font-size: 0.82rem;
+}
+
+/* Counts read as data, like every other figure in the app. */
+.mono-figure {
+  font-family: var(--font-mono);
+  color: var(--text);
+}
+
+.side-panel-body {
+  padding: 0 14px 12px;
+  overflow-x: auto;
+}
+
+.enrichment-section {
+  margin-top: 4px;
+}
 
 /* ============================================================
    Console views (Admin, API Keys, Webhooks, …)
@@ -2802,7 +3022,10 @@ a.btn-primary {
 /* Checkboxes: the browser default renders as a light-mode control on these
    dark surfaces. accent-color tints the check itself; the label wrapper gives
    a real hit target so the text is clickable, not just the 13px box. */
-.console-view input[type="checkbox"] {
+/* Base checkbox. Was scoped to .console-view, so the same native light-mode
+   control reappeared in every other context (the job source picker). No context
+   wants the UA rendering, so this belongs at the base. */
+input[type="checkbox"] {
   accent-color: var(--amber);
   width: 15px;
   height: 15px;
@@ -2907,15 +3130,6 @@ a.btn-primary {
   border-top: 1px solid var(--line);
 }
 
-/* Inline <code> (header names, tokens) — only .markdown-body styles code
-   otherwise, so a bare one here fell back to the browser's default monospace
-   rather than --font-mono. */
-.console-view code {
-  font-family: var(--font-mono);
-  font-size: 0.86em;
-  color: var(--text-dim);
-}
-
 /* ── Webhooks ── */
 .view-intro {
   margin-bottom: 1em;
@@ -3002,30 +3216,40 @@ a.btn-primary {
   margin-bottom: 4px;
 }
 
-/* ── Auth realms (Logins) ── */
-.console-view textarea {
-  width: 100%;
-  padding: 10px 12px;
-  background: var(--ink-0);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  color: var(--text);
+/* ── Exports ── */
+.exports-view .item-list {
+  margin-top: 14px;
+}
+
+/* Generated filenames are provenance — same monospace treatment as URLs. */
+.export-file {
   font-family: var(--font-mono);
   font-size: 0.78rem;
-  line-height: 1.5;
-  resize: vertical;
 }
 
-.console-view textarea:focus {
-  outline: none;
-  border-color: var(--amber);
-  box-shadow: 0 0 0 3px var(--amber-ghost);
+.export-links {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
-.console-view textarea::placeholder {
-  color: var(--text-faint);
+/* ── CSV import ── */
+.bulk-import-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
 }
 
+.import-result {
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* ── Auth realms (Logins) ── */
 /* Per-row error/notice under a card's header. */
 .item-error {
   margin-top: 0.3em;

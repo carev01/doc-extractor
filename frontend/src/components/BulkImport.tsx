@@ -44,16 +44,19 @@ export default function BulkImport({
     <div className="picker-backdrop" onClick={onClose}>
       <div className="picker-panel" onClick={(e) => e.stopPropagation()}>
         <h3>Import sources (CSV)</h3>
-        <p className="sub">Columns: {SAMPLE}</p>
+        <p className="sub">
+          Columns: <code>{SAMPLE}</code>
+        </p>
         {error && <div className="error">{error}</div>}
-        <input type="file" accept=".csv,text/csv" onChange={onFile} />
-        <textarea
-          rows={8}
-          placeholder={SAMPLE}
-          value={csv}
-          onChange={(e) => setCsv(e.target.value)}
-          style={{ width: "100%", marginTop: "0.5rem" }}
-        />
+        <div className="bulk-import-body">
+          <input type="file" accept=".csv,text/csv" onChange={onFile} />
+          <textarea
+            rows={8}
+            placeholder={SAMPLE}
+            value={csv}
+            onChange={(e) => setCsv(e.target.value)}
+          />
+        </div>
         {result && (
           <div className="import-result">
             <p className="sub">

@@ -48,7 +48,7 @@ export default function ProductVersionBar({ product, sources, onChanged }: Props
             value={enableValue}
             onChange={(e) => setEnableValue(e.target.value)}
           />
-          <button type="submit">Enable</button>
+          <button type="submit" className="btn-primary-sm">Enable</button>
           <button type="button" className="btn-secondary-sm" onClick={() => setEnabling(false)}>
             Cancel
           </button>

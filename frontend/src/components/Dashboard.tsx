@@ -135,6 +135,10 @@ export default function Dashboard({
   const [tile, setTile] = useState<string | null>(null);
   const [sort, setSort] = useState<DashSort | null>(null);
   const [selected, setSelected] = useState<OverviewSourceRow | null>(null);
+  // null = follow the data (open only when there is a backlog worth acting on);
+  // a boolean means the user has taken over. Derived at render rather than
+  // synced in an effect, which react-hooks/set-state-in-effect rejects.
+  const [enrOpenOverride, setEnrOpenOverride] = useState<boolean | null>(null);
 
   const reload = () => {
     getDashboardOverview()
@@ -175,6 +179,8 @@ export default function Dashboard({
         : [],
     [data],
   );
+
+  const enrOpen = enrOpenOverride ?? backlog.length > 0;
 
   const vendorOptions = useMemo(
     () =>
@@ -318,6 +324,68 @@ export default function Dashboard({
         )}
       </div>
 
+      {/* Above the sources table, not below it: that table runs to hundreds of
+          rows, so this was only reachable by scrolling past all of them. Detail
+          collapses, so the common "nothing pending" case costs one line. */}
+      <div className="side-panel enrichment-section">
+        <button
+          type="button"
+          className="side-panel-head"
+          aria-expanded={enrOpen}
+          onClick={() => setEnrOpenOverride(!enrOpen)}
+        >
+          <span className="side-panel-caret">{enrOpen ? "▾" : "▸"}</span>
+          <h3>Image enrichment</h3>
+          <span className="side-panel-summary">
+            <span className="mono-figure">{agg.enrichment.described.toLocaleString()}</span>
+            {" / "}
+            <span className="mono-figure">
+              {(agg.enrichment.described + agg.enrichment.pending).toLocaleString()}
+            </span>
+            {" described"}
+            {backlog.length > 0 ? (
+              <>
+                {" · "}
+                <span className="cell-warn">
+                  {agg.enrichment.sources_with_backlog} source
+                  {agg.enrichment.sources_with_backlog === 1 ? "" : "s"} with a backlog
+                </span>
+              </>
+            ) : (
+              " · all images described"
+            )}
+          </span>
+        </button>
+        {enrMsg && <p className={enrMsg.ok ? "sub run-done" : "error"}>{enrMsg.text}</p>}
+        {enrOpen && backlog.length > 0 && (
+          <div className="side-panel-body">
+            <table className="dashboard-table">
+              <thead>
+                <tr><th>Source</th><th>Pending</th><th></th></tr>
+              </thead>
+              <tbody>
+                {backlog.map((row) => (
+                  <tr key={row.id}>
+                    <td>{[row.vendor, row.product, row.name].join(" › ")}</td>
+                    <td className="cell-warn">{row.enrichment.pending}</td>
+                    <td>
+                      <button
+                        className="btn-secondary-sm"
+                        title={row.active_run ? "A run is already active" : undefined}
+                        disabled={row.active_run || enriching === row.id}
+                        onClick={() => handleEnrich(row.id)}
+                      >
+                        {enriching === row.id ? "Queuing…" : "Enrich"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       <table className="dashboard-table">
         <thead>
           <tr>
@@ -365,44 +433,6 @@ export default function Dashboard({
         </tbody>
       </table>
 
-      <div className="enrichment-section">
-        <h3>Image enrichment</h3>
-        <p className="sub">
-          {agg.enrichment.described.toLocaleString()} /{" "}
-          {(agg.enrichment.described + agg.enrichment.pending).toLocaleString()} images described
-          {" · "}
-          {agg.enrichment.sources_with_backlog} source
-          {agg.enrichment.sources_with_backlog === 1 ? "" : "s"} with a backlog
-        </p>
-        {enrMsg && <p className={enrMsg.ok ? "sub run-done" : "error"}>{enrMsg.text}</p>}
-        {backlog.length === 0 ? (
-          <p className="sub">All images described.</p>
-        ) : (
-          <table className="dashboard-table">
-            <thead>
-              <tr><th>Source</th><th>Pending</th><th></th></tr>
-            </thead>
-            <tbody>
-              {backlog.map((row) => (
-                <tr key={row.id}>
-                  <td>{[row.vendor, row.product, row.name].join(" › ")}</td>
-                  <td>{row.enrichment.pending}</td>
-                  <td>
-                    <button
-                      className="btn-secondary-sm"
-                      title={row.active_run ? "A run is already active" : undefined}
-                      disabled={row.active_run || enriching === row.id}
-                      onClick={() => handleEnrich(row.id)}
-                    >
-                      {enriching === row.id ? "Queuing…" : "Enrich"}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
 
       {selected && (
         <DashboardDrawer

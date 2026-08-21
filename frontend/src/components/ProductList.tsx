@@ -88,7 +88,7 @@ export default function ProductList({ vendor, onSelect, selectedId, access }: Pr
             onChange={(e) => setName(e.target.value)}
             required
           />
-          <button type="submit" disabled={loading}>
+          <button type="submit" className="btn-primary" disabled={loading}>
             {loading ? "Adding..." : "Add Product"}
           </button>
         </form>

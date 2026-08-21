@@ -212,7 +212,7 @@ export function Webhooks() {
             </label>
           ))}
         </div>
-        <button type="submit" disabled={adding}>
+        <button type="submit" className="btn-primary" disabled={adding}>
           {adding ? "Adding..." : "Add webhook"}
         </button>
         {formError && <div className="error">{formError}</div>}

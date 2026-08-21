@@ -266,7 +266,7 @@ export default function SourceList({
             ))}
           </select>
         )}
-        <button type="submit" disabled={loading}>
+        <button type="submit" className="btn-primary" disabled={loading}>
           {loading ? "Adding..." : "Add Source"}
         </button>
       </form>
