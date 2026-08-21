@@ -41,10 +41,47 @@ def _vlm_model_api() -> dict:
     }
 
 
+class DoclingConversionFailed(DoclingServeError):
+    """docling-serve ran the task and it came back ``failure``.
+
+    Distinct from the base error (service unreachable, timed out, task lost),
+    which is worth retrying: this means the *document* broke docling's pipeline,
+    so resubmitting the same bytes fails identically. Seen on the NetWorker
+    Administration Guide, where four pages fail inside docling's VLM pipeline
+    with Pillow's "tile cannot extend outside image" — the embedded images and
+    our extracted single-page PDFs both decode cleanly, so the fault is
+    downstream of what we send.
+    """
+
+
 class _TaskLost(DoclingServeError):
     """A poll/result returned 404 — docling-serve lost the task (it restarted and
     dropped its in-memory job registry). Retrying the same task id is futile; the
     caller should resubmit a fresh convert job."""
+
+
+def _failure_reason(status: dict) -> str:
+    """Best-effort human reason from a failed task's status payload.
+
+    docling-serve reports the cause inconsistently across versions — sometimes on
+    ``task_meta``, sometimes as ``error``/``errors``/``detail``, and sometimes
+    nowhere at all (the observed payload was task_meta: None, which is why the
+    only record of "tile cannot extend outside image" was docling's own log).
+    Pull whatever is present and fall back to the raw payload so the message
+    never gets *less* informative than before.
+    """
+    for key in ("error", "errors", "detail", "message", "task_meta"):
+        val = status.get(key)
+        if not val:
+            continue
+        if isinstance(val, dict):
+            inner = val.get("error") or val.get("message") or val.get("detail")
+            if inner:
+                return str(inner)[:500]
+            continue
+        return str(val)[:500]
+    return (f"no reason reported by docling-serve (task {status.get('task_id')}); "
+            f"check the docling-serve worker log for this task id")
 
 
 async def _send_with_retry(do_request, label, deadline) -> dict:
@@ -161,7 +198,9 @@ async def convert_async(
                     logger.exception("on_poll callback failed")
 
         if status.get("task_status") == _TERMINAL_FAIL:
-            raise DoclingServeError(f"docling-serve task failed: {status}")
+            raise DoclingConversionFailed(
+                f"docling-serve task failed: {_failure_reason(status)}"
+            )
 
         return await _get_json_with_retry(
             client, base + f"/v1/result/{task_id}", headers, deadline)

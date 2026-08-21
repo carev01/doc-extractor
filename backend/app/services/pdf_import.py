@@ -279,8 +279,10 @@ async def run_pdf_extraction(service, db, source, run, run_pk,
         await db.commit()
         await service._raise_if_controlled(db, run_pk)
 
+    escalation_failures: dict[int, str] = {}
     failed_ranges = await escalate_low_confidence_pages(
-        pdf_bytes, converted, on_page=_on_escalate)
+        pdf_bytes, converted, on_page=_on_escalate, failures=escalation_failures)
+    _note_escalation_failures(run, escalation_failures)
 
     run.current_phase = "pdf_split"
     await db.commit()
@@ -453,6 +455,31 @@ async def _persist_segments(
     return run
 
 
+def _page_list(pages0: "set[int] | list[int]") -> str:
+    """Render 0-based page indices as 1-based page numbers, as a reader expects.
+    escalation_pending stores 0-based indices, so a raw dump is off by one from
+    the page numbers in the PDF (and from docling's own log lines)."""
+    nums = sorted(p + 1 for p in pages0)
+    head = ", ".join(str(n) for n in nums[:12])
+    return head + (f" (+{len(nums) - 12} more)" if len(nums) > 12 else "")
+
+
+def _note_escalation_failures(run, failures: "dict[int, str]") -> None:
+    """Record why pages could not be escalated, on the run itself.
+
+    Without this the reason existed only in docling-serve's worker log — the run
+    said COMPLETED and the pending page list carried no explanation.
+    """
+    if not failures:
+        return
+    reasons = sorted(set(failures.values()))
+    detail = "; ".join(reasons[:3]) + (" …" if len(reasons) > 3 else "")
+    msg = (f"VLM escalation failed for page(s) {_page_list(set(failures))}: "
+           f"{detail}")
+    logger.warning("pdf_escalate: %s", msg)
+    run.error_message = msg[:4096]
+
+
 async def retry_escalation(service, db, source, run, run_pk,
                            auth_state: dict | None = None) -> ExtractionRun:
     """Re-attempt VLM escalation for the PAGES that failed on a prior run, reusing
@@ -517,11 +544,32 @@ async def retry_escalation(service, db, source, run, run_pk,
         await db.commit()
         await service._raise_if_controlled(db, run_pk)
 
+    escalation_failures: dict[int, str] = {}
     failed_ranges = await escalate_low_confidence_pages(
-        pdf_bytes, converted, budget=budget, only=only, on_page=_on_escalate)
+        pdf_bytes, converted, budget=budget, only=only, on_page=_on_escalate,
+        failures=escalation_failures)
+    _note_escalation_failures(run, escalation_failures)
+
+    # An explicit retry that recovered no page at all achieved nothing. Reporting
+    # that as a plain COMPLETED run (which it did) left the operator reading
+    # docling-serve's container log to find out why the pages were still pending.
+    still_failing = pages_in_ranges(failed_ranges)
+    gained_nothing = bool(only) and only.issubset(still_failing)
 
     rendered_segments = await asyncio.to_thread(split_into_segments, converted, outline)
-    return await _persist_segments(
+    persisted = await _persist_segments(
         service, db, source, run, run_pk, converted, outline,
         rendered_segments, pdf_hash, failed_ranges, pdf_bytes,
     )
+    if gained_nothing:
+        # Deliberately NOT a failed run: the content is intact (escalation only
+        # ever improves a page) and `escalation_pending` + the dashboard's
+        # Escalation tile already flag that pages are outstanding. What was
+        # missing is *why* — previously the only record was docling-serve's
+        # container log. Say it on the run instead.
+        persisted.error_message = (
+            f"Escalation retry recovered none of the {len(only)} pending "
+            f"page(s) {_page_list(only)}. " + (persisted.error_message or "")
+        ).strip()[:4096]
+        await db.commit()
+    return persisted
