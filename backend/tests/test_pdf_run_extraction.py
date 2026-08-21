@@ -341,7 +341,7 @@ async def test_escalation_failure_records_pending(factory, tmp_path, monkeypatch
     tests/test_pdf_escalate_delta.py."""
     sid = await _make_pdf_source(factory, tmp_path)
 
-    async def fake_escalate(pdf_bytes, converted, *, budget=None, only=None, on_page=None):
+    async def fake_escalate(pdf_bytes, converted, **_kw):
         return [{"page_start": 0, "page_end": 0}]
 
     monkeypatch.setattr(_pdf_import_mod, "escalate_low_confidence_pages", fake_escalate)
