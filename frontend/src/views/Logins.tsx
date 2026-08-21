@@ -3,28 +3,27 @@ import { authRealmApi } from '../api/client';
 import { apiError } from '../api/errors';
 import type { AuthRealm, AuthRealmCreate } from '../types';
 
-const STATUS_COLORS: Record<string, string> = {
-  active: '#58c08a',
-  needs_login: '#eaa53d',
-  expired: '#6f8087',
-  login_failed: '#e0685f',
+// Severity classes rather than hex literals — these were hardcoded copies of
+// --new / --amber / --text-faint / --gone and drifted from the tokens.
+const STATUS_CLASS: Record<string, string> = {
+  active: 'is-ok',
+  needs_login: 'is-warn',
+  expired: 'is-muted',
+  login_failed: 'is-bad',
 };
 
-function expiryLabel(iso: string | null): { text: string; color: string } | null {
+function expiryLabel(iso: string | null): { text: string; cls: string } | null {
   if (!iso) return null;
   const ms = new Date(iso).getTime() - Date.now();
-  if (ms <= 0) return { text: 'EXPIRED', color: '#e0685f' };
+  if (ms <= 0) return { text: 'EXPIRED', cls: 'text-bad' };
   const mins = Math.round(ms / 60000);
   const text = mins < 60 ? `expires in ${mins}m` : `expires in ${Math.round(mins / 60)}h`;
-  return { text, color: mins < 120 ? '#eaa53d' : '#6f8087' };
+  return { text, cls: mins < 120 ? 'text-warn' : 'text-muted' };
 }
 
 function statusBadge(status: string) {
   return (
-    <span
-      className="status-badge"
-      style={{ backgroundColor: STATUS_COLORS[status] || '#888' }}
-    >
+    <span className={`status-badge ${STATUS_CLASS[status] ?? 'is-muted'}`}>
       {status.replace('_', ' ')}
     </span>
   );
@@ -134,7 +133,7 @@ export function Logins() {
   };
 
   return (
-    <div className="logins-view">
+    <div className="logins-view console-view">
       <h2>Auth Realms</h2>
 
       <form onSubmit={handleCreate} className="add-form">
@@ -191,11 +190,11 @@ export function Logins() {
         {realms.map((r) => (
           <li key={r.id} className="non-clickable">
             <div className="item-info">
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em' }}>
+              <div className="card-head">
                 {statusBadge(r.status)}
                 {(() => {
                   const e = expiryLabel(r.session_expires_at);
-                  return e ? <span className="sub" style={{ color: e.color }}>{e.text}</span> : null;
+                  return e ? <span className={`sub ${e.cls}`}>{e.text}</span> : null;
                 })()}
                 <strong>{r.name}</strong>
                 <code className="sub">{r.login_domain}</code>
@@ -212,31 +211,26 @@ export function Logins() {
                 )}
               </div>
               {r.error_message && (
-                <div className="error" style={{ marginTop: '0.3em' }}>
-                  {r.error_message}
-                </div>
+                <div className="error item-error">{r.error_message}</div>
               )}
               {actionError[r.id] && (
-                <div className="error" style={{ marginTop: '0.3em' }}>
-                  {actionError[r.id]}
-                </div>
+                <div className="error item-error">{actionError[r.id]}</div>
               )}
 
               {sessionOpen[r.id] && (
-                <div style={{ marginTop: '0.5em' }}>
-                  <p className="sub" style={{ marginBottom: '0.3em' }}>
+                <div className="session-block">
+                  <p className="sub session-hint">
                     Paste the Cookie-Editor export (array) or a Playwright {'{'}cookies, origins{'}'} snapshot.
                   </p>
                   <textarea
                     rows={6}
-                    style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.8em' }}
                     placeholder={'{\n  "cookies": [],\n  "origins": []\n}'}
                     value={sessionInput[r.id] ?? ''}
                     onChange={(e) =>
                       setSessionInput((prev) => ({ ...prev, [r.id]: e.target.value }))
                     }
                   />
-                  <div style={{ display: 'flex', gap: '0.4em', marginTop: '0.3em' }}>
+                  <div className="edit-actions session-actions">
                     <button
                       type="button"
                       className="btn-primary-sm"
