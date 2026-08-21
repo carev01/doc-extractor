@@ -66,8 +66,30 @@ jobs:
         working-directory: backend
         run: pytest -q
 
+  frontend-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install deps
+        working-directory: frontend
+        run: npm ci
+      - name: eslint
+        working-directory: frontend
+        run: npm run lint
+      # `npm run build` is `tsc -b && vite build`. Type-checking MUST go through
+      # `tsc -b`: tsconfig.json is a solution file ("files": [] + project
+      # references), so a bare `tsc --noEmit` checks nothing and exits 0.
+      - name: tsc -b + vite build
+        working-directory: frontend
+        run: npm run build
+
   images:
-    needs: backend-tests
+    needs: [backend-tests, frontend-checks]
     # Build/push only on main + tags (not on PRs).
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
