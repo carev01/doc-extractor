@@ -46,7 +46,7 @@ export function ApiKeys({ me }: { me: AuthUser | null }) {
   };
 
   return (
-    <div className="apikeys-view">
+    <div className="apikeys-view console-view">
       <h2>API Keys</h2>
       <p className="sub">
         Keys authenticate API clients via the <code>X-API-Key</code> header. A key's
@@ -54,14 +54,14 @@ export function ApiKeys({ me }: { me: AuthUser | null }) {
       </p>
 
       {newKey && (
-        <div className="banner" style={{ padding: "0.8em", border: "1px solid #58c08a", borderRadius: 6, margin: "0.6em 0" }}>
+        <div className="reveal-banner">
           <strong>New key "{newKey.name}"</strong> — copy it now, it won't be shown again:
-          <pre style={{ userSelect: "all", overflowX: "auto" }}>{newKey.raw_key}</pre>
-          <button onClick={() => setNewKey(null)}>Dismiss</button>
+          <pre>{newKey.raw_key}</pre>
+          <button className="btn-secondary-sm" onClick={() => setNewKey(null)}>Dismiss</button>
         </div>
       )}
 
-      <form onSubmit={create} className="add-form" style={{ display: "flex", gap: "0.5em", flexWrap: "wrap" }}>
+      <form onSubmit={create} className="add-form">
         <input placeholder="Key name" value={name} onChange={(e) => setName(e.target.value)} required />
         <select value={role} onChange={(e) => setRole(e.target.value as typeof role)}>
           {roleOptions().map((r) => <option key={r} value={r}>{r}</option>)}
@@ -70,26 +70,26 @@ export function ApiKeys({ me }: { me: AuthUser | null }) {
         {err && <span className="error">{err}</span>}
       </form>
 
-      <table style={{ width: "100%", fontSize: "0.9em", borderCollapse: "collapse", marginTop: "1em" }}>
+      <table className="data-table">
         <thead>
-          <tr style={{ textAlign: "left", color: "#888" }}>
+          <tr>
             <th>Name</th><th>Prefix</th><th>Role</th><th>Status</th><th>Last used</th><th></th>
           </tr>
         </thead>
         <tbody>
           {keys.map((k) => (
-            <tr key={k.id} style={{ opacity: k.is_active ? 1 : 0.5 }}>
+            <tr key={k.id} className={k.is_active ? "" : "is-inactive"}>
               <td>{k.name}</td>
-              <td><code>{k.key_prefix}…</code></td>
+              <td className="mono-cell">{k.key_prefix}…</td>
               <td>{k.role}</td>
               <td>{k.is_active ? "active" : "revoked"}</td>
               <td>{k.last_used_at ? new Date(k.last_used_at).toLocaleString() : "never"}</td>
               <td>
                 {k.is_active && (
-                  <>
-                    <button className="btn-secondary-sm" onClick={() => rotate(k.id)}>Rotate</button>{" "}
+                  <div className="cell-actions">
+                    <button className="btn-secondary-sm" onClick={() => rotate(k.id)}>Rotate</button>
                     <button className="btn-danger-sm" onClick={() => revoke(k.id)}>Revoke</button>
-                  </>
+                  </div>
                 )}
               </td>
             </tr>
@@ -112,24 +112,30 @@ function AdminKeys() {
     try { await keysApi.revoke(id); refresh(); } catch { /* ignore */ }
   };
   return (
-    <div style={{ marginTop: "2em", borderTop: "1px solid var(--line)", paddingTop: "1.5em" }}>
+    <div className="section-divider">
       <h3>All API Keys</h3>
-      <table style={{ width: "100%", fontSize: "0.9em", borderCollapse: "collapse" }}>
+      <table className="data-table">
         <thead>
-          <tr style={{ textAlign: "left", color: "#888" }}>
+          <tr>
             <th>Owner</th><th>Name</th><th>Prefix</th><th>Role</th><th>Status</th><th>Last used</th><th></th>
           </tr>
         </thead>
         <tbody>
           {keys.map((k) => (
-            <tr key={k.id} style={{ opacity: k.is_active ? 1 : 0.5 }}>
-              <td>{k.user_email}</td>
+            <tr key={k.id} className={k.is_active ? "" : "is-inactive"}>
+              <td className="mono-cell">{k.user_email}</td>
               <td>{k.name}</td>
-              <td><code>{k.key_prefix}…</code></td>
+              <td className="mono-cell">{k.key_prefix}…</td>
               <td>{k.role}</td>
               <td>{k.is_active ? "active" : "revoked"}</td>
               <td>{k.last_used_at ? new Date(k.last_used_at).toLocaleString() : "never"}</td>
-              <td>{k.is_active && <button className="btn-danger-sm" onClick={() => revoke(k.id)}>Revoke</button>}</td>
+              <td>
+                {k.is_active && (
+                  <div className="cell-actions">
+                    <button className="btn-danger-sm" onClick={() => revoke(k.id)}>Revoke</button>
+                  </div>
+                )}
+              </td>
             </tr>
           ))}
           {keys.length === 0 && <tr><td colSpan={7} className="sub">No keys.</td></tr>}

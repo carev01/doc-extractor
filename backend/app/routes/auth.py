@@ -669,12 +669,16 @@ async def set_vendor_permissions(
                 detail=f"Cannot grant read_write on {item.vendor_id}: user's global role is read_only",
             )
 
-    # Replace all grants for this user.
-    existing = (
-        await db.execute(select(UserVendorPermission).where(UserVendorPermission.user_id == user_id))
-    ).scalars().all()
-    for row in existing:
-        await db.delete(row)
+    # Replace all grants for this user. The delete is issued as a statement and
+    # flushed *before* the inserts: SQLAlchemy's unit of work orders INSERTs
+    # ahead of DELETEs within a flush, so ORM-deleting the old rows and adding
+    # the new ones together made any re-grant of an already-granted vendor
+    # collide with uq_user_vendor (user_id, vendor_id). The first save for a user
+    # worked — there was nothing to delete — and every later edit failed.
+    await db.execute(
+        delete(UserVendorPermission).where(UserVendorPermission.user_id == user_id)
+    )
+    await db.flush()
     for item in body.permissions:
         db.add(UserVendorPermission(
             user_id=user_id, vendor_id=item.vendor_id,

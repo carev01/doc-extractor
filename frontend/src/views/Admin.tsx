@@ -30,14 +30,14 @@ export function Admin({ meId }: { meId: string | null }) {
   };
 
   return (
-    <div className="admin-view">
+    <div className="admin-view console-view">
       <h2>User Management</h2>
       {err && <div className="error">{err}</div>}
 
       <CreateUser onCreated={refresh} />
 
       <h3>Users</h3>
-      <table className="admin-table">
+      <table className="data-table">
         <thead>
           <tr>
             <th>Email</th><th>Name</th><th>Role</th><th>Active</th><th>Sign-in</th><th></th>
@@ -46,7 +46,7 @@ export function Admin({ meId }: { meId: string | null }) {
         <tbody>
           {users.map((u) => (
             <tr key={u.id} className={u.is_active ? "" : "is-inactive"}>
-              <td className="admin-email">{u.email}{u.id === meId && <span className="sub"> (you)</span>}</td>
+              <td className="mono-cell">{u.email}{u.id === meId && <span className="sub"> (you)</span>}</td>
               <td>{u.display_name}</td>
               <td>
                 <select value={u.role} disabled={u.id === meId} onChange={(e) => setRole(u, e.target.value as Role)}>

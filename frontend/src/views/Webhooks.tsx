@@ -169,9 +169,9 @@ export function Webhooks() {
   };
 
   return (
-    <div className="webhooks-view">
+    <div className="webhooks-view console-view">
       <h2>Webhooks</h2>
-      <p className="sub" style={{ marginBottom: "1em" }}>
+      <p className="sub view-intro">
         Configure outbound webhooks that fire when content changes are detected.
         Payloads are signed with HMAC-SHA256 via the{" "}
         <code>X-DocExtractor-Signature</code> header.
@@ -183,7 +183,7 @@ export function Webhooks() {
           value={form.url}
           onChange={(e) => setForm({ ...form, url: e.target.value })}
           required
-          style={{ minWidth: "300px" }}
+          className="input-wide"
         />
         <input
           placeholder="Label (optional)"
@@ -195,9 +195,9 @@ export function Webhooks() {
           value={form.secret ?? ""}
           onChange={(e) => setForm({ ...form, secret: e.target.value })}
         />
-        <div className="event-checkboxes" style={{ display: "flex", gap: "0.8em", flexWrap: "wrap" }}>
+        <div className="check-group">
           {ALL_EVENTS.map((ev) => (
-            <label key={ev} style={{ display: "flex", alignItems: "center", gap: "0.3em" }}>
+            <label key={ev} className="check-row">
               <input
                 type="checkbox"
                 checked={form.events?.includes(ev) ?? false}
@@ -223,13 +223,13 @@ export function Webhooks() {
           <li key={w.id} className="non-clickable">
             <div className="item-info">
               {editingId === w.id ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: "0.4em" }}>
+                <div className="webhook-edit">
                   <input
                     value={editForm.url ?? ""}
                     onChange={(e) =>
                       setEditForm({ ...editForm, url: e.target.value })
                     }
-                    style={{ minWidth: "300px" }}
+                    className="input-wide"
                   />
                   <input
                     placeholder="Label"
@@ -245,12 +245,9 @@ export function Webhooks() {
                       setEditForm({ ...editForm, secret: e.target.value })
                     }
                   />
-                  <div style={{ display: "flex", gap: "0.8em", flexWrap: "wrap" }}>
+                  <div className="check-group">
                     {ALL_EVENTS.map((ev) => (
-                      <label
-                        key={ev}
-                        style={{ display: "flex", alignItems: "center", gap: "0.3em" }}
-                      >
+                      <label key={ev} className="check-row">
                         <input
                           type="checkbox"
                           checked={editForm.events?.includes(ev) ?? false}
@@ -265,7 +262,7 @@ export function Webhooks() {
                       </label>
                     ))}
                   </div>
-                  <div style={{ display: "flex", gap: "0.4em" }}>
+                  <div className="edit-actions">
                     <button
                       type="button"
                       className="btn-primary-sm"
@@ -284,23 +281,16 @@ export function Webhooks() {
                 </div>
               ) : (
                 <>
-                  <div style={{ display: "flex", alignItems: "center", gap: "0.5em" }}>
-                    <span
-                      className="status-badge"
-                      style={{
-                        backgroundColor: w.is_active ? "#58c08a" : "#6f8087",
-                      }}
-                    >
+                  <div className="webhook-head">
+                    <span className={`status-badge ${w.is_active ? "is-on" : "is-off"}`}>
                       {w.is_active ? "active" : "inactive"}
                     </span>
                     {w.label && <strong>{w.label}</strong>}
-                    <code className="sub" style={{ fontSize: "0.85em" }}>
-                      {w.url}
-                    </code>
+                    <code className="webhook-url">{w.url}</code>
                   </div>
                   <div className="item-meta">
                     {w.events.map((ev) => (
-                      <span key={ev} className="sub" style={{ marginRight: "0.5em" }}>
+                      <span key={ev} className="sub event-tag">
                         · {EVENT_LABELS[ev] || ev}
                       </span>
                     ))}
@@ -325,69 +315,48 @@ export function Webhooks() {
                     )}
                   </div>
                   {w.last_error && (
-                    <div className="error" style={{ marginTop: "0.3em", fontSize: "0.85em" }}>
-                      {w.last_error}
-                    </div>
+                    <div className="error webhook-error">{w.last_error}</div>
                   )}
                   {actionStatus[w.id] && (
                     <div
-                      className={actionStatus[w.id].type === "ok" ? "sub" : "error"}
-                      style={{ marginTop: "0.3em" }}
+                      className={`webhook-status ${actionStatus[w.id].type === "ok" ? "sub" : "error"}`}
                     >
                       {actionStatus[w.id].msg}
                     </div>
                   )}
 
                   {showDeliveries[w.id] && deliveries[w.id] && (
-                    <div style={{ marginTop: "0.5em" }}>
-                      <h4 className="sub" style={{ fontSize: "0.85em", marginBottom: "0.3em" }}>
-                        Recent Deliveries
-                      </h4>
-                      <table
-                        style={{
-                          width: "100%",
-                          fontSize: "0.8em",
-                          borderCollapse: "collapse",
-                        }}
-                      >
+                    <div className="deliveries-block">
+                      <h4 className="deliveries-title">Recent Deliveries</h4>
+                      <table className="subtable">
                         <thead>
-                          <tr style={{ textAlign: "left", color: "#888" }}>
-                            <th style={{ padding: "0.2em" }}>Time</th>
-                            <th style={{ padding: "0.2em" }}>Event</th>
-                            <th style={{ padding: "0.2em" }}>Status</th>
-                            <th style={{ padding: "0.2em" }}>Attempt</th>
-                            <th style={{ padding: "0.2em" }}>Error</th>
+                          <tr>
+                            <th>Time</th>
+                            <th>Event</th>
+                            <th>Status</th>
+                            <th>Attempt</th>
+                            <th>Error</th>
                           </tr>
                         </thead>
                         <tbody>
                           {deliveries[w.id].map((d) => (
                             <tr key={d.id}>
-                              <td style={{ padding: "0.2em" }}>
-                                {new Date(d.created_at).toLocaleString()}
+                              <td>{new Date(d.created_at).toLocaleString()}</td>
+                              <td>{d.event_type}</td>
+                              <td>
+                                <span className={d.success ? "ok" : "bad"}>
+                                  {d.success
+                                    ? (d.status_code ?? "OK")
+                                    : (d.status_code ?? "failed")}
+                                </span>
                               </td>
-                              <td style={{ padding: "0.2em" }}>{d.event_type}</td>
-                              <td style={{ padding: "0.2em" }}>
-                                {d.success ? (
-                                  <span style={{ color: "#58c08a" }}>
-                                    {d.status_code ?? "OK"}
-                                  </span>
-                                ) : (
-                                  <span style={{ color: "#e0685f" }}>
-                                    {d.status_code ?? "failed"}
-                                  </span>
-                                )}
-                              </td>
-                              <td style={{ padding: "0.2em" }}>{d.attempt}</td>
-                              <td style={{ padding: "0.2em", color: "#e0685f" }}>
-                                {d.error ?? ""}
-                              </td>
+                              <td>{d.attempt}</td>
+                              <td className="bad">{d.error ?? ""}</td>
                             </tr>
                           ))}
                           {deliveries[w.id].length === 0 && (
                             <tr>
-                              <td colSpan={5} style={{ padding: "0.3em", color: "#888" }}>
-                                No deliveries yet.
-                              </td>
+                              <td colSpan={5} className="sub">No deliveries yet.</td>
                             </tr>
                           )}
                         </tbody>

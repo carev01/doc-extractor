@@ -50,7 +50,7 @@ const SOURCE_TAB_LABELS: Record<string, string> = {
 const ADMIN_ONLY_VIEWS = new Set<View>(["jobs", "logins", "user-management"]);
 
 export default function App() {
-  const [view, setView] = useState<View>("vendors");
+  const [selectedView, setView] = useState<View>("vendors");
   const [selectedVendor, setSelectedVendor] = useState<Vendor | null>(null);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [selectedSource, setSelectedSource] =
@@ -65,6 +65,13 @@ export default function App() {
   // before gating existed if /auth/my-access can't be reached; the server
   // enforces regardless.
   const [access, setAccess] = useState<Access>(OPEN_ACCESS);
+
+  // A non-admin can be holding an admin-only view — access resolves after the
+  // first render, and the menu item may have been clicked before that. Derived
+  // during render instead of corrected in an effect, which would cascade an
+  // extra render and flash an empty main area.
+  const view: View =
+    !access.isAdmin && ADMIN_ONLY_VIEWS.has(selectedView) ? "vendors" : selectedView;
 
   // Hamburger menu state
   const [menuOpen, setMenuOpen] = useState(false);
@@ -111,12 +118,6 @@ export default function App() {
       window.removeEventListener("dx-auth-expired", onExpired);
     };
   }, []);
-
-  // If access resolves to non-admin while an admin-only view is selected, fall
-  // back to the vendor list rather than rendering a blank main area.
-  useEffect(() => {
-    if (!access.isAdmin && ADMIN_ONLY_VIEWS.has(view)) setView("vendors");
-  }, [access, view]);
 
   // Click-outside handler for hamburger menu
   useEffect(() => {
