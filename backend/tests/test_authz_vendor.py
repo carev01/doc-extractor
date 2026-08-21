@@ -326,3 +326,52 @@ async def test_my_access_reports_downgraded_api_key_role(client):
 
 async def test_my_access_requires_authentication(client):
     assert (await client.get("/api/auth/my-access")).status_code == 401
+
+
+async def test_changing_an_existing_grant_replaces_it(client):
+    """Re-saving grants for a user who already has some must work.
+
+    The route replaces grants wholesale: it ORM-deletes the existing rows and
+    adds the new ones in one flush. SQLAlchemy emits INSERTs before DELETEs, so
+    re-granting an already-granted vendor tripped uq_user_vendor — the first save
+    for a user succeeded and every later edit failed.
+    """
+    admin = _bearer(await _bootstrap_admin(client))
+    v1, _, _ = await _vendor_with_source(client, admin, "v1")
+    v2, _, _ = await _vendor_with_source(client, admin, "v2")
+    uid, _ = await _make_user(client, admin, "edit@t.com", "read_write")
+    url = f"/api/auth/users/{uid}/vendor-permissions"
+
+    # First save — no existing rows, this always worked.
+    r = await client.put(url, json={"permissions": [
+        {"vendor_id": v1, "level": "read_only"}]}, headers=admin)
+    assert r.status_code == 200, r.text
+
+    # Change that same vendor's level, and add a second one.
+    r = await client.put(url, json={"permissions": [
+        {"vendor_id": v1, "level": "read_write"},
+        {"vendor_id": v2, "level": "read_only"},
+    ]}, headers=admin)
+    assert r.status_code == 200, r.text
+    assert {p["vendor_id"]: p["level"] for p in r.json()["permissions"]} == {
+        v1: "read_write", v2: "read_only"}
+
+    # Idempotent re-save of the identical set.
+    r = await client.put(url, json={"permissions": [
+        {"vendor_id": v1, "level": "read_write"},
+        {"vendor_id": v2, "level": "read_only"},
+    ]}, headers=admin)
+    assert r.status_code == 200, r.text
+
+    # Revoking one leaves exactly the other.
+    r = await client.put(url, json={"permissions": [
+        {"vendor_id": v2, "level": "read_only"}]}, headers=admin)
+    assert r.status_code == 200, r.text
+    assert {p["vendor_id"]: p["level"] for p in r.json()["permissions"]} == {v2: "read_only"}
+
+    # And the level really changed in enforcement, not just in the response.
+    r = await client.put(url, json={"permissions": [
+        {"vendor_id": v1, "level": "read_only"}]}, headers=admin)
+    assert r.status_code == 200, r.text
+    perms = (await client.get(url, headers=admin)).json()["permissions"]
+    assert {p["vendor_id"]: p["level"] for p in perms} == {v1: "read_only"}

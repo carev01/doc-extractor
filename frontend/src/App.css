@@ -531,6 +531,10 @@ a.btn-primary {
   color: #0d1316;
 }
 
+/* on/off variants so a caller doesn't have to inline a hex colour */
+.status-badge.is-on { background: var(--new); }
+.status-badge.is-off { background: var(--text-faint); }
+
 .badge-new,
 .badge-upd,
 .badge-removed {
@@ -2618,16 +2622,17 @@ a.btn-primary {
 .enrichment-section { margin-top: 1.5rem; }
 
 /* ============================================================
-   Admin console (users, roles, per-vendor grants)
+   Console views (Admin, API Keys, Webhooks, …)
    ------------------------------------------------------------
-   This view was inline-styled only, so it inherited none of the app's type or
-   control styling and read as a different product — raw <select>s in the
-   browser's own font next to the app's styled inputs. Everything below is
-   scoped to .admin-view so it can restyle bare `select`/`table` without
-   touching the selects elsewhere that already carry their own rules
-   (.split-options, .run-filters, .schedule-fields).
+   These views were inline-styled only, so they inherited none of the app's type
+   or control styling and read as a different product — raw <select>s and
+   checkboxes in the browser's own rendering next to the app's styled inputs.
+   A view opts in by adding `console-view` to its root element, which is why
+   this can restyle bare `select`/`input[type=checkbox]`/`table` without
+   touching the controls elsewhere that already carry their own rules
+   (.split-options, .run-filters, .schedule-fields, .source-card .item-meta).
    ============================================================ */
-.admin-view h3 {
+.console-view h3 {
   font-family: var(--font-display);
   margin-top: 1.6rem;
   margin-bottom: 0.7rem;
@@ -2635,7 +2640,7 @@ a.btn-primary {
 
 /* Match the app's inputs (see .add-form input) so a dropdown stops looking
    like an unstyled browser control. */
-.admin-view select {
+.console-view select {
   padding: 8px 10px;
   background: var(--ink-3);
   border: 1px solid var(--line);
@@ -2646,29 +2651,29 @@ a.btn-primary {
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.admin-view select:hover:not(:disabled) {
+.console-view select:hover:not(:disabled) {
   border-color: var(--text-faint);
 }
 
-.admin-view select:focus {
+.console-view select:focus {
   outline: none;
   border-color: var(--amber);
   box-shadow: 0 0 0 3px var(--amber-ghost);
 }
 
-.admin-view select:disabled {
+.console-view select:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
 /* ── Users table ── */
-.admin-table {
+.data-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.9rem;
 }
 
-.admin-table th {
+.data-table th {
   text-align: left;
   font-family: var(--font-mono);
   font-size: 0.7rem;
@@ -2681,30 +2686,232 @@ a.btn-primary {
   white-space: nowrap;
 }
 
-.admin-table td {
+.data-table td {
   padding: 10px;
   border-bottom: 1px solid var(--line-soft);
   vertical-align: middle;
 }
 
-.admin-table tbody tr:hover td {
+.data-table tbody tr:hover td {
   background: var(--ink-1);
 }
 
-.admin-table tr.is-inactive td {
+.data-table tr.is-inactive td {
   opacity: 0.55;
 }
 
-.admin-table .cell-actions {
+.data-table .cell-actions {
   display: flex;
   gap: 6px;
   justify-content: flex-end;
   flex-wrap: wrap;
 }
 
-.admin-email {
+.mono-cell {
   font-family: var(--font-mono);
   font-size: 0.82rem;
+}
+
+/* Checkboxes: the browser default renders as a light-mode control on these
+   dark surfaces. accent-color tints the check itself; the label wrapper gives
+   a real hit target so the text is clickable, not just the 13px box. */
+.console-view input[type="checkbox"] {
+  accent-color: var(--amber);
+  width: 15px;
+  height: 15px;
+  /* .add-form input sets flex:1 + min-width:150px for text inputs, which also
+     matches a checkbox and stretched it into a 150px-wide box. Reset both. */
+  min-width: 0;
+  flex: none;
+  flex-shrink: 0;
+  cursor: pointer;
+  margin: 0;
+}
+
+.check-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px 5px 8px;
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: 0.84rem;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.check-row:hover {
+  border-color: var(--text-faint);
+}
+
+/* A ticked box reads at a glance without parsing each label. */
+.check-row:has(input:checked) {
+  background: var(--amber-ghost);
+  border-color: rgba(234, 165, 61, 0.35);
+}
+
+/* Event pickers etc.: wraps, and stays on its own line inside .add-form
+   (which is a flex row) instead of being squeezed between the inputs. */
+.check-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex-basis: 100%;
+}
+
+/* A secret/token shown once: it must look deliberately different from an
+   ordinary panel, and the value must be trivially selectable. */
+.reveal-banner {
+  margin: 12px 0;
+  padding: 14px 16px;
+  background: rgba(88, 192, 138, 0.08);
+  border: 1px solid rgba(88, 192, 138, 0.4);
+  border-radius: var(--radius);
+}
+
+.reveal-banner pre {
+  margin: 10px 0;
+  padding: 10px 12px;
+  background: var(--ink-0);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--amber-hi);
+  user-select: all;
+  overflow-x: auto;
+}
+
+/* Nested table (e.g. a webhook's recent deliveries) — quieter than .data-table
+   so it reads as detail inside a row rather than a second top-level table. */
+.subtable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+  margin-top: 4px;
+}
+
+.subtable th {
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  padding: 4px 8px 4px 0;
+  border-bottom: 1px solid var(--line-soft);
+  white-space: nowrap;
+}
+
+.subtable td {
+  padding: 4px 8px 4px 0;
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: top;
+}
+
+.subtable .ok { color: var(--new); }
+.subtable .bad { color: var(--gone); }
+
+.section-divider {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--line);
+}
+
+/* Inline <code> (header names, tokens) — only .markdown-body styles code
+   otherwise, so a bare one here fell back to the browser's default monospace
+   rather than --font-mono. */
+.console-view code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  color: var(--text-dim);
+}
+
+/* ── Webhooks ── */
+.view-intro {
+  margin-bottom: 1em;
+}
+
+/* A URL needs room; .add-form input's 150px min is too narrow to read one.
+   Qualified with the parent to outrank `.add-form input` (and its narrower
+   max-width:820px override), which a bare .input-wide loses to on specificity. */
+.add-form .input-wide,
+.webhook-edit .input-wide {
+  min-width: min(340px, 100%);
+  flex: 2 1 240px;
+}
+
+.webhook-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Provenance in monospace, like every other URL in the app. A bare <code> falls
+   back to the browser's default monospace, which is not --font-mono. */
+.webhook-url {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  word-break: break-all;
+}
+
+.event-tag {
+  margin-right: 0.5em;
+}
+
+.webhook-error,
+.webhook-status {
+  margin-top: 0.3em;
+  font-size: 0.85rem;
+}
+
+.webhook-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.webhook-edit input {
+  padding: 8px 12px;
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 0.88rem;
+}
+
+.webhook-edit input:focus {
+  outline: none;
+  border-color: var(--amber);
+  box-shadow: 0 0 0 3px var(--amber-ghost);
+}
+
+.edit-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.deliveries-block {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
+  /* A wide delivery table scrolls itself rather than stretching the card. */
+  overflow-x: auto;
+}
+
+.deliveries-title {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 4px;
 }
 
 /* ── Vendor-access panel ── */
