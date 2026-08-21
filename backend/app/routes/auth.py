@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authz import Principal, get_principal
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.dependencies import (
@@ -51,6 +52,7 @@ from app.schemas.auth import (
     AuthStatusResponse,
     ChangePasswordRequest,
     LoginRequest,
+    MyAccessResponse,
     OAuthAuthorizeResponse,
     RefreshRequest,
     TokenResponse,
@@ -58,6 +60,7 @@ from app.schemas.auth import (
     UserListResponse,
     UserResponse,
     UserUpdate,
+    VendorPermissionItem,
     VendorPermissionListResponse,
     VendorPermissionResponse,
     VendorPermissionSet,
@@ -204,6 +207,26 @@ async def refresh_token(body: RefreshRequest, db: AsyncSession = Depends(get_db)
 @router.get("/me", response_model=UserResponse)
 async def get_me(user: User = Depends(get_current_user)):
     return user
+
+
+@router.get("/my-access", response_model=MyAccessResponse)
+async def get_my_access(principal: Principal = Depends(get_principal)):
+    """The caller's own effective access (see_all + role + per-vendor grants).
+
+    Exists so the UI can hide controls the caller can't use rather than render
+    buttons that 403 on click. Read-only by construction: it reports the same
+    Principal the enforcement helpers already build, so it cannot widen access
+    and cannot drift from what the routes actually allow. Not a substitute for
+    enforcement — every mutating route still authorizes independently.
+    """
+    return MyAccessResponse(
+        see_all=principal.see_all,
+        role=principal.role.value,
+        vendors=[
+            VendorPermissionItem(vendor_id=vid, level=lvl.value)
+            for vid, lvl in principal.vendor_levels.items()
+        ],
+    )
 
 
 # ---------------------------------------------------------------------------

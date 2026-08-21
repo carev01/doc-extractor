@@ -620,6 +620,14 @@ export interface VendorPermissionList {
   permissions: VendorPermission[];
 }
 
+/** The caller's own effective access, used to hide controls they can't use.
+ *  `see_all` = admin (or auth disabled); writes are still capped by `role`. */
+export interface MyAccess {
+  see_all: boolean;
+  role: "admin" | "read_write" | "read_only";
+  vendors: { vendor_id: string; level: "read_only" | "read_write" }[];
+}
+
 export interface ApiKeyItem {
   id: string;
   name: string;

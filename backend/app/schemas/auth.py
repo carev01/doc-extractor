@@ -154,6 +154,21 @@ class VendorPermissionListResponse(BaseModel):
     permissions: list[VendorPermissionResponse]
 
 
+class MyAccessResponse(BaseModel):
+    """The caller's own effective access, so the UI can hide controls it isn't
+    allowed to use instead of offering buttons that 403.
+
+    ``see_all`` means every vendor is readable (admin, or auth disabled) — writes
+    are still capped by ``role``, which is the *effective* role (an admin's
+    downgraded API key reports the downgrade). ``vendors`` carries the per-vendor
+    grants for a non-admin and is empty when ``see_all`` is true, since grants
+    don't apply then.
+    """
+    see_all: bool
+    role: str
+    vendors: list[VendorPermissionItem] = []
+
+
 # ---------------------------------------------------------------------------
 # Admin API-key oversight
 # ---------------------------------------------------------------------------
