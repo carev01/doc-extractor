@@ -173,7 +173,7 @@ All backend settings are loaded from environment variables with the `DOCEXTRACTO
 | `DOCEXTRACTOR_EXPORT_DIR` | | `exports` | Where generated exports are written |
 | `DOCEXTRACTOR_MEDIA_DIR` | | `media` | Where article images are stored |
 | `DOCEXTRACTOR_LLM_FALLBACK_ENABLED` | | `false` | Enable LLM-based profile derivation for unknown sites |
-| `DOCEXTRACTOR_DOCLING_SERVE_URL` | | `http://docling.home.lan` | Docling-serve URL for PDF conversion |
+| `DOCEXTRACTOR_DOCLING_SERVE_URL` | | `""` | Docling-serve URL for PDF conversion |
 | `DOCEXTRACTOR_IMAGE_VLM_ENABLED` | | `false` | Enable VLM image descriptions (requires `DOCEXTRACTOR_IMAGE_VLM_API_KEY`) |
 | `DOCEXTRACTOR_IMAGE_VLM_API_KEY` | | `""` | Bearer key for the image vision endpoint (OpenRouter by default) |
 
