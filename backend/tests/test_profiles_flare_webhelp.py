@@ -200,6 +200,99 @@ def test_extract_content_html_returns_none_when_no_body():
     assert FlareWebHelpProfile().extract_content_html(html_doc, TOPIC_URL) is None
 
 
+# ── Topics published without a skin content container ────────────────────────
+# Arcserve Console On-Premises serves 420 of its 734 topics this way: real
+# content sitting bare in <body>, with neither data-mc-content-body nor
+# id="mc-main-content". Returning None for all of them failed 57% of the pages
+# and tripped the raw_http failure-rate guard, failing the whole run.
+
+def _unwrapped_topic(body_inner: str, kind: str = "Topic") -> str:
+    """A Flare topic whose body carries no skin content container."""
+    return (
+        f'<html data-mc-target-type="WebHelp2" data-mc-runtime-file-type="{kind}">'
+        f"<head><title>t</title></head><body>{body_inner}</body></html>"
+    )
+
+
+def test_extract_content_html_recovers_unwrapped_topic():
+    out = FlareWebHelpProfile().extract_content_html(
+        _unwrapped_topic(
+            '<h1 class="heading1">Communication Ports</h1>'
+            '<p class="bodytext">This section provides information.</p>'
+        ),
+        TOPIC_URL,
+    )
+    assert out is not None
+    assert "Communication Ports" in out
+    assert "This section provides information." in out
+
+
+def test_unwrapped_fallback_still_skips_the_help_system_shell():
+    """The guarantee the None return exists for. default.htm has no container
+    either, but Flare labels it Default;TriPane and it holds only navigation —
+    storing it would mean a chrome-only article per help system."""
+    shell = _unwrapped_topic(
+        '<h1>Log Console</h1><a href="#">Skip To Main Content</a>'
+        '<a href="#">Account Settings</a><a href="#">Logout</a>',
+        kind="Default;TriPane",
+    )
+    assert FlareWebHelpProfile().extract_content_html(shell, TOPIC_URL) is None
+
+
+def test_unwrapped_fallback_requires_the_flare_topic_marker():
+    """No marker at all (an arbitrary HTML page) is still skipped, so the
+    fallback can't turn every unrecognised page into an article."""
+    html_doc = (
+        "<html><head><title>t</title></head>"
+        '<body><h1>Something</h1><p>Body text.</p></body></html>'
+    )
+    assert FlareWebHelpProfile().extract_content_html(html_doc, TOPIC_URL) is None
+
+
+def test_unwrapped_fallback_reads_topic_as_one_token_of_a_list():
+    """data-mc-runtime-file-type is a ';'-separated list, so match on the token
+    rather than the whole string."""
+    out = FlareWebHelpProfile().extract_content_html(
+        _unwrapped_topic('<h1>T</h1><p>Real body.</p>', kind="Topic;Something"),
+        TOPIC_URL,
+    )
+    assert out is not None and "Real body." in out
+
+
+def test_unwrapped_fallback_drops_chrome_and_scripts():
+    """The fallback keeps whatever <body> held, so page furniture the wrapped
+    skin puts *outside* its content container must be dropped here."""
+    out = FlareWebHelpProfile().extract_content_html(
+        _unwrapped_topic(
+            '<div class="back-to-bookshelf-container">Bookshelf</div>'
+            '<ul class="breadcrumb"><li>You are here</li></ul>'
+            '<script>var tracking = 1;</script>'
+            '<style>.x { color: red }</style>'
+            '<h1>Real Title</h1><p class="bodytext">Real body.</p>'
+            '<div class="GoToTop">Top</div>'
+        ),
+        TOPIC_URL,
+    )
+    assert out is not None
+    assert "Real Title" in out and "Real body." in out
+    for gone in ("Bookshelf", "You are here", "tracking", "color: red", "Top"):
+        assert gone not in out, gone
+
+
+def test_wrapped_topic_is_unaffected_by_the_fallback():
+    """A topic that *does* have a container must scope to the container, not to
+    <body> — otherwise the fallback would silently widen every existing page."""
+    html_doc = _unwrapped_topic(
+        '<div class="back-to-bookshelf-container">chrome</div>'
+        '<div id="mc-main-content"><h1>Scoped</h1><p>Inside.</p></div>'
+    )
+    out = FlareWebHelpProfile().extract_content_html(html_doc, TOPIC_URL)
+    assert out is not None
+    assert "Inside." in out
+    assert "chrome" not in out
+    assert out.strip().startswith('<div id="mc-main-content"')
+
+
 # ---------------------------------------------------------------------------
 # TOC building (inline <ul class="tree"> parse)
 # ---------------------------------------------------------------------------
