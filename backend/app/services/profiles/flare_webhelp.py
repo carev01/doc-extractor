@@ -167,6 +167,23 @@ class FlareWebHelpProfile:
             "waitFor": 1500,
         }
 
+    @staticmethod
+    def _unwrapped_topic_body(soup) -> "object | None":
+        """``<body>`` for a topic published without a skin content container.
+
+        Gated on ``<html data-mc-runtime-file-type>`` containing the ``Topic``
+        token (the attribute is a ``;``-separated list — the help-system shell
+        reports ``Default;TriPane``), so this only ever accepts a page Flare
+        itself labels a topic and never the navigation shell.
+        """
+        html_tag = soup.find("html")
+        if html_tag is None:
+            return None
+        kinds = (html_tag.get("data-mc-runtime-file-type") or "").split(";")
+        if "Topic" not in [k.strip() for k in kinds]:
+            return None
+        return soup.find("body")
+
     def extract_content_html(self, raw_html: str, url: str) -> str | None:
         """Scope the topic body out of a statically-served Flare topic page.
 
@@ -183,6 +200,17 @@ class FlareWebHelpProfile:
         image ``src`` values are resolved to absolute URLs so the downstream
         image download/rewrite step can match them.
 
+        A Flare help system can also publish topics with **no skin wrapper at
+        all** — content sits bare in ``<body>`` with neither container attribute.
+        Those are real topics, so falling through to ``<body>`` recovers them;
+        Arcserve Console On-Premises serves 420 of its 734 pages this way, and
+        returning None for all of them failed 57% of the run and tripped the
+        raw_http failure-rate guard. The fallback is gated on Flare's own
+        ``data-mc-runtime-file-type`` naming this a ``Topic``, which is what
+        keeps the guarantee the None return exists for: the help-system shell
+        (``default.htm``) reports ``Default;TriPane`` and carries only
+        navigation chrome, so it is still skipped.
+
         Lookups use bs4-native ``find``/``find_all`` rather than soupsieve CSS
         ``select``: soupsieve's attribute-presence selector
         (``[data-mc-content-body]``) is subject to its module-level compiled-
@@ -196,11 +224,18 @@ class FlareWebHelpProfile:
             or soup.find(id="mc-main-content")
         )
         if body is None:
+            body = self._unwrapped_topic_body(soup)
+        if body is None:
             return None
 
-        for cls in ("GoToTop", "feedback-button", "nocontent"):
+        # The bare-body fallback keeps whatever <body> held, so drop the page
+        # furniture the wrapped skin puts outside its content container.
+        for cls in ("GoToTop", "feedback-button", "nocontent",
+                    "back-to-bookshelf-container", "breadcrumb"):
             for el in body.find_all(class_=cls):
                 el.decompose()
+        for tag in body.find_all(("script", "style", "noscript")):
+            tag.decompose()
 
         for img in body.find_all("img"):
             src = img.get("src")
