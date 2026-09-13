@@ -97,6 +97,49 @@ Admin-only endpoints (user management, jobs, auth realms) require `admin`.
 | `GET` | `/api/articles/{id}/versions/{version_id}` | Get a specific version |
 | `GET` | `/api/articles/{id}/versions/{version_id}/diff` | Diff a version against the next or current version (`against=next\|current`) |
 
+### Article timestamps
+
+`GET /api/articles/{id}` and every delta-feed content record carry five timestamps. Only two of them describe the **content**; the others describe our crawling.
+
+| Field | Meaning |
+|-------|---------|
+| `content_changed_at` | The served markdown became current. **Order by this.** |
+| `content_changed_basis` | How that value was derived — `exact`, `lower_bound`, or `first_seen`. |
+| `source_changed_at` | The raw scrape changed — i.e. the vendor's own page changed, as opposed to us re-rendering or enriching it. |
+| `last_updated_at` | A revision date the vendor declares on the page. Null for most of the corpus. |
+| `last_updated_source` | Where that vendor date came from — `vendor_meta` or `page_markup`. Non-null exactly when `last_updated_at` is. |
+| `created_at` / `extracted_at` | When **we** first captured and last crawled the page. Not content-change signals — a bulk run stamps thousands of articles within the same minute. |
+
+Full semantics, including the `changed no later than T` caveat and the provenance tiers, are under [Delta Feed → Timestamps](#timestamps--which-one-to-order-by).
+
+### Version history
+
+`GET /api/articles/{id}/versions` returns an article's prior snapshots, newest first — enough to reconstruct its revision timeline without storing one yourself.
+
+```json
+{
+  "article_id": "article-uuid",
+  "current_hash": "sha256 of the live content",
+  "total": 3,
+  "versions": [
+    {
+      "id": "version-uuid",
+      "content_hash": "sha256 of THIS snapshot",
+      "extracted_at": "2026-08-01T14:03:11Z",
+      "extraction_run_id": "run-uuid",
+      "has_diff": true,
+      "content_size_bytes": 18432,
+      "version": "11.46",
+      "source_url": "https://help.example.com/old/path"
+    }
+  ]
+}
+```
+
+Each row holds a **superseded** snapshot; the live content is on the article itself (`current_hash`). `extracted_at` is therefore the moment that snapshot **was replaced** — so the newest row's timestamp is when the current content became current. A row exists only when the *raw scrape* changed, which is what makes `source_changed_at` a vendor-change signal rather than a re-render one.
+
+`source_url` is the URL the snapshot was captured at, preserved across relocations and version bumps. Add `?skip=&limit=` to page (max 200).
+
 ---
 
 ## Delta Feed
