@@ -127,6 +127,8 @@ async def _content_record(db, resolver, *, seq, change_type, article, vendor_nam
         "title": article.title,
         "source_url": article.source_url,
         "last_updated_at": article.last_updated_at.isoformat() if article.last_updated_at else None,
+        # Where that date came from; null whenever last_updated_at is null.
+        "last_updated_source": article.last_updated_source,
         # When the content changed, not when we crawled. content_changed_at
         # tracks the SERVED markdown — the same bytes content_hash below covers —
         # so a consumer that re-ingests on a hash change can always date it.

@@ -48,6 +48,7 @@ class ArticleSearchResultItem(BaseModel):
     title: str
     source_url: str
     last_updated_at: datetime | None
+    last_updated_source: str | None = None
     content_changed_at: datetime | None = None
     content_changed_basis: str | None = None
     source_changed_at: datetime | None = None

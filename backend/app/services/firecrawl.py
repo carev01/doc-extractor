@@ -34,7 +34,7 @@ from app.services.auth.realm_manager import NeedsLoginError
 from app.services.auth.session import session_expired
 from app.services.blockpage import is_auth_wall, is_block_page
 from app.services.notify import notify
-from app.services import change_log
+from app.services import change_log, page_dates
 from app.services import image_describe
 from app.services import webhook_dispatcher
 from app.services.profiles import registry as profile_registry
@@ -880,6 +880,7 @@ class FirecrawlService:
         auth_cookies: list[dict] | None = None,
         detect_blocks: bool = True,
         image_user_agent: str | None = None,
+        page_html: str | None = None,
     ) -> str:
         """Store or skip a single article and atomically increment run counters.
 
@@ -1093,18 +1094,12 @@ class FirecrawlService:
                 await db.commit()
                 return "unchanged"
 
-        # Parse last-updated timestamp from the filtered #doc HTML
-        last_updated = None
-        if doc_html:
-            doc_soup = BeautifulSoup(doc_html, "html.parser")
-            time_tag = doc_soup.find("time", attrs={"datetime": True})
-            if time_tag:
-                try:
-                    last_updated = datetime.fromisoformat(
-                        time_tag["datetime"].replace("Z", "+00:00")
-                    )
-                except (ValueError, TypeError):
-                    pass
+        # The vendor's own revision date, with provenance. Reads <head> metadata
+        # when the caller still has the whole document — the raw-HTTP path scopes
+        # to the article body before this point, which is why Microsoft Learn's
+        # ms.date went unseen while its pages carried a real date all along.
+        last_updated, last_updated_source = page_dates.extract_last_updated(
+            doc_html, page_html)
 
         media_root = os.path.abspath(settings.media_dir)
         estimated_tokens = len(markdown_content) // 4
@@ -1138,6 +1133,7 @@ class FirecrawlService:
             # Source's own update time — left NULL when the page exposes none,
             # rather than masking it with the scrape time.
             article.last_updated_at = last_updated
+            article.last_updated_source = last_updated_source
             # extracted_at tracks the last scrape; created_at stays first-seen.
             article.extracted_at = datetime.now(timezone.utc)
             # Reaching this branch means the raw scrape differed and a version
@@ -1170,6 +1166,7 @@ class FirecrawlService:
                 toc_fragment=toc_fragment,
                 content_hash=content_hash,
                 last_updated_at=last_updated,
+                last_updated_source=last_updated_source,
                 sort_order=sort_order,
                 estimated_tokens=estimated_tokens,
                 content_size_bytes=content_size,
@@ -1709,6 +1706,9 @@ class FirecrawlService:
                                     db=db, source_id=source_id, run_id=run_id, url=url,
                                     topic_key=entry.get("topic_key"),
                                     markdown_content=md, doc_html=body_html,
+                                    # Whole document: body_html is already scoped,
+                                    # so <head> metadata is gone from it.
+                                    page_html=raw,
                                     toc_entry_id=entry.get("toc_entry_id"),
                                     sort_order=entry.get("sort_order", 0),
                                     title=entry["title"], change_status=None,

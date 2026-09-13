@@ -125,6 +125,22 @@ Admin-only endpoints (user management, jobs, auth realms) require `admin`.
 | `source_changed_at` | the **raw scrape** changed — i.e. the vendor's own page changed | Telling "they rewrote the page" from "we re-rendered or enriched it". |
 | `last_updated_at` | the vendor declares a revision date on the page | Preferred over both when non-null — but it is null for most of the corpus. |
 
+**`last_updated_source`** says where a vendor date came from, and is non-null exactly when `last_updated_at` is:
+
+| Value | Meaning |
+|-------|---------|
+| `vendor_meta` | A revision date the vendor published as metadata — a `<meta>` tag (`article:modified_time`, `og:updated_time`, `dcterms.modified`, `ms.date`, `datemodified`) or schema.org `dateModified` in a JSON-LD block. |
+| `page_markup` | A `<time datetime>` element in the article body — structured markup the vendor emitted, not a date read out of prose. |
+
+Two signals are deliberately **not** implemented, because measurement showed they would fabricate dates:
+
+- **HTTP `Last-Modified`** returns the *current day* for AWS docs (CDN cache behaviour) and disagreed with Microsoft's own page date by four months. It would mark every page as changed daily.
+- **Sitemap `lastmod`** is not fetched — it is unknown whether vendors emit a revision date or a generation date there.
+
+A `page_text` tier (a date scraped out of visible prose) is reserved and unused. If it ever appears, treat it with more suspicion than the two above.
+
+Note that `vendor_meta` values are sometimes **day-granular** — `ms.date` is always midnight, for instance — so they cannot order two changes within the same day. If you prefer `last_updated_at` over `content_changed_at` when both are present, you are trading precision for provenance; `content_changed_at` carries microsecond resolution.
+
 A re-crawl returning identical bytes moves `extracted_at` and **neither** of the first two. That is the point of them.
 
 `content_changed_at` is deliberately anchored to the *served* markdown — the same bytes the `content_hash` above is taken over — so a consumer that re-ingests on a hash change can always date that change. Anchoring it to the raw scrape would leave a class of articles (22.7% of the corpus, where caption injection or image-URL rewriting has modified the served text) re-ingesting changed bytes under an unchanged timestamp.
@@ -155,6 +171,7 @@ The response is RBAC-filtered to the caller's visible vendors. The **last line i
   "title": "Backup Proxies",
   "source_url": "https://help.example.com/backup/proxies",
   "last_updated_at": "2026-07-01T09:12:00Z",
+  "last_updated_source": "vendor_meta",
   "content_changed_at": "2026-08-01T14:03:11Z",
   "content_changed_basis": "exact",
   "source_changed_at": "2026-05-05T08:30:00Z",

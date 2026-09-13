@@ -29,6 +29,7 @@ class ArticleResponse(BaseModel):
     title: str
     source_url: str
     last_updated_at: datetime | None  # source's own update time, if exposed
+    last_updated_source: str | None  # vendor_meta | page_markup; null when no date
     sort_order: int
     estimated_tokens: int
     content_size_bytes: int

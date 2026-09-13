@@ -80,6 +80,13 @@ class Article(Base):
     last_updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Where last_updated_at came from — see services/page_dates.py. Required
+    # whenever last_updated_at is non-null: the tiers justify different
+    # downstream actions, and a consumer must be able to tell a vendor-declared
+    # date from an inferred one.
+    last_updated_source: Mapped[str | None] = mapped_column(
+        String(24), nullable=True
+    )
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     estimated_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     content_size_bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
