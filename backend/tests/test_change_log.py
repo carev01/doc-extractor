@@ -90,6 +90,101 @@ def test_record_change_writes_row(db_session):
     assert rows[0].id >= 1  # BIGSERIAL assigned
 
 
+# ── content_changed_at ───────────────────────────────────────────────────────
+# The timestamp is stamped by record_change rather than at the call sites, so
+# that it inherits the outbox's "every content mutation writes a row" invariant
+# and cannot drift from the feed a consumer reads.
+
+def test_record_change_stamps_content_changed_at(db_session):
+    source, run = _seed(db_session)
+    article = Article(
+        source_id=source.id, extraction_run_id=run.id, created_run_id=run.id,
+        title="T", source_url="https://x/a", topic_key="https://x/a",
+        content_markdown="# T", content_hash="h",
+    )
+    db_session.add(article); db_session.flush()
+    assert article.content_changed_at is None
+
+    asyncio.run(
+        change_log.record_change(db_session, article=article, change_type="added", run_id=run.id)
+    )
+    db_session.commit()
+
+    assert article.content_changed_at is not None
+    assert article.content_changed_basis == change_log.BASIS_EXACT
+
+
+def test_timestamp_is_identical_to_its_outbox_row(db_session):
+    """Not merely close: a consumer comparing a record's timestamp against the
+    outbox row that produced it must see the same instant, not a microsecond of
+    skew from two separate now() calls."""
+    source, run = _seed(db_session)
+    article = Article(
+        source_id=source.id, extraction_run_id=run.id, created_run_id=run.id,
+        title="T", source_url="https://x/a", topic_key="https://x/a",
+        content_markdown="# T", content_hash="h",
+    )
+    db_session.add(article); db_session.flush()
+
+    asyncio.run(
+        change_log.record_change(db_session, article=article, change_type="updated", run_id=run.id)
+    )
+    db_session.commit()
+
+    row = db_session.execute(select(ContentChange)).scalars().one()
+    assert row.created_at == article.content_changed_at
+
+
+def test_each_change_advances_the_timestamp(db_session):
+    """An update after an add moves it forward — the value tracks the LAST
+    change, not the first."""
+    source, run = _seed(db_session)
+    article = Article(
+        source_id=source.id, extraction_run_id=run.id, created_run_id=run.id,
+        title="T", source_url="https://x/a", topic_key="https://x/a",
+        content_markdown="# T", content_hash="h",
+    )
+    db_session.add(article); db_session.flush()
+
+    asyncio.run(
+        change_log.record_change(db_session, article=article, change_type="added", run_id=run.id)
+    )
+    db_session.commit()
+    first = article.content_changed_at
+
+    asyncio.run(
+        change_log.record_change(db_session, article=article, change_type="updated", run_id=run.id)
+    )
+    db_session.commit()
+
+    assert article.content_changed_at > first
+
+
+def test_removals_do_not_move_content_changed_at(db_session):
+    """record_removals writes tombstones; a removal is not a content change, and
+    the article keeps the timestamp of its last real one."""
+    source, run = _seed(db_session)
+    article = Article(
+        source_id=source.id, extraction_run_id=run.id, created_run_id=run.id,
+        title="T", source_url="https://x/a", topic_key="https://x/a",
+        content_markdown="# T", content_hash="h",
+    )
+    db_session.add(article); db_session.flush()
+    asyncio.run(
+        change_log.record_change(db_session, article=article, change_type="added", run_id=run.id)
+    )
+    db_session.commit()
+    stamped = article.content_changed_at
+
+    asyncio.run(
+        change_log.record_removals(
+            db_session, rows=[article], source_id=source.id, run_id=run.id)
+    )
+    db_session.commit()
+
+    assert article.content_changed_at == stamped
+
+
 def test_record_removals_writes_rows(db_session):
     source, run = _seed(db_session)
 

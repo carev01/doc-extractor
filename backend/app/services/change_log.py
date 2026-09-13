@@ -3,10 +3,14 @@
 record_change / record_removals only ``db.add`` rows to the caller's session;
 they do not commit, so the outbox row lands in the same transaction as the
 article mutation that triggered it.
+
+record_change also stamps ``Article.content_changed_at`` — see its docstring for
+why that belongs here and not at the call sites.
 """
 
 import uuid
 from collections.abc import Sequence
+from datetime import datetime, timezone
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,11 +27,27 @@ from app.models.content_change import ChangeType, ContentChange
 # fixed application constant.
 _DELETION_LOCK_KEY = 0x0DE1E7E5
 
+# How an Article.content_changed_at value was arrived at. Only EXACT is ever
+# written at runtime; the other two are assigned once by the backfill migration
+# for history that predates the outbox.
+BASIS_EXACT = "exact"            # from an outbox row — the real thing
+BASIS_LOWER_BOUND = "lower_bound"  # last raw change; enrichment before the outbox is undated
+BASIS_FIRST_SEEN = "first_seen"    # never observed changing
+
 
 async def record_change(
     db: AsyncSession, *, article: Article, change_type: str, run_id: uuid.UUID
 ) -> None:
-    """Append one added/updated outbox row for *article* (caller commits)."""
+    """Append one added/updated outbox row for *article* (caller commits).
+
+    Also stamps ``article.content_changed_at``. Doing it here rather than at each
+    call site is deliberate: this function is the single funnel for add/update
+    outbox rows, so the timestamp inherits the invariant that every content
+    mutation writes one, and cannot drift from the feed a consumer reads. Both
+    get the *same* instant, so a record's timestamp and its outbox row agree
+    exactly rather than by microseconds.
+    """
+    now = datetime.now(timezone.utc)
     db.add(
         ContentChange(
             article_id=article.id,
@@ -36,8 +56,11 @@ async def record_change(
             change_type=change_type,
             content_hash=article.content_hash,
             topic_key=article.topic_key,
+            created_at=now,
         )
     )
+    article.content_changed_at = now
+    article.content_changed_basis = BASIS_EXACT
 
 
 async def record_removals(

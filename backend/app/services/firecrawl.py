@@ -1140,6 +1140,11 @@ class FirecrawlService:
             article.last_updated_at = last_updated
             # extracted_at tracks the last scrape; created_at stays first-seen.
             article.extracted_at = datetime.now(timezone.utc)
+            # Reaching this branch means the raw scrape differed and a version
+            # row was archived above, so the VENDOR's page changed — as opposed
+            # to content_changed_at, which also moves for enrichment. Consumers
+            # use this to tell "they rewrote the page" from "we re-rendered it".
+            article.source_changed_at = article.extracted_at
             article.sort_order = sort_order
             article.estimated_tokens = estimated_tokens
             article.content_size_bytes = content_size
@@ -1168,6 +1173,9 @@ class FirecrawlService:
                 sort_order=sort_order,
                 estimated_tokens=estimated_tokens,
                 content_size_bytes=content_size,
+                # First capture: the source content is new to us, so it "changed"
+                # now. record_change stamps content_changed_at just below.
+                source_changed_at=datetime.now(timezone.utc),
             )
             db.add(article)
             await db.flush()

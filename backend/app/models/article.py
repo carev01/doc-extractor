@@ -92,6 +92,36 @@ class Article(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
+    # ── Change timestamps (for temporal consumers) ──────────────────────────
+    # extracted_at/created_at describe when WE crawled; these describe when the
+    # content changed. A downstream knowledge graph orders facts by these, so a
+    # re-crawl that returns identical bytes must not move them — that is the
+    # whole point of the pair.
+    #
+    # content_changed_at: when the SERVED markdown became current. Set from
+    # change_log.record_change, so it inherits the outbox's guarantee that every
+    # content mutation is recorded — including image-caption enrichment, which
+    # changes the served text without touching content_hash. Deliberately the
+    # served text and not the raw scrape: the delta feed hashes the served
+    # markdown, so anchoring to the raw scrape would leave a consumer
+    # re-ingesting changed bytes under an unchanged timestamp.
+    content_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # How content_changed_at was arrived at, so a consumer can tell an exact
+    # value from a backfilled bound: "exact" (from the outbox), "lower_bound"
+    # (last raw change, pre-outbox — may be early, since enrichment before the
+    # outbox shipped is undated), "first_seen" (never observed changing).
+    content_changed_basis: Mapped[str | None] = mapped_column(
+        String(16), nullable=True
+    )
+    # When the RAW scrape last changed — i.e. the vendor's page actually changed,
+    # as opposed to us re-rendering or enriching it. Written only where a version
+    # row is archived, which by construction happens only on a raw change.
+    source_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Relationships
     source: Mapped["DocumentationSource"] = relationship(
         "DocumentationSource", back_populates="articles"
