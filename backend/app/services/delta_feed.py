@@ -127,6 +127,19 @@ async def _content_record(db, resolver, *, seq, change_type, article, vendor_nam
         "title": article.title,
         "source_url": article.source_url,
         "last_updated_at": article.last_updated_at.isoformat() if article.last_updated_at else None,
+        # Where that date came from; null whenever last_updated_at is null.
+        "last_updated_source": article.last_updated_source,
+        # When the content changed, not when we crawled. content_changed_at
+        # tracks the SERVED markdown — the same bytes content_hash below covers —
+        # so a consumer that re-ingests on a hash change can always date it.
+        # source_changed_at moves only when the vendor's own page changed.
+        "content_changed_at": (
+            article.content_changed_at.isoformat() if article.content_changed_at else None
+        ),
+        "content_changed_basis": article.content_changed_basis,
+        "source_changed_at": (
+            article.source_changed_at.isoformat() if article.source_changed_at else None
+        ),
         # Hash of the SERVED content so a consumer can detect enrichment updates
         # (caption injection changes content_markdown but not the Article's raw
         # content_hash). Purely a serve-time value; the Article row is untouched.

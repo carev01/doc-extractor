@@ -29,11 +29,17 @@ class ArticleResponse(BaseModel):
     title: str
     source_url: str
     last_updated_at: datetime | None  # source's own update time, if exposed
+    last_updated_source: str | None  # vendor_meta | page_markup; null when no date
     sort_order: int
     estimated_tokens: int
     content_size_bytes: int
     created_at: datetime  # first captured
     extracted_at: datetime  # last scraped
+    # When the content changed, as opposed to when we crawled. A re-crawl that
+    # returns identical bytes moves extracted_at but not these.
+    content_changed_at: datetime | None  # served markdown became current
+    content_changed_basis: str | None  # exact | lower_bound | first_seen
+    source_changed_at: datetime | None  # the vendor's page itself changed
 
 
 class ArticleDetailResponse(ArticleResponse):
