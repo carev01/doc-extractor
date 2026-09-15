@@ -52,6 +52,7 @@ from app.services.versioning import (
     like_pattern,
     resolve_template,
     templatize,
+    upgrade_template,
 )
 from app.core.database import async_session
 
@@ -2546,6 +2547,26 @@ class FirecrawlService:
                         "Auto-detected url_template for %s: %s",
                         source.base_url, detected,
                     )
+                    await db.commit()
+            elif product_version and source.url_template:
+                # A source templated before {rev} existed keeps the vendor's build
+                # id baked in as a literal, and nothing else upgrades it — the
+                # branch above only fires for an untemplated source, and the UI
+                # only offers "Templatize" there too. Left as-is it would re-key
+                # its whole corpus at the vendor's next release. Gated on a round
+                # trip through the candidate template (see upgrade_template), so
+                # this only fires when the new template provably describes the
+                # current base_url.
+                upgraded = upgrade_template(
+                    source.url_template, source.base_url, product_version, profile
+                )
+                if upgraded:
+                    logger.info(
+                        "Upgraded url_template for %s to carry the per-release "
+                        "token: %s -> %s",
+                        source.name, source.url_template, upgraded,
+                    )
+                    source.url_template = upgraded
                     await db.commit()
 
             # Re-resolve the volatile {rev} token before anything fetches

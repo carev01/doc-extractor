@@ -206,6 +206,50 @@ def templatize(url: str, version: str, profile=None) -> str | None:
     return detect_version_token(url, version)
 
 
+def upgrade_template(
+    url_template: str | None,
+    base_url: str | None,
+    version: str | None,
+    profile=None,
+) -> str | None:
+    """A ``{rev}``-bearing replacement for a *version-only* template, or None.
+
+    Sources templated before ``{rev}`` existed keep a template with the vendor's
+    build id baked in as a literal. Nothing upgrades them on their own: the
+    in-run auto-detection only fires when there is no template at all, and the
+    UI only offers "Templatize" for an untemplated source. Left alone, such a
+    source silently re-keys its whole corpus at the vendor's next release — the
+    exact failure ``{rev}`` exists to prevent, still armed.
+
+    Upgrading rewrites identity for every article of the source, so it is gated
+    on a **round trip**: the profile's candidate template, resolved back against
+    the version and the token read out of the current ``base_url``, must
+    reproduce that ``base_url`` byte for byte. That proves the candidate
+    describes this exact URL rather than merely resembling it, and it is what
+    makes the upgrade safe to apply without operator review. Anything less
+    certain returns None and leaves the old template in place.
+    """
+    if not url_template or not base_url or not version or profile is None:
+        return None
+    if REVISION_PLACEHOLDER in url_template:
+        return None  # already upgraded
+    hook = getattr(profile, "templatize_url", None)
+    if hook is None:
+        return None
+    try:
+        candidate = hook(base_url, version)
+    except Exception:
+        return None
+    if not candidate or REVISION_PLACEHOLDER not in candidate:
+        return None
+    revision = extract_revision(base_url, candidate, version)
+    if not revision:
+        return None
+    if resolve_template(candidate, version, revision) != base_url:
+        return None
+    return candidate
+
+
 def _slug(text: str) -> str:
     """Lowercase, keep alphanumerics, collapse everything else to single hyphens."""
     s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
