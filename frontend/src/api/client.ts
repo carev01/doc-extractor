@@ -6,6 +6,8 @@ import type {
   VendorList,
   Product,
   ProductList,
+  BumpPlan,
+  BumpPlanEntry,
   DocumentationSource,
   SourceList,
   ArticleDetail,
@@ -189,8 +191,19 @@ export async function deleteProduct(id: string): Promise<void> {
 export async function bumpProductVersion(
   productId: string,
   version: string,
-): Promise<{ version: string; runs: string[] }> {
-  const res = await api.post(`/products/${productId}/versions/bump`, { version });
+  force = false,
+): Promise<{ version: string; runs: string[]; sources: BumpPlanEntry[] }> {
+  const res = await api.post(`/products/${productId}/versions/bump`, { version, force });
+  return res.data;
+}
+
+/** Dry-run a bump. Changes nothing; resolves each templated source's new URL,
+ *  including the {rev} token only the vendor knows. */
+export async function previewProductVersionBump(
+  productId: string,
+  version: string,
+): Promise<BumpPlan> {
+  const res = await api.post(`/products/${productId}/versions/preview`, { version });
   return res.data;
 }
 

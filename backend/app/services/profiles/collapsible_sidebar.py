@@ -25,6 +25,7 @@ Sections with a trigger but no link of their own become url-less TocEntry nodes
 that their children nest under; a section that is also a page carries its ``<a>``.
 """
 
+import re
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
@@ -33,6 +34,25 @@ from app.services.profiles import registry
 from app.services.profiles.base import TocEntry
 
 _SIDEBAR_SELECTOR = "div[data-slot='sidebar-inner']"
+
+# ── zDocs URL grammar ────────────────────────────────────────────────────────
+# This platform addresses a page as
+#   /docs/<product>/<version>/<publication>-<build>-<variant>/<topic>-<build>
+# where <publication> and <topic> are stable identities but <build> is re-minted
+# per release AND repeated in both segments. Templating only <version> therefore
+# produces a URL that 404s and a topic key that changes wholesale every release —
+# see app/services/versioning.py. Measured on NetBackup 11.2 -> 11.2.0.1:
+# publication 103228346 and topic v95650213 held, build 171368441 -> 173151032.
+_ZDOCS_URL_RE = re.compile(
+    r"^(?P<origin>https?://[^/]+)/docs/(?P<product>[^/]+)/(?P<version>[^/]+)"
+    r"/(?P<pub>\d+)-(?P<rev>\d+)-(?P<variant>\d+)(?P<tail>/.*)?$"
+)
+# The same grammar over a template, to recover the parts needed to rebuild a
+# landing URL. {rev} has replaced the build id by this point.
+_ZDOCS_TMPL_RE = re.compile(
+    r"^(?P<origin>https?://[^/]+)/docs/(?P<product>[^/]+)/\{version\}"
+    r"/(?P<pub>\d+)-\{rev\}-(?P<variant>\d+)(?:/.*)?$"
+)
 
 
 def parse_collapsible_sidebar(html: str, root_url: str) -> list[TocEntry]:
@@ -126,6 +146,52 @@ class CollapsibleSidebarProfile:
         # Fallback: parse whatever the single render exposes (top level only).
         html = await scraper.get_html(root_url)
         return parse_collapsible_sidebar(html, root_url)
+
+    # ── Volatile URL token ({rev}) ──────────────────────────────────────────
+
+    def templatize_url(self, url: str, version: str) -> str | None:
+        """Mark both the version and the per-release build id in *url*.
+
+        Returns None for anything outside the zDocs grammar — including a URL
+        whose version segment isn't *version* — so a caller falls back to the
+        generic version-only detection rather than templating a guess.
+        """
+        m = _ZDOCS_URL_RE.match(url or "")
+        if not m or m.group("version") != version:
+            return None
+        rev = m.group("rev")
+        tail = m.group("tail") or ""
+        return (
+            f"{m.group('origin')}/docs/{m.group('product')}/{{version}}"
+            f"/{m.group('pub')}-{{rev}}-{m.group('variant')}"
+            # Replace every occurrence: the build id recurs in the topic segment.
+            f"{tail.replace(rev, '{rev}')}"
+        )
+
+    async def resolve_revision(self, template: str, version: str, scraper) -> str | None:
+        """Read the build id this publication currently carries at *version*.
+
+        The version landing page (``/docs/<product>/<version>``) is static HTML
+        served without auth and links every publication at its current build, so
+        one plain GET answers this — no render, no Browserless. Scoped to the
+        template's own publication id because the build id is minted **per
+        publication**, not per version: NetBackup 11.2.0.1 serves 103228346 at
+        173151032 and 169433500 at 172152080 on the same page.
+        """
+        m = _ZDOCS_TMPL_RE.match(template or "")
+        if not m or not version:
+            return None
+        landing = f"{m.group('origin')}/docs/{m.group('product')}/{version}"
+        try:
+            html = await scraper.get_raw(landing)
+        except Exception:
+            return None
+        hit = re.search(
+            rf"/docs/{re.escape(m.group('product'))}/{re.escape(version)}"
+            rf"/{m.group('pub')}-(\d+)-{m.group('variant')}\b",
+            html or "",
+        )
+        return hit.group(1) if hit else None
 
     def content_config(self) -> dict:
         # Article body is <article class="prose">; the sidebar nav lives inside

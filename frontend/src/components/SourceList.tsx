@@ -30,6 +30,7 @@ import {
   enrichSource,
 } from "../api/client";
 import ProductVersionBar from "./ProductVersionBar";
+import UrlTemplate from "./UrlTemplate";
 import type { Access } from "../access";
 import { apiError } from "../api/errors";
 
@@ -708,7 +709,7 @@ function SourceItem({
               Template:
               {source.url_template ? (
                 <>
-                  <code>{source.url_template}</code>
+                  <UrlTemplate value={source.url_template} />
                   <button
                     type="button"
                     className="btn-secondary-sm"
@@ -732,7 +733,7 @@ function SourceItem({
                   <button
                     type="button"
                     className="btn-secondary-sm"
-                    title="Auto-detect version token in the source URL"
+                    title="Detect the version (and any per-release vendor token) in the source URL"
                     onClick={async (e) => {
                       e.stopPropagation();
                       setVersionMsg("");
@@ -760,7 +761,7 @@ function SourceItem({
 
         {productVersion && !canWrite && source.url_template && (
           <div className="item-meta">
-            <span className="sub">Template: <code>{source.url_template}</code></span>
+            <span className="sub">Template: <UrlTemplate value={source.url_template} /></span>
           </div>
         )}
 

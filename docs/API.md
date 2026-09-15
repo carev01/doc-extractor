@@ -44,7 +44,33 @@ Admin-only endpoints (user management, jobs, auth realms) require `admin`.
 | `PATCH` | `/api/products/{id}` | Update a product |
 | `DELETE` | `/api/products/{id}` | Delete a product |
 | `POST` | `/api/products/{id}/versions/enable` | Enable versioning for a product |
+| `POST` | `/api/products/{id}/versions/preview` | Dry-run a bump: resolve each templated source's new URL |
 | `POST` | `/api/products/{id}/versions/bump` | Bump product version |
+
+### URL templates
+
+A versioned source stores a `url_template` whose placeholders are substituted to
+produce the live `base_url`:
+
+| Placeholder | Supplied by | Notes |
+|---|---|---|
+| `{version}` | the operator, at bump time | Appears in the URL verbatim. |
+| `{rev}` | the vendor, resolved automatically | An opaque per-release token (e.g. a build id) that is not derivable from the version. Re-resolved before every run and never stored resolved. |
+
+`{rev}` exists because some portals change more than the version segment between
+releases. Cohesity's NetBackup docs address a page as
+`/docs/<product>/<version>/<publication>-<build>-0/<topic>-<build>`: the
+publication and topic ids are stable, but `<build>` is re-minted per release and
+occurs twice. Templating only the version would leave the previous release's
+build id in both the URL (which the vendor 404s) and the article's `topic_key`,
+so every article would look new at each release.
+
+`POST /versions/preview` reports, per templated source, a `status` of `ok`
+(nothing to resolve), `resolved` (the vendor's current token was read), or
+`unresolved` (it could not be — `resolved_url` then carries the *current*
+release's token so it stays well-formed). `POST /versions/bump` refuses with
+`409` when any source is `unresolved`, before it overwrites `previous_version`;
+pass `force: true` to proceed and let the next run resolve it.
 
 ---
 
