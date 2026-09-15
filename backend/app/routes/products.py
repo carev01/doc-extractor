@@ -36,6 +36,7 @@ from app.services.versioning import (
     extract_revision,
     resolve_template,
     templatize,
+    upgrade_template,
 )
 
 router = APIRouter(prefix="/api/products", tags=["products"])
@@ -201,7 +202,9 @@ class _BumpVersionBody(BaseModel):
     force: bool = False
 
 
-async def _plan_bump(sources, version: str) -> list[dict]:
+async def _plan_bump(
+    sources, version: str, current_version: str | None = None
+) -> list[dict]:
     """Work out what each templated source's base_url becomes at *version*.
 
     A ``{version}``-only template is a pure substitution and is reported as
@@ -213,6 +216,12 @@ async def _plan_bump(sources, version: str) -> list[dict]:
     Unresolved is not fatal: the carried-forward token keeps base_url well-formed
     and the next run re-resolves it. It is surfaced so a bump isn't committed
     blind, because the bump is what overwrites ``previous_version``.
+
+    Plans against the template the *run* would use, not the one on disk. A source
+    still carrying a version-only template gets upgraded at run start, so
+    planning against the stored one would report a pure substitution — a green
+    "ready" over a URL whose build id is a release out of date, i.e. exactly the
+    404 this pre-flight exists to catch.
     """
     from app.services.firecrawl import firecrawl_service
     from app.services.profiles.scraper import Scraper
@@ -220,21 +229,29 @@ async def _plan_bump(sources, version: str) -> list[dict]:
     plan: list[dict] = []
     for s in sources:
         template = s.url_template or ""
+        profile = profile_registry.get(s.platform or "")
+        # What the run will actually use (see docstring).
+        upgraded = upgrade_template(
+            template, s.base_url, current_version or _version_in(s.base_url, template),
+            profile,
+        )
         entry = {
             "source_id": str(s.id),
             "name": s.name,
             "current_url": s.base_url,
-            "url_template": template,
+            "url_template": upgraded or template,
+            "template_upgraded": bool(upgraded),
             "revision": None,
             "status": "ok",
             "detail": None,
         }
+        if upgraded:
+            template = upgraded
         if REVISION_PLACEHOLDER not in template:
             entry["resolved_url"] = resolve_template(template, version)
             plan.append(entry)
             continue
 
-        profile = profile_registry.get(s.platform or "")
         resolver = getattr(profile, "resolve_revision", None) if profile else None
         revision = None
         if resolver is not None:
@@ -307,7 +324,7 @@ async def bump_version(
         raise HTTPException(
             status_code=400, detail="No templated ({version}) sources to bump"
         )
-    plan = await _plan_bump(templated, body.version)
+    plan = await _plan_bump(templated, body.version, product.version)
     blocked = [e for e in plan if e["status"] == "unresolved"]
     if blocked and not body.force:
         # Refuse BEFORE touching previous_version: a bump that half-lands leaves
@@ -329,7 +346,12 @@ async def bump_version(
     product.previous_version = product.version
     product.version = body.version
     for s in templated:
-        s.base_url = by_id[str(s.id)]["resolved_url"]
+        entry = by_id[str(s.id)]
+        # Persist the upgrade the plan resolved against, so the stored template
+        # matches the URL just written and the next preview doesn't re-derive it.
+        if entry["template_upgraded"]:
+            s.url_template = entry["url_template"]
+        s.base_url = entry["resolved_url"]
     await db.commit()
 
     run_ids = []
@@ -367,5 +389,5 @@ async def preview_version_bump(
     return {
         "version": product.version,
         "target_version": body.version,
-        "sources": await _plan_bump(templated, body.version),
+        "sources": await _plan_bump(templated, body.version, product.version),
     }
