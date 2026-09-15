@@ -23,6 +23,33 @@ export interface Product {
   updated_at: string;
 }
 
+/** One templated source's fate in a version bump, as reported by the dry-run.
+ *
+ * `status` distinguishes what we actually know:
+ *   ok         — a {version}-only template; pure substitution, nothing to look up.
+ *   resolved   — a {rev} template whose per-release token we read from the vendor.
+ *   unresolved — a {rev} template we could NOT resolve; `resolved_url` carries the
+ *                CURRENT release's token so it stays a well-formed URL, and the
+ *                next run will try again. Shown, not hidden, because bumping is
+ *                what overwrites previous_version.
+ */
+export interface BumpPlanEntry {
+  source_id: string;
+  name: string;
+  current_url: string;
+  resolved_url: string;
+  url_template: string;
+  revision: string | null;
+  status: "ok" | "resolved" | "unresolved";
+  detail: string | null;
+}
+
+export interface BumpPlan {
+  version: string | null;
+  target_version: string;
+  sources: BumpPlanEntry[];
+}
+
 export interface ProductList {
   products: Product[];
   total: number;

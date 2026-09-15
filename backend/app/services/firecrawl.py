@@ -46,9 +46,12 @@ from app.services.profiles.scraper import Scraper
 from app.services.sanitize import sanitize_markdown
 from app.services.toc_checkpoint import TocBuildCheckpoint
 from app.services.versioning import (
+    REVISION_PLACEHOLDER,
     VERSION_PLACEHOLDER,
     derive_topic_key,
-    detect_version_token,
+    like_pattern,
+    resolve_template,
+    templatize,
 )
 from app.core.database import async_session
 
@@ -441,6 +444,56 @@ class FirecrawlService:
         # Per-source content scrape options, set at run start so the webhook /
         # empty-content retries scope content the same way the batch did.
         self._content_config_by_source: dict[uuid.UUID, dict] = {}
+
+    async def _refresh_revision_token(
+        self, db, source: DocumentationSource, profile, version: str,
+        auth_cookies=None, checkpoint=None,
+    ) -> str | None:
+        """Point ``source.base_url`` at the build this release actually serves.
+
+        Asks the profile to resolve ``{rev}`` for *version* and rewrites base_url
+        from the template when the answer differs from what's stored. Returns the
+        resolved token, or None when the profile can't answer (no hook, or the
+        lookup failed) — in which case base_url is left exactly as it was.
+        """
+        resolver = getattr(profile, "resolve_revision", None)
+        if resolver is None:
+            logger.warning(
+                "Source %s has a {rev} template but profile '%s' cannot resolve "
+                "it — leaving base_url at %s",
+                source.name, profile.name, source.base_url,
+            )
+            return None
+        try:
+            revision = await resolver(
+                source.url_template, version,
+                Scraper(
+                    self, checkpoint=checkpoint, auth_cookies=auth_cookies,
+                    user_agent=getattr(profile, "raw_user_agent", None),
+                ),
+            )
+        except Exception as exc:  # never let a token lookup fail the run
+            logger.warning(
+                "Revision lookup failed for %s (%s) — keeping base_url %s",
+                source.name, exc, source.base_url,
+            )
+            return None
+        if not revision:
+            logger.warning(
+                "Profile '%s' found no {rev} for %s at version %s — keeping "
+                "base_url %s", profile.name, source.name, version, source.base_url,
+            )
+            return None
+
+        resolved = resolve_template(source.url_template, version, revision)
+        if resolved != source.base_url:
+            logger.info(
+                "Resolved {rev}=%s for %s at %s: base_url %s -> %s",
+                revision, source.name, version, source.base_url, resolved,
+            )
+            source.base_url = resolved
+            await db.commit()
+        return revision
 
     async def _resolve_profile(self, source: DocumentationSource, auth_cookies=None):
         """Pick the extraction profile for a source.
@@ -1040,19 +1093,22 @@ class FirecrawlService:
         # drifted literal-version key (from a pre-fix run) AND the URL also moved
         # because the version bumped, neither the topic_key nor the exact-URL match
         # above can link new→old — so the page re-creates and the whole source
-        # duplicates (the CommCell / Commvault-Cloud transition). The version-
-        # independent identity is match_key with {version} treated as a wildcard: a
-        # stored page at ANY version whose URL fits that shape is the same article.
-        # Adopt it (and normalise its key to the templated match_key below) only
-        # when the match is unambiguous. Skipped for non-versioned sources
-        # (match_key has no placeholder) and once keys are templated on both sides
-        # (the topic_key match above already succeeds, so we never reach here).
-        if existing_article is None and VERSION_PLACEHOLDER in match_key:
-            # Build a LIKE pattern from the key: escape LIKE metacharacters first
-            # (doc URLs commonly contain "_"), then turn the {version} placeholder
-            # into a "%" wildcard so it spans whatever version segment is stored.
-            esc = match_key.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            pattern = esc.replace(VERSION_PLACEHOLDER, "%")
+        # duplicates (the CommCell / Commvault-Cloud transition). The release-
+        # independent identity is match_key with every placeholder treated as a
+        # wildcard: a stored page at ANY release whose URL fits that shape is the
+        # same article. Adopt it (and normalise its key to the templated match_key
+        # below) only when the match is unambiguous. Skipped for non-versioned
+        # sources (match_key has no placeholder) and once keys are templated on
+        # both sides (the topic_key match above already succeeds, so we never
+        # reach here).
+        #
+        # {rev} matters as much as {version} here: it is what heals a corpus
+        # stored before {rev} existed, whose keys and URLs both carry the previous
+        # release's build id in a position the version wildcard alone can't span.
+        if existing_article is None and (
+            VERSION_PLACEHOLDER in match_key or REVISION_PLACEHOLDER in match_key
+        ):
+            pattern = like_pattern(match_key)
             ver_matches = (
                 await db.execute(
                     select(Article)
@@ -2481,7 +2537,9 @@ class FirecrawlService:
             # without it would key articles by their literal version — persist a
             # detected template so keys stay version-independent going forward.
             if product_version and not source.url_template:
-                detected = detect_version_token(source.base_url, product_version)
+                # Profile-aware: a platform that mints a per-release token gets a
+                # {rev} template here, not just a {version} one.
+                detected = templatize(source.base_url, product_version, profile)
                 if detected:
                     source.url_template = detected
                     logger.info(
@@ -2489,6 +2547,27 @@ class FirecrawlService:
                         source.base_url, detected,
                     )
                     await db.commit()
+
+            # Re-resolve the volatile {rev} token before anything fetches
+            # base_url. A version bump rewrites base_url from the template but can
+            # only supply the version, so the URL still carries the PREVIOUS
+            # release's build id — which the vendor 404s (Cohesity returns a 200
+            # SPA shell carrying ERROR_FALLBACK;404, so nothing upstream notices
+            # by status code alone). Left unresolved, the TOC comes back empty,
+            # degrades to a synthetic 1-page "Index" and aborts on the
+            # TOC-collapse guard. Best-effort by design: a failure here leaves the
+            # existing base_url in place and the guard still stands between us and
+            # a mass removal — article identity never depends on this call
+            # (derive_topic_key reads {rev} off each URL offline).
+            if (
+                product_version
+                and source.url_template
+                and REVISION_PLACEHOLDER in source.url_template
+            ):
+                await self._refresh_revision_token(
+                    db, source, profile, product_version,
+                    auth_cookies=auth_cookies, checkpoint=None,
+                )
 
             logger.info(
                 "Discovering TOC for %s (profile=%s)", source.base_url, profile.name

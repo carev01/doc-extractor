@@ -44,9 +44,43 @@ from app.schemas.source import (
 )
 from app.schemas.version import ChangelogEntry, ChangelogResponse
 from app.services import change_log
-from app.services.versioning import detect_version_token, resolve_template
+from app.services.profiles import registry as profile_registry
+from app.services.versioning import (
+    REVISION_PLACEHOLDER,
+    extract_revision,
+    resolve_template,
+    templatize,
+)
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
+
+
+def _resolve_with_carried_revision(
+    template: str, version: str, current_url: str | None
+) -> str:
+    """Resolve *template* at *version*, carrying the ``{rev}`` token *current_url*
+    already has.
+
+    A template edited by hand (or pasted from the detect button) can carry
+    ``{rev}``, whose value nobody can type — it is the vendor's per-release token.
+    Substituting the version alone would leave a literal ``"{rev}"`` in base_url,
+    which is not a URL at all. Carrying the current one keeps base_url fetchable
+    until the next run re-resolves it against the vendor.
+    """
+    if REVISION_PLACEHOLDER not in template:
+        return resolve_template(template, version)
+    revision = None
+    if current_url:
+        head = template.split("{version}", 1)[0]
+        if current_url.startswith(head):
+            current_version = current_url[len(head):].split("/", 1)[0]
+            revision = extract_revision(current_url, template, current_version)
+    if revision:
+        return resolve_template(template, version, revision)
+    # Nothing to carry: substituting an empty token would build a malformed URL
+    # that still looks plausible. Leave the URL alone and let the next run (or
+    # the bump pre-flight) resolve it against the vendor.
+    return current_url or resolve_template(template, version)
 
 
 @router.post("", response_model=SourceResponse, status_code=201)
@@ -65,7 +99,9 @@ async def create_source(
 
     base_url = body.base_url
     if body.url_template and product.version:
-        base_url = resolve_template(body.url_template, product.version)
+        base_url = _resolve_with_carried_revision(
+            body.url_template, product.version, body.base_url
+        )
 
     source = DocumentationSource(
         product_id=body.product_id,
@@ -463,7 +499,9 @@ async def update_source(
             await db.execute(select(Product).where(Product.id == source.product_id))
         ).scalar_one_or_none()
         if product and product.version:
-            source.base_url = resolve_template(body.url_template, product.version)
+            source.base_url = _resolve_with_carried_revision(
+                body.url_template, product.version, source.base_url
+            )
     if body.platform is not None:
         # "" / "auto" clears the override so detection runs again next extraction.
         source.platform = None if body.platform in ("", "auto") else body.platform
@@ -500,7 +538,15 @@ async def detect_version_token_route(
     source = await db.get(DocumentationSource, source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
-    return {"url_template": detect_version_token(source.base_url, body.version)}
+    # Profile-aware: a platform that mints a per-release token besides the
+    # version gets a {rev} template here too, so the UI's "detect" button and a
+    # run's auto-detection can never disagree about a source's template.
+    return {
+        "url_template": templatize(
+            source.base_url, body.version,
+            profile_registry.get(source.platform or ""),
+        )
+    }
 
 
 @router.delete("/{source_id}", status_code=204)
