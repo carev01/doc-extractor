@@ -238,3 +238,63 @@ async def test_update_source_combined_product_id_and_url_template_resolves_again
     # base_url must resolve against the NEW product's version (11.0), not old (10.0)
     assert body["base_url"] == "https://docs.example.com/11.0/guide"
     assert body["product_id"] == str(new_pid)
+
+
+async def test_update_source_can_clear_the_url_template(client):
+    """An explicit null clears the template.
+
+    Regression: the handler tested `body.url_template is not None`, so sending
+    null fell through and changed nothing — the UI's "Clear template" button was
+    a silent no-op, which also left no way to re-templatize an already-templated
+    source (the "Templatize" button only renders when there is no template).
+    """
+    c, session_factory = client
+    async with session_factory() as s:
+        vendor = Vendor(name="V-clear")
+        s.add(vendor)
+        await s.flush()
+        product = Product(vendor_id=vendor.id, name="P-clear", version="3.0")
+        s.add(product)
+        await s.flush()
+        source = DocumentationSource(
+            product_id=product.id,
+            name="Docs",
+            base_url="https://ex.example.com/3.0/docs",
+            url_template="https://ex.example.com/{version}/docs",
+        )
+        s.add(source)
+        await s.commit()
+        sid = source.id
+
+    resp = await c.patch(f"/api/sources/{sid}", json={"url_template": None})
+    assert resp.status_code == 200
+    assert resp.json()["url_template"] is None
+    # Clearing the template must not disturb where the source currently points.
+    assert resp.json()["base_url"] == "https://ex.example.com/3.0/docs"
+
+
+async def test_update_source_leaves_the_template_alone_when_not_sent(client):
+    """Omitting the field is distinct from sending null — an unrelated PATCH
+    (here, a rename) must not clear a source's template as a side effect."""
+    c, session_factory = client
+    async with session_factory() as s:
+        vendor = Vendor(name="V-keep")
+        s.add(vendor)
+        await s.flush()
+        product = Product(vendor_id=vendor.id, name="P-keep", version="3.0")
+        s.add(product)
+        await s.flush()
+        source = DocumentationSource(
+            product_id=product.id,
+            name="Docs",
+            base_url="https://ex.example.com/3.0/docs",
+            url_template="https://ex.example.com/{version}/docs",
+        )
+        s.add(source)
+        await s.commit()
+        sid = source.id
+
+    resp = await c.patch(f"/api/sources/{sid}", json={"name": "Renamed"})
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "Renamed"
+    assert resp.json()["url_template"] == "https://ex.example.com/{version}/docs"

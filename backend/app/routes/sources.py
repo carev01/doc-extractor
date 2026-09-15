@@ -491,17 +491,24 @@ async def update_source(
         if not target:
             raise HTTPException(status_code=404, detail="Target product not found")
         source.product_id = body.product_id
-    if body.url_template is not None:
+    # Keyed on whether the caller SENT the field, not on its value: an explicit
+    # null is how a template is cleared, and testing `is not None` made that a
+    # silent no-op (the UI's "Clear template" button did nothing at all).
+    if "url_template" in body.model_fields_set:
         source.url_template = body.url_template
-        # Resolve base_url from the new template against the source's EFFECTIVE
-        # product (i.e. the new product if product_id was just reassigned above).
-        product = (
-            await db.execute(select(Product).where(Product.id == source.product_id))
-        ).scalar_one_or_none()
-        if product and product.version:
-            source.base_url = _resolve_with_carried_revision(
-                body.url_template, product.version, source.base_url
-            )
+        if body.url_template is not None:
+            # Resolve base_url from the new template against the source's
+            # EFFECTIVE product (i.e. the new product if product_id was just
+            # reassigned above).
+            product = (
+                await db.execute(
+                    select(Product).where(Product.id == source.product_id)
+                )
+            ).scalar_one_or_none()
+            if product and product.version:
+                source.base_url = _resolve_with_carried_revision(
+                    body.url_template, product.version, source.base_url
+                )
     if body.platform is not None:
         # "" / "auto" clears the override so detection runs again next extraction.
         source.platform = None if body.platform in ("", "auto") else body.platform

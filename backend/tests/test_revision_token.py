@@ -23,6 +23,7 @@ from app.services.versioning import (
     like_pattern,
     resolve_template,
     templatize,
+    upgrade_template,
 )
 
 TMPL = (
@@ -197,3 +198,63 @@ def test_resolve_revision_returns_none_when_the_publication_is_absent():
             return '<a href="/docs/netbackup/11.2.0.1/999-111-0/v1-111">other</a>'
 
     assert asyncio.run(PROFILE.resolve_revision(TMPL, "11.2.0.1", Empty())) is None
+
+
+# ── Upgrading a template written before {rev} existed ────────────────────────
+# Nothing else does this: the in-run auto-detection only fires when there is no
+# template, and the UI only offers "Templatize" then too. An un-upgraded source
+# silently re-keys its whole corpus at the vendor's next release.
+
+VERSION_ONLY = OLD.replace("11.2/", "{version}/", 1)
+
+
+def test_a_version_only_template_is_upgraded_to_carry_the_token():
+    assert upgrade_template(VERSION_ONLY, OLD, "11.2", PROFILE) == TMPL
+
+
+def test_an_already_upgraded_template_is_left_alone():
+    assert upgrade_template(TMPL, OLD, "11.2", PROFILE) is None
+
+
+def test_no_upgrade_without_a_profile_that_knows_the_grammar():
+    assert upgrade_template(VERSION_ONLY, OLD, "11.2", None) is None
+
+    class Bare:
+        name = "generic"
+
+    assert upgrade_template(VERSION_ONLY, OLD, "11.2", Bare()) is None
+
+
+def test_upgrade_is_refused_when_the_round_trip_does_not_reproduce_base_url():
+    # The gate that makes this safe to apply unreviewed: a candidate that merely
+    # resembles the URL must not be adopted, because adopting it rewrites the
+    # identity of every article in the source.
+    class Sloppy:
+        def templatize_url(self, url, version):
+            # Drops the "-0" variant segment, so it resolves to a different URL.
+            return (
+                "https://docs.cohesity.com/docs/netbackup/{version}"
+                "/103228346-{rev}/v95650213-{rev}"
+            )
+
+    assert upgrade_template(VERSION_ONLY, OLD, "11.2", Sloppy()) is None
+
+
+def test_upgrade_survives_a_hook_that_raises():
+    class Boom:
+        def templatize_url(self, url, version):
+            raise RuntimeError("nope")
+
+    assert upgrade_template(VERSION_ONLY, OLD, "11.2", Boom()) is None
+
+
+def test_a_source_bumped_before_the_upgrade_still_recovers_in_one_run():
+    """Order-of-operations regression: if the version is bumped while the
+    template is still version-only, base_url ends up at the NEW version with the
+    OLD build id — a 404. The run must then upgrade the template first and
+    resolve the token second, recovering without operator action."""
+    stale = "https://docs.cohesity.com/docs/netbackup/11.2.0.1/103228346-171368441-0/v95650213-171368441"
+    upgraded = upgrade_template(VERSION_ONLY, stale, "11.2.0.1", PROFILE)
+    assert upgraded == TMPL, "the template upgrade must not depend on base_url being live"
+    # …and only then does the token lookup replace the stale build id.
+    assert resolve_template(upgraded, "11.2.0.1", "173151032") == NEW
