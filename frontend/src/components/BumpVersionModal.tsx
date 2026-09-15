@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { Product, DocumentationSource, BumpPlanEntry } from "../types";
 import { bumpProductVersion, previewProductVersionBump } from "../api/client";
 import UrlTemplate from "./UrlTemplate";
@@ -22,43 +22,59 @@ const STATUS_CLASS: Record<BumpPlanEntry["status"], string> = {
   unresolved: "is-warn",
 };
 
+/** The dry-run we hold, tagged with the version it describes. `entries: null`
+ *  means the preview call itself failed, which is distinct from "not asked yet"
+ *  — the former lets the operator through to the server's own 409 check, the
+ *  latter must not. Keying by version is what lets "is this preview current?" be
+ *  derived during render instead of invalidated by a setState inside the effect,
+ *  which triggers cascading renders (react-hooks/set-state-in-effect). */
+interface Preview {
+  version: string;
+  entries: BumpPlanEntry[] | null;
+}
+
 export default function BumpVersionModal({ product, sources, onClose, onBumped }: Props) {
   const [newVersion, setNewVersion] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [plan, setPlan] = useState<BumpPlanEntry[] | null>(null);
-  const [checking, setChecking] = useState(false);
-  const seq = useRef(0);
+  const [preview, setPreview] = useState<Preview | null>(null);
 
   const templated = sources.filter((s) => s.url_template && s.url_template.includes("{version}"));
   const v = newVersion.trim();
 
+  const wantsPreview = v !== "" && v !== product.version && templated.length > 0;
+  // Narrow `preview` inline rather than through a boolean, so this still
+  // type-checks if strictNullChecks is ever turned on.
+  const current = preview !== null && preview.version === v ? preview : null;
+  const settled = current !== null;
+  const entries = current?.entries ?? null;
+  const checking = wantsPreview && !settled;
+  const previewFailed = settled && entries === null;
+
   // Dry-run as the operator types. The new URL can't be computed in the browser
   // once a template carries {rev}: that token is the vendor's, and only the
   // backend's profile knows where to read it. Debounced because each check is a
-  // real fetch against the vendor's landing page.
+  // real fetch against the vendor's landing page. Every state write happens in
+  // the timeout callback, never synchronously in the effect body.
   useEffect(() => {
-    if (!v || v === product.version || templated.length === 0) {
-      setPlan(null);
-      return;
-    }
-    const mine = ++seq.current;
-    setChecking(true);
+    if (!wantsPreview || settled) return;
+    let cancelled = false;
     const t = setTimeout(async () => {
       try {
         const res = await previewProductVersionBump(product.id, v);
-        if (mine === seq.current) setPlan(res.sources);
+        if (!cancelled) setPreview({ version: v, entries: res.sources });
       } catch {
-        if (mine === seq.current) setPlan(null);
-      } finally {
-        if (mine === seq.current) setChecking(false);
+        if (!cancelled) setPreview({ version: v, entries: null });
       }
     }, 450);
-    return () => clearTimeout(t);
-  }, [v, product.id, product.version, templated.length]);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [v, wantsPreview, settled, product.id]);
 
-  const blocked = (plan ?? []).filter((e) => e.status === "unresolved");
-  const canSubmit = v !== "" && v !== product.version && templated.length > 0 && !checking;
+  const blocked = (entries ?? []).filter((e) => e.status === "unresolved");
+  const canSubmit = wantsPreview && !checking && !busy;
   const needsForce = blocked.length > 0;
 
   const submit = async () => {
@@ -105,7 +121,7 @@ export default function BumpVersionModal({ product, sources, onClose, onBumped }
         </p>
         <ul className="bump-plan">
           {templated.map((s) => {
-            const entry = plan?.find((p) => p.source_id === s.id);
+            const entry = entries?.find((p) => p.source_id === s.id);
             return (
               <li key={s.id} className="bump-plan-row">
                 <div className="bump-plan-head">
@@ -137,7 +153,11 @@ export default function BumpVersionModal({ product, sources, onClose, onBumped }
                   </>
                 ) : (
                   <div className="bump-plan-url muted">
-                    {checking ? "resolving…" : "enter a version to preview"}
+                    {checking
+                      ? "resolving…"
+                      : previewFailed
+                        ? "preview unavailable — the bump will be checked server-side"
+                        : "enter a version to preview"}
                   </div>
                 )}
               </li>
@@ -154,7 +174,7 @@ export default function BumpVersionModal({ product, sources, onClose, onBumped }
           <button
             type="button"
             className="btn-primary"
-            disabled={!canSubmit || busy}
+            disabled={!canSubmit}
             onClick={submit}
           >
             {busy ? "Bumping…" : needsForce ? "Bump anyway & re-extract" : "Bump & re-extract"}
