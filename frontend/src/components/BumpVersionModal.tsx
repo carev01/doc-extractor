@@ -132,7 +132,7 @@ export default function BumpVersionModal({ product, sources, onClose, onBumped }
                     </span>
                   )}
                 </div>
-                <UrlTemplate value={s.url_template as string} />
+                <UrlTemplate value={entry?.url_template ?? (s.url_template as string)} />
                 {entry ? (
                   <>
                     <div className="bump-plan-url">
@@ -142,6 +142,8 @@ export default function BumpVersionModal({ product, sources, onClose, onBumped }
                     {entry.status === "resolved" && (
                       <div className="bump-plan-note">
                         Vendor build <code>{entry.revision}</code> for {v}
+                        {entry.template_upgraded &&
+                          " — template upgraded to track it automatically"}
                       </div>
                     )}
                     {entry.status === "unresolved" && (

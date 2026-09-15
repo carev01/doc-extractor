@@ -39,6 +39,10 @@ export interface BumpPlanEntry {
   current_url: string;
   resolved_url: string;
   url_template: string;
+  /** True when the run will upgrade this source's stored template (adding
+   *  `{rev}`) before crawling — so the preview shows the shape that will
+   *  actually be used, not the stale one on disk. */
+  template_upgraded: boolean;
   revision: string | null;
   status: "ok" | "resolved" | "unresolved";
   detail: string | null;
