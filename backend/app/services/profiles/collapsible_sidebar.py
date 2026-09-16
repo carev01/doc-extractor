@@ -114,6 +114,18 @@ def parse_collapsible_sidebar(html: str, root_url: str) -> list[TocEntry]:
 
 class CollapsibleSidebarProfile:
     name = "collapsible_sidebar"
+    # Content comes from a direct GET, not a render. The article body is fully
+    # server-rendered — a leaf topic's <article> carries 5,180 bytes of HTML
+    # (26 <p>, 19 <li>) in the raw response — so rendering buys nothing and costs
+    # everything: Firecrawl renders through Browserless, whose Chromium this
+    # portal 403s, and Firecrawl's per-request `headers` cannot fix that because
+    # Playwright ignores a User-Agent set as an extra HTTP header (it must be set
+    # on the browser context). Every page therefore came back empty and was
+    # skipped. A plain GET returns 200 for the same URLs, and is 20-50x faster.
+    #
+    # Only the TOC still needs a browser, because the sidebar tree mounts on
+    # click; that path sets the UA properly via BrowserlessClient.
+    content_engine = "raw_http"
 
     def detect(self, root_html: str, root_url: str) -> bool:
         host = urlparse(root_url).netloc
@@ -193,9 +205,30 @@ class CollapsibleSidebarProfile:
         )
         return hit.group(1) if hit else None
 
+    def extract_content_html(self, raw: str, url: str) -> str | None:
+        """Scope a raw page to its ``<article>`` body and absolutise its images.
+
+        Returns None when there is no ``<article>`` at all, which the raw_http
+        failure-rate guard reports as a rate (grep "No content body found at" for
+        the offending URLs). Section pages legitimately carry only a list of child
+        topics — a couple of hundred bytes — so thinness is not emptiness here and
+        must not be treated as a miss.
+        """
+        soup = BeautifulSoup(raw, "html.parser")
+        article = soup.select_one("article")
+        if article is None:
+            return None
+        for img in article.find_all("img"):
+            src = img.get("src")
+            if src:
+                img["src"] = urljoin(url, src)
+        return str(article)
+
     def content_config(self) -> dict:
-        # Article body is <article class="prose">; the sidebar nav lives inside
-        # <main>, so target the article directly to avoid dragging in the TOC.
+        # Unused on the raw_http path (extract_content_html does the scoping), but
+        # extract_source always calls content_config(), so it must exist — and it
+        # keeps the selector correct if this profile is ever routed through a
+        # render again.
         return {
             "includeTags": ["article"],
             "onlyMainContent": False,
