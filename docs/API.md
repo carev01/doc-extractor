@@ -399,6 +399,10 @@ true once nothing is pending or running. `GET /api/export/batches/{batch_id}/dow
 returns one zip with a folder per source, built from whatever has completed —
 available before the whole batch finishes, and `409` until at least one source has.
 
+The combined zip is a **cache**: it is rebuilt on demand and retention treats it
+accordingly, dropping it by age, dropping it once its constituent jobs are gone,
+and spending it before evicting any real export under the size cap.
+
 ---
 
 ## Jobs (Scheduled Extraction)

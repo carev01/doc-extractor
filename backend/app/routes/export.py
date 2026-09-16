@@ -32,6 +32,7 @@ from app.schemas.export import (
     ProductExportPreview,
     ProductExportRequest,
 )
+from app.services.export_retention import BATCH_DIR_PREFIX
 from app.services.exporter import export_engine
 from app.services.queue import enqueue_export, enqueue_export_batch
 
@@ -558,7 +559,11 @@ async def download_export_batch(
 
     label = rows[0][0].batch_label or "export"
     zip_name = _batch_zip_name(label)
-    batch_dir = os.path.join(export_engine.export_dir, f"batch-{batch_id}")
+    # Same prefix retention keys off — they must not drift, or the cache becomes
+    # invisible to the purge again.
+    batch_dir = os.path.join(
+        export_engine.export_dir, f"{BATCH_DIR_PREFIX}{batch_id}"
+    )
     zip_path = os.path.join(batch_dir, zip_name)
 
     in_flight = any(
