@@ -2446,6 +2446,46 @@ a.btn-primary {
 }
 
 /* Long vendor URLs need more room than the 560px default picker. */
+/* Product heading with its batch-export action on the right. */
+.product-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.product-heading h2 {
+  margin: 0;
+}
+
+/* Inline option row inside a dialog: label above control, wrapping on narrow. */
+.export-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.export-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+
+.export-row select,
+.export-row input[type="number"] {
+  min-height: var(--control-sm-h);
+  padding: 0 10px;
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+}
+
 .picker-panel.is-wide {
   width: min(780px, 94vw);
 }

@@ -24,6 +24,7 @@ class ExportJob(Base):
 
     __table_args__ = (
         Index("ix_export_jobs_pending", "created_at", postgresql_where=text("status = 'PENDING'")),
+        Index("ix_export_jobs_batch", "batch_id", "batch_seq", postgresql_where=text("batch_id IS NOT NULL")),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -37,6 +38,14 @@ class ExportJob(Base):
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+
+    # Product-level export: one ordinary per-source job per source, tied together
+    # by a shared batch_id. NULL for an ordinary single-source export.
+    batch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    batch_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Display name for the batch ("<Vendor> / <Product>"), denormalised so a batch
+    # still reads correctly after its product is renamed or deleted.
+    batch_label: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     export_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

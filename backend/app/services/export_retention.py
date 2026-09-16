@@ -5,11 +5,23 @@ Two policies, applied in order:
   1. Age: terminal (completed/failed/cancelled) export jobs older than
      ``retention_days`` are removed (directory + DB row).
   2. Size cap: if the remaining export footprint still exceeds
-     ``max_total_bytes``, evict completed exports oldest-first until under cap.
+     ``max_total_bytes``, evict oldest-first until under cap.
 
 The ``export_jobs`` table is the source of truth; deleting a row and its on-disk
 directory together keeps the listing and the filesystem consistent. Orphan
 directories (no matching row) older than the age cutoff are swept too.
+
+``batch-<uuid>`` directories — the cached combined zip for a product export —
+are the exception that both policies have to be told about. They carry no
+``export_jobs`` row of their own, and their name is not a bare UUID, so the
+orphan sweep's ``uuid.UUID(entry.name)`` guard skipped them: left alone they were
+immortal AND invisible to the size cap, which is how a few hundred MB per product
+export would have accumulated forever on a finite volume.
+
+They are also the only thing here that is **regenerable** — a batch zip can be
+rebuilt from its children on the next download, whereas evicting a child export
+destroys content. So the size cap spends them first, before it evicts any real
+export.
 """
 
 import logging
@@ -44,6 +56,29 @@ def _remove_export_dir(export_dir: str, export_id: uuid.UUID | None) -> None:
         return
     path = os.path.join(export_dir, str(export_id))
     shutil.rmtree(path, ignore_errors=True)
+
+
+BATCH_DIR_PREFIX = "batch-"
+
+
+def _batch_dirs(export_dir: str) -> "list[tuple[str, uuid.UUID, float]]":
+    """(path, batch_id, mtime) for every cached product-export zip directory."""
+    out = []
+    if not os.path.isdir(export_dir):
+        return out
+    for entry in os.scandir(export_dir):
+        if not entry.is_dir() or not entry.name.startswith(BATCH_DIR_PREFIX):
+            continue
+        try:
+            batch_id = uuid.UUID(entry.name[len(BATCH_DIR_PREFIX):])
+        except ValueError:
+            continue
+        try:
+            mtime = entry.stat().st_mtime
+        except OSError:
+            continue
+        out.append((entry.path, batch_id, mtime))
+    return out
 
 
 async def purge_expired_exports(
@@ -90,13 +125,35 @@ async def purge_expired_exports(
                 try:
                     uuid.UUID(entry.name)
                 except ValueError:
-                    continue
+                    continue  # batch-<uuid> and friends; handled below
                 if datetime.fromtimestamp(entry.stat().st_mtime, timezone.utc) < cutoff:
                     shutil.rmtree(entry.path, ignore_errors=True)
                     purged += 1
 
-    # 2. Size cap — evict completed exports oldest-first until under the cap.
+        # Cached product-export zips: stale by age, or dead because every job of
+        # the batch has been purged (nothing left to rebuild it from).
+        live_batches = {
+            bid for (bid,) in (
+                await db.execute(
+                    select(ExportJob.batch_id).where(ExportJob.batch_id.isnot(None))
+                )
+            ).all()
+        }
+        for path, batch_id, mtime in _batch_dirs(export_dir):
+            stale = datetime.fromtimestamp(mtime, timezone.utc) < cutoff
+            if stale or batch_id not in live_batches:
+                shutil.rmtree(path, ignore_errors=True)
+                purged += 1
+
+    # 2. Size cap — evict oldest-first until under the cap.
     if max_total_bytes > 0:
+        # Cached batch zips count toward the footprint (they are real bytes on the
+        # volume) and are spent FIRST: a batch zip rebuilds itself on the next
+        # download, so dropping one costs a regeneration, while dropping a child
+        # export costs the content.
+        batches = sorted(_batch_dirs(export_dir), key=lambda b: b[2])
+        batch_sizes = {path: _dir_size(path) for path, _bid, _m in batches}
+
         completed = (
             await db.execute(
                 select(ExportJob)
@@ -111,7 +168,14 @@ async def purge_expired_exports(
             job.id: _dir_size(os.path.join(export_dir, str(job.export_id)))
             for job in completed
         }
-        total = sum(sizes.values())
+        total = sum(sizes.values()) + sum(batch_sizes.values())
+        for path, _bid, _m in batches:
+            if total <= max_total_bytes:
+                break
+            shutil.rmtree(path, ignore_errors=True)
+            total -= batch_sizes[path]
+            purged += 1
+
         evicted = False
         for job in completed:
             if total <= max_total_bytes:

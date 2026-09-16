@@ -24,7 +24,10 @@ export default function ExportPanel({ source }: Props) {
   const [splitBy, setSplitBy] = useState<"" | "size" | "articles" | "tokens">("");
   const [splitValue, setSplitValue] = useState(50);
   const [respectChapters, setRespectChapters] = useState(false);
-  const [includeImages, setIncludeImages] = useState(true);
+  // Off by default: image payloads dwarf the text (Veeam Backup & Replication
+  // is 27 MB of markdown against 495 MB of images), and most consumers of an
+  // export want the text. Opting in beats discovering the size mid-download.
+  const [includeImages, setIncludeImages] = useState(false);
   const [format, setFormat] = useState<"markdown" | "pdf">("markdown");
   const [exporting, setExporting] = useState(false);
   const [jobStatusMsg, setJobStatusMsg] = useState<string | null>(null);
@@ -271,8 +274,8 @@ export default function ExportPanel({ source }: Props) {
             />
             Include images
             <span className="hint">
-              {" "}— bundle images in a zip; uncheck for a smaller markdown-only
-              export (image-heavy sources can be very large)
+              {" "}— bundles images in a zip, which for image-heavy sources is
+              far larger than the markdown itself; leave off for text only
             </span>
           </label>
         )}

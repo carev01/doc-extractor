@@ -677,3 +677,68 @@ export interface AdminApiKey extends ApiKeyItem {
   user_id: string;
   user_email: string;
 }
+
+
+// ── Product-level (batch) export ─────────────────────────────────────────────
+// A product export is one ordinary per-source export job each, tied together by
+// a batch id — so a source that fails doesn't cost the others, and the single
+// worker can interleave extractions between them.
+
+export interface ProductExportPreview {
+  product_id: string;
+  label: string;
+  source_count: number;
+  exportable_source_count: number;
+  /** Sources with no articles yet; exporting them would only ever fail. */
+  skipped: string[];
+  total_articles: number;
+  markdown_bytes: number;
+  image_bytes: number;
+  projected_bytes: number;
+}
+
+export interface BatchSourceStatus {
+  job_id: string;
+  source_id: string;
+  source_name: string;
+  seq: number;
+  status: string;
+  export_id: string | null;
+  article_count: number | null;
+  size_bytes: number | null;
+  error_message: string | null;
+}
+
+export interface ExportBatch {
+  batch_id: string;
+  label: string;
+  total: number;
+  completed: number;
+  failed: number;
+  pending: number;
+  running: number;
+  cancelled: number;
+  /** Nothing pending or running. The download is buildable from whatever
+   *  completed, even if some sources failed. */
+  finished: boolean;
+  total_size_bytes: number;
+  sources: BatchSourceStatus[];
+}
+
+export interface ProductExportCreated {
+  batch_id: string;
+  total: number;
+  skipped: string[];
+}
+
+export interface ProductExportOptions {
+  split_by?: string | null;
+  max_articles_per_file?: number | null;
+  max_file_size_bytes?: number | null;
+  max_tokens_per_file?: number | null;
+  respect_chapters?: boolean;
+  format?: string;
+  include_images?: boolean;
+  topic_query?: string | null;
+  source_ids?: string[] | null;
+}

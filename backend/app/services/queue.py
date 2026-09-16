@@ -140,14 +140,43 @@ async def reap_stale_runs(
 
 
 async def enqueue_export(
-    db: AsyncSession, source_id: uuid.UUID, request: dict
+    db: AsyncSession,
+    source_id: uuid.UUID,
+    request: dict,
+    batch_id: uuid.UUID | None = None,
+    batch_seq: int | None = None,
+    batch_label: str | None = None,
 ) -> ExportJob:
-    """Insert a pending export job."""
-    job = ExportJob(source_id=source_id, request=request, status=ExportStatus.PENDING)
+    """Insert a pending export job, optionally as part of a batch."""
+    job = ExportJob(
+        source_id=source_id, request=request, status=ExportStatus.PENDING,
+        batch_id=batch_id, batch_seq=batch_seq, batch_label=batch_label,
+    )
     db.add(job)
     await db.commit()
     await db.refresh(job)
     return job
+
+
+async def enqueue_export_batch(
+    db: AsyncSession,
+    sources: "list[tuple[uuid.UUID, dict]]",
+    batch_label: str,
+) -> uuid.UUID:
+    """Insert one pending export job per source, sharing a new batch id.
+
+    Committed as a single transaction so a batch is never half-queued: a partial
+    batch would report a misleading total and its combined download would be
+    quietly short a source.
+    """
+    batch_id = uuid.uuid4()
+    for seq, (source_id, request) in enumerate(sources):
+        db.add(ExportJob(
+            source_id=source_id, request=request, status=ExportStatus.PENDING,
+            batch_id=batch_id, batch_seq=seq, batch_label=batch_label,
+        ))
+    await db.commit()
+    return batch_id
 
 
 async def claim_next_export(

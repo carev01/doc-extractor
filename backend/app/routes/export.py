@@ -1,28 +1,40 @@
 """Export routes — async export enqueue, job status, and file download."""
 
+import contextlib
 import os
 import shutil
+import zipfile
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.authz import Principal, authorize_source, get_principal, require_admin
+from app.core.authz import (
+    Principal, authorize_product, authorize_source, get_principal, require_admin,
+)
 from app.core.config import settings
 from app.core.database import get_db
+from app.models.article import Article
 from app.models.export_job import ExportJob, ExportStatus
+from app.models.image import ArticleImage
 from app.models.product import Product
 from app.models.source import DocumentationSource
 from app.models.vendor import Vendor
 from app.schemas.export import (
+    BatchSourceStatus,
+    ExportBatchResponse,
     ExportJobCreatedResponse,
     ExportJobStatusResponse,
     ExportRequest,
+    ProductExportCreatedResponse,
+    ProductExportPreview,
+    ProductExportRequest,
 )
+from app.services.export_retention import BATCH_DIR_PREFIX
 from app.services.exporter import export_engine
-from app.services.queue import enqueue_export
+from app.services.queue import enqueue_export, enqueue_export_batch
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
@@ -304,3 +316,320 @@ async def delete_export(
         await db.delete(job)
         await db.commit()
     return None
+
+
+# ---------------------------------------------------------------------------
+# Product-level (batch) export
+# ---------------------------------------------------------------------------
+#
+# A product export fans out into one ordinary per-source ExportJob each, sharing
+# a batch_id. The export engine is untouched: every job is exactly the job a
+# single-source export already produces. See the f9a0b1c2d3e4 migration for why
+# fan-out beats one product-scoped job.
+
+
+async def _product_label(db: AsyncSession, product: Product) -> str:
+    vendor = (
+        await db.execute(select(Vendor.name).where(Vendor.id == product.vendor_id))
+    ).scalar_one_or_none()
+    return f"{vendor} / {product.name}" if vendor else product.name
+
+
+async def _exportable_sources(db: AsyncSession, product_id: uuid.UUID, only: list[uuid.UUID] | None):
+    """Sources of *product_id* that have at least one live article, plus the
+    names of those skipped for having none.
+
+    Skipping is not cosmetic: ``export_sync`` raises "No articles matched the
+    selection criteria" for an empty source, so including one would put a
+    permanent FAILED row in the batch that the operator can do nothing about.
+    """
+    rows = (
+        await db.execute(
+            select(
+                DocumentationSource.id,
+                DocumentationSource.name,
+                func.count(Article.id).label("live"),
+            )
+            .outerjoin(
+                Article,
+                (Article.source_id == DocumentationSource.id)
+                & (Article.removed_at.is_(None)),
+            )
+            .where(DocumentationSource.product_id == product_id)
+            .group_by(DocumentationSource.id, DocumentationSource.name)
+            .order_by(DocumentationSource.name)
+        )
+    ).all()
+    wanted = set(only or [])
+    keep, skipped = [], []
+    for sid, name, live in rows:
+        if wanted and sid not in wanted:
+            continue
+        (keep if live else skipped).append((sid, name))
+    return keep, [n for _sid, n in skipped]
+
+
+@router.get("/product/{product_id}/preview", response_model=ProductExportPreview)
+async def preview_product_export(
+    product_id: uuid.UUID,
+    include_images: bool = False,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """Project what a product export would generate, before generating it.
+
+    Image payloads dwarf the text — Veeam Backup & Replication is 27 MB of
+    markdown against 495 MB of images — and the exports volume is finite, so the
+    size is worth seeing before the worker is committed to producing it.
+    """
+    await authorize_product(db, principal, product_id, write=False)
+    product = await db.get(Product, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    keep, skipped = await _exportable_sources(db, product_id, None)
+    keep_ids = [sid for sid, _n in keep]
+
+    articles = md_bytes = image_bytes = 0
+    if keep_ids:
+        articles, md_bytes = (
+            await db.execute(
+                select(
+                    func.count(Article.id),
+                    func.coalesce(func.sum(func.length(Article.content_markdown)), 0),
+                ).where(
+                    Article.source_id.in_(keep_ids), Article.removed_at.is_(None)
+                )
+            )
+        ).one()
+        image_bytes = (
+            await db.execute(
+                select(func.coalesce(func.sum(ArticleImage.file_size_bytes), 0))
+                .select_from(ArticleImage)
+                .join(Article, Article.id == ArticleImage.article_id)
+                .where(
+                    Article.source_id.in_(keep_ids), Article.removed_at.is_(None)
+                )
+            )
+        ).scalar_one()
+
+    return ProductExportPreview(
+        product_id=product_id,
+        label=await _product_label(db, product),
+        source_count=len(keep) + len(skipped),
+        exportable_source_count=len(keep),
+        skipped=skipped,
+        total_articles=int(articles or 0),
+        markdown_bytes=int(md_bytes or 0),
+        image_bytes=int(image_bytes or 0),
+        projected_bytes=int(md_bytes or 0) + (int(image_bytes or 0) if include_images else 0),
+    )
+
+
+@router.post("/product/{product_id}", response_model=ProductExportCreatedResponse)
+async def create_product_export(
+    product_id: uuid.UUID,
+    body: ProductExportRequest,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """Enqueue one export job per source of a product, tied together by a batch id."""
+    await authorize_product(db, principal, product_id, write=False)
+    product = await db.get(Product, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    keep, skipped = await _exportable_sources(db, product_id, body.source_ids)
+    if not keep:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No exportable sources: this product's sources hold no articles yet."
+                if not skipped
+                else f"No exportable sources ({len(skipped)} hold no articles yet)."
+            ),
+        )
+
+    shared = body.model_dump(mode="json", exclude={"source_ids"})
+    jobs = [
+        (sid, {**shared, "source_id": str(sid)})
+        for sid, _name in keep
+    ]
+    batch_id = await enqueue_export_batch(
+        db, jobs, batch_label=await _product_label(db, product)
+    )
+    return ProductExportCreatedResponse(
+        batch_id=batch_id, total=len(jobs), skipped=skipped
+    )
+
+
+async def _load_batch(db: AsyncSession, batch_id: uuid.UUID, principal: Principal):
+    """Batch jobs in order, after authorizing the product they belong to."""
+    rows = (
+        await db.execute(
+            select(ExportJob, DocumentationSource.name, DocumentationSource.product_id)
+            .join(DocumentationSource, DocumentationSource.id == ExportJob.source_id)
+            .where(ExportJob.batch_id == batch_id)
+            .order_by(ExportJob.batch_seq)
+        )
+    ).all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="Export batch not found")
+    # Every job in a batch belongs to one product by construction; authorize once.
+    await authorize_product(db, principal, rows[0][2], write=False)
+    return rows
+
+
+@router.get("/batches/{batch_id}", response_model=ExportBatchResponse)
+async def get_export_batch(
+    batch_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """Aggregate status of a product export, plus a row per source."""
+    rows = await _load_batch(db, batch_id, principal)
+    counts = {s.value: 0 for s in ExportStatus}
+    sources, total_size = [], 0
+    for job, source_name, _pid in rows:
+        counts[job.status.value] += 1
+        result = job.result or {}
+        total_size += int(result.get("total_size_bytes") or 0)
+        sources.append(BatchSourceStatus(
+            job_id=job.id, source_id=job.source_id, source_name=source_name,
+            seq=job.batch_seq or 0, status=job.status.value, export_id=job.export_id,
+            article_count=result.get("total_articles"),
+            size_bytes=result.get("total_size_bytes"),
+            error_message=job.error_message,
+        ))
+    in_flight = counts["pending"] + counts["running"]
+    return ExportBatchResponse(
+        batch_id=batch_id,
+        label=rows[0][0].batch_label or "",
+        total=len(rows),
+        completed=counts["completed"], failed=counts["failed"],
+        pending=counts["pending"], running=counts["running"],
+        cancelled=counts["cancelled"],
+        finished=in_flight == 0,
+        total_size_bytes=total_size,
+        sources=sources,
+    )
+
+
+def _batch_zip_name(label: str) -> str:
+    """``Vendor / Product`` -> ``Vendor_Product.zip``."""
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in label)
+    while "__" in safe:
+        safe = safe.replace("__", "_")
+    return f"{safe.strip('_') or 'export'}.zip"
+
+
+@router.get("/batches/{batch_id}/download")
+async def download_export_batch(
+    batch_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """One zip for the whole product, a folder per source.
+
+    Each completed source contributes exactly what its own export produced. When
+    that export made a zip, its entries are copied across verbatim rather than
+    its loose files being walked: ``_register_image`` deliberately never stages
+    images under the export directory (it streams them from the media root at zip
+    time to avoid doubling the exports volume), so the loose files are the
+    markdown alone. Walking them would have produced an image-less bundle
+    silently, which is worse than not offering the download.
+
+    Nesting under ``<Source>/`` keeps the markdown's relative ``images/...``
+    links working, since they resolve inside the same folder.
+
+    Cached under ``exports/batch-<batch_id>/`` and rebuilt only when missing, so
+    a repeated or resumed download doesn't regenerate hundreds of MB. That
+    directory has no export_jobs row, so export retention sweeps it with the
+    orphan-directory policy.
+    """
+    rows = await _load_batch(db, batch_id, principal)
+    done = [
+        (job, name) for job, name, _pid in rows
+        if job.status == ExportStatus.COMPLETED and job.export_id
+    ]
+    if not done:
+        raise HTTPException(
+            status_code=409, detail="No source of this batch has completed yet"
+        )
+
+    label = rows[0][0].batch_label or "export"
+    zip_name = _batch_zip_name(label)
+    # Same prefix retention keys off — they must not drift, or the cache becomes
+    # invisible to the purge again.
+    batch_dir = os.path.join(
+        export_engine.export_dir, f"{BATCH_DIR_PREFIX}{batch_id}"
+    )
+    zip_path = os.path.join(batch_dir, zip_name)
+
+    in_flight = any(
+        job.status in (ExportStatus.PENDING, ExportStatus.RUNNING)
+        for job, _n, _p in rows
+    )
+    if os.path.isfile(zip_path):
+        # A cached zip built while sources were still running would be missing
+        # them, and every later download would serve that stale copy.
+        if not in_flight:
+            return FileResponse(
+                zip_path, media_type="application/zip", filename=zip_name
+            )
+        os.remove(zip_path)
+
+    os.makedirs(batch_dir, exist_ok=True)
+    written = 0
+    try:
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as out:
+            for job, source_name in done:
+                src_dir = os.path.join(export_engine.export_dir, str(job.export_id))
+                if not os.path.isdir(src_dir):
+                    continue  # purged by retention since the job completed
+                folder = _batch_zip_name(source_name)[:-4] or str(job.export_id)
+                written += _append_export(out, src_dir, folder)
+    except Exception:
+        # Never leave a half-written archive behind to be served as cached.
+        with contextlib.suppress(OSError):
+            os.remove(zip_path)
+        raise
+
+    if not written:
+        with contextlib.suppress(OSError):
+            os.remove(zip_path)
+        raise HTTPException(
+            status_code=410,
+            detail="This batch's files have been purged by export retention",
+        )
+    return FileResponse(zip_path, media_type="application/zip", filename=zip_name)
+
+
+def _append_export(out: zipfile.ZipFile, src_dir: str, folder: str) -> int:
+    """Add one child export to *out* under ``folder/``; returns entries written.
+
+    Prefers the child's own zip (the only place its images exist) and falls back
+    to the loose files for a text-only or PDF export, which produces none.
+    Entries are streamed one at a time so an image-heavy source doesn't have to
+    fit in memory.
+    """
+    bundles = [f for f in sorted(os.listdir(src_dir)) if f.endswith(".zip")]
+    written = 0
+    if bundles:
+        with zipfile.ZipFile(os.path.join(src_dir, bundles[0])) as inner:
+            for info in inner.infolist():
+                if info.is_dir():
+                    continue
+                target = zipfile.ZipInfo(f"{folder}/{info.filename}", info.date_time)
+                target.compress_type = info.compress_type
+                target.external_attr = info.external_attr
+                with inner.open(info) as fsrc, out.open(target, "w") as fdst:
+                    shutil.copyfileobj(fsrc, fdst, length=1024 * 1024)
+                written += 1
+        return written
+    for name in sorted(os.listdir(src_dir)):
+        path = os.path.join(src_dir, name)
+        if os.path.isfile(path):
+            out.write(path, f"{folder}/{name}")
+            written += 1
+    return written

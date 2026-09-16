@@ -8,6 +8,10 @@ import type {
   ProductList,
   BumpPlan,
   BumpPlanEntry,
+  ProductExportPreview,
+  ProductExportCreated,
+  ProductExportOptions,
+  ExportBatch,
   DocumentationSource,
   SourceList,
   ArticleDetail,
@@ -727,3 +731,38 @@ export const accountApi = {
   changePassword: (current_password: string, new_password: string) =>
     api.post("/auth/change-password", { current_password, new_password }),
 };
+
+
+// ── Product-level (batch) export ─────────────────────────────────────────────
+
+/** Project what a product export would generate, without generating it. */
+export async function previewProductExport(
+  productId: string,
+  includeImages: boolean,
+): Promise<ProductExportPreview> {
+  const res = await api.get(`/export/product/${productId}/preview`, {
+    params: { include_images: includeImages },
+  });
+  return res.data;
+}
+
+/** Enqueue one export job per source of a product. */
+export async function createProductExport(
+  productId: string,
+  options: ProductExportOptions,
+): Promise<ProductExportCreated> {
+  const res = await api.post(`/export/product/${productId}`, options);
+  return res.data;
+}
+
+export async function getExportBatch(batchId: string): Promise<ExportBatch> {
+  const res = await api.get(`/export/batches/${batchId}`);
+  return res.data;
+}
+
+/** Download the combined zip for a product export — a folder per source.
+ *  Goes through axios like every other export download: the API needs the auth
+ *  header, and a bare <a href> would save the 401 JSON as an unusable "file". */
+export async function downloadExportBatch(batchId: string): Promise<void> {
+  await saveAuthedBlob(`/export/batches/${batchId}/download`, `export-${batchId}.zip`);
+}
