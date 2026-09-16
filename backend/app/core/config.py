@@ -64,6 +64,15 @@ class Settings(BaseSettings):
     # the token is supplied at deploy (DOCEXTRACTOR_BROWSERLESS_TOKEN).
     browserless_url: str = "http://browserless.browserless.svc.cluster.local:3000"
     browserless_token: str = ""
+    # Browserless' Chromium advertises "HeadlessChrome/<ver>" by default, which
+    # docs.cohesity.com (and likely other edges) hard-403 — a 49-byte error page
+    # with no DOM, so a profile waiting on its selector just times out. Every
+    # page is navigated with this UA instead. Overridable so the Chrome version
+    # can be bumped without a code change.
+    browserless_user_agent: str = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    )
     # Per-article render budget (ms) and concurrency for browserless content scraping.
     browserless_wait_ms: int = 9000
     browserless_concurrency: int = 4
