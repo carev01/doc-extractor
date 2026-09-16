@@ -351,6 +351,10 @@ curl -sN -H "X-API-Key: $KEY" \
 | `GET` | `/api/export/download/{export_id}/{filename}` | Download a single file |
 | `GET` | `/api/export/list` | List completed exports |
 | `DELETE` | `/api/export/{export_id}` | Delete an export |
+| `GET` | `/api/export/product/{id}/preview` | Project a product export's size |
+| `POST` | `/api/export/product/{id}` | Export every source of a product |
+| `GET` | `/api/export/batches/{batch_id}` | Product export status, per source |
+| `GET` | `/api/export/batches/{batch_id}/download` | Combined zip, a folder per source |
 
 ### Export Request Body
 
@@ -368,6 +372,32 @@ curl -sN -H "X-API-Key: $KEY" \
 - `article_ids` — optional; omit for full export
 - `split_*` — optional; omit for single file
 - `format` — `"markdown"` or `"pdf"`
+- `include_images` — **defaults to `false`**. Image payloads dwarf the text
+  (one product carries 27 MB of markdown against 495 MB of images), so images
+  are opt-in. Ignored for `pdf`, which embeds them.
+
+### Product-level export
+
+`POST /api/export/product/{id}` exports every source of a product. It fans out
+into one ordinary per-source export job each, sharing a `batch_id` — so a source
+that fails costs only itself, each keeps the normal retry/cancel behaviour, and
+the worker can interleave extraction runs between sources.
+
+The body is a **subset** of the single-source request: `split_by` and its limits,
+`respect_chapters`, `format`, `include_images`, an optional `topic_query`, and an
+optional `source_ids` to restrict the batch. `article_ids` and `toc_entry_ids`
+identify rows within one source, so they have no meaning here and are not
+accepted. Sources holding no articles are skipped and named in `skipped`, since
+exporting one would only ever produce a failure.
+
+```json
+{ "batch_id": "uuid", "total": 21, "skipped": ["Release Notes"] }
+```
+
+Poll `GET /api/export/batches/{batch_id}` for per-source status; `finished` turns
+true once nothing is pending or running. `GET /api/export/batches/{batch_id}/download`
+returns one zip with a folder per source, built from whatever has completed —
+available before the whole batch finishes, and `409` until at least one source has.
 
 ---
 

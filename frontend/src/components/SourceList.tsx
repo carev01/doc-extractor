@@ -31,6 +31,7 @@ import {
 } from "../api/client";
 import ProductVersionBar from "./ProductVersionBar";
 import UrlTemplate from "./UrlTemplate";
+import ProductExportModal from "./ProductExportModal";
 import type { Access } from "../access";
 import { apiError } from "../api/errors";
 
@@ -80,6 +81,7 @@ export default function SourceList({
   // history only, and the row still opens the doc viewer.
   const canWrite = access.canWriteVendor(product.vendor_id);
   const [sources, setSources] = useState<DocumentationSource[]>([]);
+  const [showProductExport, setShowProductExport] = useState(false);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [authRealms, setAuthRealms] = useState<AuthRealm[]>([]);
   const [enrichment, setEnrichment] = useState<Map<string, SourceEnrichment>>(new Map());
@@ -198,7 +200,26 @@ export default function SourceList({
       {canWrite && (
         <ProductVersionBar key={product.id} product={product} sources={sources} onChanged={fetchSources} />
       )}
-      <h2>Documentation Sources — {product.name}</h2>
+      <div className="product-heading">
+        <h2>Documentation Sources — {product.name}</h2>
+        {sources.length > 1 && (
+          <button
+            type="button"
+            className="btn-secondary-sm"
+            title="Export every source of this product in one go"
+            onClick={() => setShowProductExport(true)}
+          >
+            Export all sources
+          </button>
+        )}
+      </div>
+      {showProductExport && (
+        <ProductExportModal
+          productId={product.id}
+          productName={product.name}
+          onClose={() => setShowProductExport(false)}
+        />
+      )}
 
       {error && <div className="error">{error}</div>}
 
