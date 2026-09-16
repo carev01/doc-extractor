@@ -11,6 +11,7 @@ renders identically; we only need a different *extraction* path.
 """
 
 import asyncio
+import json
 import logging
 
 import httpx
@@ -582,6 +583,11 @@ class BrowserlessError(Exception):
     """Raised when Browserless is unreachable or returns an unusable response."""
 
 
+# Every script in this module is a Browserless /function default export with
+# this exact signature; the user-agent prelude is injected right after it.
+_FUNCTION_SIGNATURE = "export default async function ({ page, context }) {"
+
+
 class BrowserlessClient:
     """Minimal client over Browserless's ``/function`` API."""
 
@@ -598,6 +604,36 @@ class BrowserlessClient:
         self.url = (url or settings.browserless_url).rstrip("/")
         self.token = token if token is not None else settings.browserless_token
         self.wait_ms = wait_ms or settings.browserless_wait_ms
+        self.user_agent = settings.browserless_user_agent
+
+    def _with_user_agent(self, code: str) -> str:
+        """Inject ``page.setUserAgent`` as the first statement of a function.
+
+        Browserless' Chromium advertises ``HeadlessChrome/<ver>`` and
+        docs.cohesity.com now hard-403s it: the navigation "succeeds" with a
+        49-byte error page, so a profile waiting on its sidebar selector simply
+        times out 30s later and the TOC collapses to nothing. Measured on the
+        same URL: default UA -> 403 and 0 sidebar nodes; this UA -> 200, 1
+        sidebar and 1,297 expand triggers.
+
+        Done here, in the one funnel every script goes through, rather than in
+        each of the nine script constants — a script that silently missed it
+        would fail only on the sites that check, months later. Injecting at the
+        signature guarantees it precedes every ``page.goto`` in the body, and an
+        unrecognised signature raises rather than shipping an unpatched script.
+        """
+        if not self.user_agent:
+            return code
+        if _FUNCTION_SIGNATURE not in code:
+            raise BrowserlessError(
+                "Browserless script has an unrecognised signature, so the "
+                "user-agent could not be applied; expected "
+                f"{_FUNCTION_SIGNATURE!r}"
+            )
+        prelude = (
+            f"\n  await page.setUserAgent({json.dumps(self.user_agent)});\n"
+        )
+        return code.replace(_FUNCTION_SIGNATURE, _FUNCTION_SIGNATURE + prelude, 1)
 
     async def _post(self, code: str, context: dict, target_url: str,
                     client: httpx.AsyncClient | None = None,
@@ -614,7 +650,7 @@ class BrowserlessClient:
             endpoint += f"?timeout={session_timeout_ms}"
         # Token as a Bearer header, not ?token=, so it doesn't leak into logs.
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else None
-        payload = {"code": code, "context": context}
+        payload = {"code": self._with_user_agent(code), "context": context}
 
         owns = client is None
         client = client or httpx.AsyncClient(timeout=httpx.Timeout(http_timeout_s, connect=10.0))
@@ -628,8 +664,9 @@ class BrowserlessClient:
                     body = resp.json()
                     break
                 except httpx.HTTPStatusError as exc:
-                    code = exc.response.status_code if exc.response is not None else None
-                    if code not in self.TRANSIENT_STATUS or attempt >= self.TRANSIENT_RETRIES:
+                    # Not `code` — that name holds the script being posted.
+                    status = exc.response.status_code if exc.response is not None else None
+                    if status not in self.TRANSIENT_STATUS or attempt >= self.TRANSIENT_RETRIES:
                         raise BrowserlessError(
                             f"Browserless request failed for {target_url}: {exc}"
                         ) from exc
