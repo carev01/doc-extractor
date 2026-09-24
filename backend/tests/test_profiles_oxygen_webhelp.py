@@ -116,3 +116,97 @@ def test_rebuild_toc_stitches_full_tree():
 
 def test_rebuild_toc_empty_when_no_fragments():
     assert OxygenWebhelpProfile().rebuild_toc([], "https://d/x.html") == []
+
+
+# ── Node identity across publishing builds ───────────────────────────────────
+# Rubrik's RSC portal is built from pages published in different builds, and
+# each build mints its own data-tocid for a topic. Keyed by tocid, the rebuilt
+# TOC held every top-level section three times (9,268 entries, 4,891 pages).
+
+BASE = "https://d.example.com/en-us/saas/saas/"
+
+
+def _li(tocid, href, title, kids=""):
+    ul = f"<ul>{kids}</ul>" if kids else ""
+    return (f'<li role="treeitem" data-tocid="{tocid}"><div class="topicref">'
+            f'<a href="{href}">{title}</a></div>{ul}</li>')
+
+
+def _nav(*items):
+    return f'<nav id="wh_publication_toc"><ul>{"".join(items)}</ul></nav>'
+
+
+def test_the_same_topic_under_different_tocids_is_one_node():
+    """The regression: two builds, two tocid schemes, one tree — not two."""
+    build1 = _nav(_li("tocId-d100e1", "root.html", "Root",
+                      _li("tocId-d100e2", "a.html", "A")))
+    build2 = _nav(_li("tocId-d200e1", "root.html", "Root",
+                      _li("root-d200e9", "a.html", "A")))
+    toc = OxygenWebhelpProfile().rebuild_toc(
+        [(BASE + "root.html", build1), (BASE + "a.html", build2)], BASE)
+    assert [(e.level, e.title) for e in toc] == [(0, "Root"), (1, "A")]
+
+
+def test_a_heading_that_borrows_its_childs_page_keeps_its_level():
+    """Oxygen headings often link to their first child's page (Security and
+    Users and Access both point at users_access.html). Keyed by URL alone the
+    heading swallowed the child and a level of the manual vanished."""
+    frag = _nav(_li("s", "users_access.html", "Security",
+                    _li("u", "users_access.html", "Users and Access",
+                        _li("t", "troubleshooting.html", "Troubleshooting permissions"))))
+    toc = OxygenWebhelpProfile().rebuild_toc([(BASE + "troubleshooting.html", frag)], BASE)
+    assert [(e.level, e.title) for e in toc] == [
+        (0, "Security"), (1, "Users and Access"), (2, "Troubleshooting permissions"),
+    ]
+    by_title = {e.title: e for e in toc}
+    # The page belongs to the real topic; the heading becomes a URL-less section,
+    # so the URL still maps to exactly one entry (and one article).
+    assert by_title["Security"].url is None and by_title["Security"].is_article is False
+    assert by_title["Users and Access"].url == BASE + "users_access.html"
+    assert [e.url for e in toc].count(BASE + "users_access.html") == 1
+
+
+def test_a_collapsed_heading_in_another_fragment_is_still_the_heading():
+    """Most fragments show the heading collapsed — no child visible. It must
+    still resolve to the same node as the expanded one, not a third copy."""
+    expanded = _nav(_li("s1", "users_access.html", "Security",
+                        _li("u1", "users_access.html", "Users and Access")))
+    collapsed = _nav(_li("s2", "users_access.html", "Security"),
+                     _li("w2", "workloads.html", "Workloads"))
+    toc = OxygenWebhelpProfile().rebuild_toc(
+        [(BASE + "users_access.html", expanded), (BASE + "workloads.html", collapsed)], BASE)
+    assert [(e.level, e.title) for e in toc] == [
+        (0, "Security"), (1, "Users and Access"), (0, "Workloads"),
+    ]
+
+
+def test_children_seen_in_different_builds_are_merged_not_dropped():
+    """'Longest child list wins' orphaned whatever only another build listed,
+    and the walk then dumped those at the top level."""
+    b1 = _nav(_li("r1", "w.html", "Workloads",
+                  _li("a1", "a.html", "A") + _li("b1", "b.html", "B")))
+    b2 = _nav(_li("r2", "w.html", "Workloads",
+                  _li("a2", "a.html", "A") + _li("c2", "c.html", "C")))
+    toc = OxygenWebhelpProfile().rebuild_toc(
+        [(BASE + "a.html", b1), (BASE + "c.html", b2)], BASE)
+    assert [(e.level, e.title) for e in toc] == [
+        (0, "Workloads"), (1, "A"), (1, "B"), (1, "C"),
+    ]
+
+
+def test_the_tree_does_not_depend_on_fragment_order():
+    """The caller reads fragments with no ORDER BY."""
+    b1 = _nav(_li("r1", "w.html", "Workloads", _li("a1", "a.html", "A") + _li("b1", "b.html", "B")))
+    b2 = _nav(_li("r2", "w.html", "Workloads", _li("a2", "a.html", "A") + _li("c2", "c.html", "C")))
+    frags = [(BASE + "a.html", b1), (BASE + "c.html", b2)]
+    sig = lambda t: [(e.level, e.title, e.url, e.parent_url) for e in t]
+    prof = OxygenWebhelpProfile()
+    assert sig(prof.rebuild_toc(frags, BASE)) == sig(prof.rebuild_toc(frags[::-1], BASE))
+
+
+def test_an_item_without_its_own_link_is_not_titled_after_its_child():
+    """li.find('a') would pick up the child's anchor for a link-less item."""
+    frag = _nav('<li role="treeitem" data-tocid="h"><span>Heading only</span><ul>'
+                + _li("c", "child.html", "Child") + "</ul></li>")
+    toc = OxygenWebhelpProfile().rebuild_toc([(BASE + "child.html", frag)], BASE)
+    assert [e.title for e in toc] == ["Child"]

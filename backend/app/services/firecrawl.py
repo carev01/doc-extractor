@@ -1960,6 +1960,78 @@ class FirecrawlService:
                 except Exception as exc:
                     logger.warning("Individual retry failed for %s: %s", url, exc)
 
+    async def _apply_rebuilt_toc(
+        self, db: AsyncSession, source_id: uuid.UUID, toc_dicts: list[dict],
+    ) -> bool:
+        """Swap in a rebuilt TOC and re-link articles to it, all or nothing.
+
+        Returns False, with the previous (inventory) TOC and every article link
+        exactly as they were, if either step fails.
+
+        A SAVEPOINT, deliberately not ``db.rollback()``. _persist_toc only
+        flushes, so without any rollback a failure left the inventory TOC deleted
+        and the rebuilt one inserted but unlinked, and the next unrelated commit
+        saved that half-applied state — while the log claimed "keeping inventory
+        TOC". That is what every Rubrik run from 2026-07-15 did. But a full
+        rollback is worse: it expires every ORM instance in the session, and
+        extract_source goes on to read ``run`` and ``source`` attributes, which
+        on an AsyncSession means implicit IO and a MissingGreenlet crash on the
+        very path meant to be the safe one. Rolling back to a savepoint undoes
+        only what happened inside it.
+        """
+        try:
+            async with db.begin_nested():
+                url_to_id = await self._persist_toc(db, source_id, toc_dicts)
+                await self._relink_articles_to_toc(db, source_id, url_to_id)
+        except Exception as exc:
+            logger.warning(
+                "TOC rebuild failed for %s, keeping inventory TOC: %s",
+                source_id, exc,
+            )
+            return False
+        await db.commit()
+        return True
+
+    async def _relink_articles_to_toc(
+        self,
+        db: AsyncSession,
+        source_id: uuid.UUID,
+        url_to_id: dict[str, uuid.UUID],
+    ) -> None:
+        """Point each article at its entry in a freshly persisted TOC, by URL.
+
+        One batched executemany statement rather than one round-trip per URL,
+        issued against the **table**, not the ORM entity. That distinction is the
+        whole fix: SQLAlchemy 2.0 treats an ORM ``update(Article)`` given a
+        parameter list as "ORM Bulk UPDATE by Primary Key", so it cannot key on
+        URL at all. As first written it raised "bulk synchronize of persistent
+        objects not supported" before sending any SQL; adding the
+        ``synchronize_session=None`` that message suggests only trades it for
+        "No primary key value supplied". A Core statement is a plain executemany.
+
+        The failure made the post-scrape TOC rebuild fail on every run from
+        f5e1848 (2026-06-29) on — the run still came out right only because
+        nothing rolled back and _reconcile_removals re-linked by URL afterwards.
+        Nothing in the session holds Article instances that need refreshing; the
+        next reads query afresh.
+
+        Where several entries share a URL (a reused Oxygen/DITA topic listed
+        under each of its parents) the map holds the LAST one, since
+        _persist_toc overwrites as it walks the entries in order.
+        """
+        if not url_to_id:
+            return
+        articles = Article.__table__
+        await db.execute(
+            update(articles)
+            .where(
+                articles.c.source_id == source_id,
+                articles.c.source_url == bindparam("b_url"),
+            )
+            .values(toc_entry_id=bindparam("b_tid")),
+            [{"b_url": u, "b_tid": t} for u, t in url_to_id.items()],
+        )
+
     async def _persist_toc(
         self,
         db: AsyncSession,
@@ -2783,28 +2855,11 @@ class FirecrawlService:
                                     }
                                     for i, e in enumerate(all_entries)
                                 ]
-                                url_to_id = await self._persist_toc(db, source_id, toc_dicts)
-                                # Re-link articles to their rebuilt TOC entry in a
-                                # single batched (executemany) statement rather than
-                                # one awaited round-trip per URL.
-                                if url_to_id:
-                                    await db.execute(
-                                        update(Article)
-                                        .where(
-                                            Article.source_id == source_id,
-                                            Article.source_url == bindparam("b_url"),
-                                        )
-                                        .values(toc_entry_id=bindparam("b_tid")),
-                                        [
-                                            {"b_url": u, "b_tid": t}
-                                            for u, t in url_to_id.items()
-                                        ],
+                                if await self._apply_rebuilt_toc(db, source_id, toc_dicts):
+                                    logger.info(
+                                        "Rebuilt TOC hierarchy for %s: %d entries",
+                                        source_id, len(all_entries),
                                     )
-                                await db.commit()
-                                logger.info(
-                                    "Rebuilt TOC hierarchy for %s: %d entries",
-                                    source_id, len(all_entries),
-                                )
                             else:
                                 logger.warning(
                                     "rebuild_toc produced no entries for %s — "
@@ -2812,6 +2867,9 @@ class FirecrawlService:
                                     source_id,
                                 )
                         except Exception as exc:
+                            # Reached only by a failure while *computing* the
+                            # rebuild, before anything is written; the write
+                            # itself is atomic inside _apply_rebuilt_toc.
                             logger.warning(
                                 "TOC rebuild failed for %s, keeping inventory TOC: %s",
                                 source_id, exc,

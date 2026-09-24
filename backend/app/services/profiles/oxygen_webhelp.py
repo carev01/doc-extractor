@@ -82,16 +82,78 @@ class OxygenWebhelpProfile:
         return out
 
     def rebuild_toc(self, fragments: "list[tuple[str, str]]", root_url: str) -> list[TocEntry]:
-        node: dict[str, dict] = {}          # tocid -> {url, title}
-        parent_of: dict[str, str] = {}      # tocid -> parent tocid
-        children: dict[str, list[str]] = {} # tocid -> ordered child tocids (longest seen)
-        top_order: list[str] = []           # ordered top-level tocids (longest seen)
+        """Stitch per-page TOC fragments into one authored hierarchy.
 
-        def tocid(li):
-            if li.get("data-tocid"):
-                return li["data-tocid"]
-            d = li.find(attrs={"data-tocid": True})
-            return d["data-tocid"] if d else None
+        **Node identity is the topic's URL plus its depth within a run of
+        same-URL ancestors** — ``(url, k)`` — and neither of the two obvious
+        keys works:
+
+        * ``data-tocid`` looks stable and is not. It embeds a generated
+          publishing-build id (``tocId-d30118e917``), and a portal whose pages
+          come from different builds hands out different tocids for one topic:
+          Rubrik's RSC docs carry ``tocId-d30118e917``, ``tocId-d30697e917`` and
+          ``getting_started_with_rsc-d30118e923`` for the same page, and 1,163 of
+          2,672 URLs in a 600-page sample had more than one. Keyed by tocid, each
+          id scheme became its own copy of the tree — 9,268 entries for 4,891
+          pages, every top-level section three times.
+        * The URL alone is stable, but Oxygen section headings routinely link to
+          their first child's page (Security → Users and Access both point at
+          ``users_access.html``; 71 such pairs in RSC). Keyed by URL, each heading
+          merged into its child and a level of the manual vanished. Adding the
+          title doesn't rescue it either: 124 RSC URLs carry different titles in
+          different builds ("Node removal from RSC" / "Node removal in RSC").
+
+        ``k`` counts the consecutive ancestors that share the item's URL, so the
+        outermost heading is ``(url, 0)`` and the real topic under it
+        ``(url, 1)`` — true in every build, and whether or not a given fragment
+        happens to show that heading expanded. For every URL without such a pair
+        ``k`` is 0 and the key is just the URL. A heading is then emitted without
+        a URL (a section; its children nest by level), and the page belongs to
+        the deepest item, which is the actual topic — so every URL still maps to
+        exactly one entry and one article.
+
+        A topic genuinely listed under two different parents appears once, at
+        its first position in the walk, matching the one-article-one-TOC-
+        position model the rest of the pipeline assumes.
+
+        Children are an ordered **union** across fragments, not the longest list
+        any one fragment showed: pages from different builds list slightly
+        different children, and "longest wins" orphaned the rest to the top
+        level (184 roots for a 16-section manual). A node no child list reaches
+        but whose parent is known is attached under that parent for the same
+        reason. Fragments are processed in URL order: the caller reads them with
+        no ORDER BY and every "first seen" choice depends on order, so without it
+        the same corpus produced a different tree on each run.
+        """
+        Key = tuple  # (url, k)
+        title_of: dict[Key, str] = {}
+        parent_of: dict[Key, Key] = {}
+        children: dict[Key, list[Key]] = {}
+        top_order: list[Key] = []
+
+        def own_url(li, page_url):
+            """(url, title) of *li*'s own link — never a descendant item's.
+            ``li.find("a")`` would fall through to a child's anchor for an item
+            without a link of its own, mis-titling it and splicing the child in."""
+            for a in li.find_all("a", href=True):
+                if a.find_parent("li", attrs={"role": "treeitem"}) is li:
+                    return (urldefrag(urljoin(page_url, a["href"]))[0],
+                            a.get_text(strip=True) or a["href"])
+            return None
+
+        def key_of(li, page_url):
+            """(url, k) for *li*, or None when it has no link of its own."""
+            link = own_url(li, page_url)
+            if not link:
+                return None
+            url, k, up = link[0], 0, li.find_parent("li", attrs={"role": "treeitem"})
+            while up is not None:
+                above = own_url(up, page_url)
+                if not above or above[0] != url:
+                    break
+                k += 1
+                up = up.find_parent("li", attrs={"role": "treeitem"})
+            return (url, k)
 
         def direct_child_items(container):
             # treeitem <li> that are this container's nearest treeitem descendants
@@ -101,53 +163,77 @@ class OxygenWebhelpProfile:
                             if li.get("role") == "treeitem"])
             return out
 
-        for page_url, frag in fragments:
+        def keys_of(items, page_url):
+            seen_here, out = set(), []
+            for li in items:
+                k = key_of(li, page_url)
+                if k and k not in seen_here:
+                    seen_here.add(k)
+                    out.append(k)
+            return out
+
+        def merge(into: list, new: list) -> None:
+            """Ordered union: keep *into*'s order, and put each unseen item from
+            *new* just before the next item of *new* that *into* already has —
+            or at the end when none follows. Inserting before the successor
+            (rather than after the predecessor) honours both lists' ordering
+            without shuffling siblings that are already placed."""
+            for i, item in enumerate(new):
+                if item in into:
+                    continue
+                succ = next((new[j] for j in range(i + 1, len(new)) if new[j] in into), None)
+                into.insert(into.index(succ) if succ is not None else len(into), item)
+
+        for page_url, frag in sorted(fragments, key=lambda f: f[0]):
             soup = BeautifulSoup(frag or "", "html.parser")
             navs = soup.select("#wh_publication_toc") or [soup]
             nav = navs[0]
-            # top-level
-            tops = [t for li in direct_child_items(nav) for t in [tocid(li)] if t]
-            if len(tops) > len(top_order):
-                top_order = tops
+            merge(top_order, keys_of(direct_child_items(nav), page_url))
             for li in nav.find_all("li", attrs={"role": "treeitem"}):
-                tid = tocid(li)
-                if not tid:
+                key = key_of(li, page_url)
+                if key is None:
                     continue
-                a = li.find("a", href=True)
-                if a is not None and tid not in node:
-                    node[tid] = {
-                        "url": urldefrag(urljoin(page_url, a["href"]))[0],
-                        "title": a.get_text(strip=True) or a["href"],
-                    }
+                title_of.setdefault(key, own_url(li, page_url)[1])
                 pli = li.find_parent("li", attrs={"role": "treeitem"})
-                ptid = tocid(pli) if pli is not None else None
-                if ptid and tid not in parent_of:
-                    parent_of[tid] = ptid
-                kids = [t for c in direct_child_items(li) for t in [tocid(c)] if t]
-                if len(kids) > len(children.get(tid, [])):
-                    children[tid] = kids
+                pkey = key_of(pli, page_url) if pli is not None else None
+                if pkey and pkey != key and key not in parent_of:
+                    parent_of[key] = pkey
+                kids = [c for c in keys_of(direct_child_items(li), page_url) if c != key]
+                if kids:
+                    merge(children.setdefault(key, []), kids)
 
-        if not node:
+        if not title_of:
             return []
+        # A node no child list mentions, but whose parent is known, belongs under
+        # that parent — not appended at the top level after everything else.
+        listed = {c for kids in children.values() for c in kids}
+        for key, parent in parent_of.items():
+            if key not in listed and parent in title_of:
+                children.setdefault(parent, []).append(key)
+        top_order = [k for k in top_order if k not in parent_of]
+
         out: list[TocEntry] = []
-        seen: set[str] = set()
+        seen: set = set()
 
-        def walk(tid: str, level: int, parent_url):
-            if tid in seen or tid not in node:
+        def walk(key, level: int, parent_url):
+            if key in seen or key not in title_of:
                 return
-            seen.add(tid)
-            n = node[tid]
-            out.append(TocEntry(title=n["title"], url=n["url"], level=level,
-                                is_article=True, parent_url=parent_url))
-            for c in children.get(tid, []):
-                walk(c, level + 1, n["url"])
+            seen.add(key)
+            # A heading that borrows its child's page is a section: the page
+            # belongs to the child, which is the actual topic.
+            heading = any(c[0] == key[0] for c in children.get(key, []))
+            url = None if heading else key[0]
+            out.append(TocEntry(title=title_of[key], url=url, level=level,
+                                is_article=not heading, parent_url=parent_url))
+            for c in children.get(key, []):
+                walk(c, level + 1, url)
 
-        roots = top_order or [t for t in node if t not in parent_of]
-        for t in roots:
-            walk(t, 0, None)
-        for t in node:               # any unreached nodes → append at top
-            if t not in seen:
-                walk(t, 0, None)
+        roots = top_order or [k for k in title_of if k not in parent_of]
+        for k in roots:
+            walk(k, 0, None)
+        for k in sorted(title_of):   # any unreached nodes → append at top
+            if k not in seen:
+                walk(k, 0, None)
         return out
 
     def content_config(self) -> dict:
