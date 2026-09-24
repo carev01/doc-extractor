@@ -16,6 +16,11 @@ services:
       timeout: 5s
       retries: 10
 
+  # Secrets are never written here: this repository is public. The Firecrawl
+  # key is read from your shell or from a root-level .env next to this file
+  # (gitignored) — e.g. DOCEXTRACTOR_FIRECRAWL_API_KEY=... . Left unset it is
+  # empty, which also turns off Firecrawl changeTracking: change detection then
+  # falls back to our own content hash.
   backend:
     build: ./backend
     command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
@@ -23,7 +28,7 @@ services:
       DOCEXTRACTOR_DATABASE_URL: postgresql+asyncpg://docextractor:docextractor_dev@postgres:5432/docextractor
       DOCEXTRACTOR_DATABASE_URL_SYNC: postgresql+psycopg2://docextractor:docextractor_dev@postgres:5432/docextractor
       DOCEXTRACTOR_FIRECRAWL_API_URL: http://firecrawl.k3s.home.lan
-      DOCEXTRACTOR_FIRECRAWL_API_KEY: fc-bf48f20724d6459cbdda97aef48a41fb
+      DOCEXTRACTOR_FIRECRAWL_API_KEY: ${DOCEXTRACTOR_FIRECRAWL_API_KEY:-}
       # Firecrawl (running in k3s at 172.16.255.150) can reach this host at 172.16.255.190.
       # This URL is what Firecrawl calls back for per-page webhook events.
       DOCEXTRACTOR_WEBHOOK_BASE_URL: http://172.16.255.190:8000
@@ -43,7 +48,7 @@ services:
       DOCEXTRACTOR_DATABASE_URL: postgresql+asyncpg://docextractor:docextractor_dev@postgres:5432/docextractor
       DOCEXTRACTOR_DATABASE_URL_SYNC: postgresql+psycopg2://docextractor:docextractor_dev@postgres:5432/docextractor
       DOCEXTRACTOR_FIRECRAWL_API_URL: http://firecrawl.k3s.home.lan
-      DOCEXTRACTOR_FIRECRAWL_API_KEY: fc-bf48f20724d6459cbdda97aef48a41fb
+      DOCEXTRACTOR_FIRECRAWL_API_KEY: ${DOCEXTRACTOR_FIRECRAWL_API_KEY:-}
       DOCEXTRACTOR_WEBHOOK_BASE_URL: http://172.16.255.190:8000
     volumes:
       - exports_data:/app/exports
@@ -61,7 +66,7 @@ services:
       DOCEXTRACTOR_DATABASE_URL: postgresql+asyncpg://docextractor:docextractor_dev@postgres:5432/docextractor
       DOCEXTRACTOR_DATABASE_URL_SYNC: postgresql+psycopg2://docextractor:docextractor_dev@postgres:5432/docextractor
       DOCEXTRACTOR_FIRECRAWL_API_URL: http://firecrawl.k3s.home.lan
-      DOCEXTRACTOR_FIRECRAWL_API_KEY: fc-bf48f20724d6459cbdda97aef48a41fb
+      DOCEXTRACTOR_FIRECRAWL_API_KEY: ${DOCEXTRACTOR_FIRECRAWL_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy

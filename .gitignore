@@ -19,3 +19,9 @@ backend/pdf_cache/
 
 # Autopilot worktree metadata (never commit)
 .mc-workspace.json
+
+# Local environment files hold real credentials, and this repository is public.
+# Commit .env.example (placeholders only) instead.
+.env
+.env.*
+!.env.example

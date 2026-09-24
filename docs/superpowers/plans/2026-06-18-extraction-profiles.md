@@ -16,7 +16,7 @@
 - Profiles return **ordered** `TocEntry` lists; the persisted `TOCEntry` rows keep depth-first order + parent links exactly as today.
 - Profiles never import `FirecrawlService` directly — they take a `scraper` adapter, so they unit-test with a `FakeScraper` returning fixture HTML (no network).
 - Fixtures live in `backend/tests/fixtures/platforms/<name>.html`; profile unit tests are offline/deterministic.
-- Firecrawl for fixture capture / live checks: `http://firecrawl.k3s.home.lan`, bearer `fc-bf48f20724d6459cbdda97aef48a41fb`, `POST /v2/scrape {"url","formats":["html"],"onlyMainContent":false}`.
+- Firecrawl for fixture capture / live checks: `http://firecrawl.k3s.home.lan`, bearer `$DOCEXTRACTOR_FIRECRAWL_API_KEY`, `POST /v2/scrape {"url","formats":["html"],"onlyMainContent":false}`.
 - Run backend tests from `backend/` with `pytest`; frontend via `npm run build` + `npm run lint`.
 - Branch `feat/extraction-profiles` (off `main`). Interpreter `python3`.
 

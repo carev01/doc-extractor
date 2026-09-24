@@ -166,7 +166,7 @@ All backend settings are loaded from environment variables with the `DOCEXTRACTO
 | `DOCEXTRACTOR_DATABASE_URL` | ✅ | — | Async PostgreSQL URL (`postgresql+asyncpg://...`) |
 | `DOCEXTRACTOR_DATABASE_URL_SYNC` | ✅ | — | Sync PostgreSQL URL for Alembic/tests (`postgresql+psycopg2://...`) |
 | `DOCEXTRACTOR_FIRECRAWL_API_URL` | ✅ | — | Firecrawl base URL |
-| `DOCEXTRACTOR_FIRECRAWL_API_KEY` | | `""` | Firecrawl API key (not needed for local instance) |
+| `DOCEXTRACTOR_FIRECRAWL_API_KEY` | | `""` | Firecrawl API key. Also the switch for Firecrawl `changeTracking`: when empty, change detection falls back to our own content hash. Never commit it — set it in `backend/.env` or a root `.env` (both gitignored), or `--set` it in Helm |
 | `DOCEXTRACTOR_WEBHOOK_BASE_URL` | | `""` | URL Firecrawl calls back for per-page events. Empty = polling. |
 | `DOCEXTRACTOR_AUTH_JWT_SECRET` | | `""` | JWT signing key. **Empty = auth disabled (dev only).** Generate with `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
 | `DOCEXTRACTOR_SECRET_KEY` | | `""` | Fernet key for encrypting auth realm credentials. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
