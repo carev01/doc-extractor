@@ -12,9 +12,23 @@ single nested <ul>/<li> tree: the page links sit in a flat <ul> alongside a tab
 switcher and collapsible-section <button>s. So we collect every in-guide anchor
 in DOM order and derive nesting from URL path depth (the same approach as the
 rspress profile), which is robust to the raw DOM shape.
+
+That URL-depth inference is now only the **fallback**. Current Fern builds embed
+the whole sidebar as data in the Next.js flight payload
+(``self.__next_f.push``): a tree of ``section`` / ``page`` / ``link`` /
+``sidebarGroup`` nodes with titles, slugs and ``hidden`` flags — the exact
+hierarchy the site renders. The raw DOM, by contrast, expands only the path to
+the current page, and the 160-odd links it does carry sit in a visually hidden,
+completely flat accessibility ``<nav>``. Inferring nesting from those produced a
+wrong tree on docs.eon.io once Eon restructured: section headings (Cloud
+Workloads, GCP, MongoDB Atlas, Resources, ...) are link-less so they vanished,
+and every page attached to whichever shallower page preceded it — MongoDB Atlas'
+pages ended up nested under GCP's "Regions".
 """
 
+import json
 import posixpath
+import re
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
@@ -23,6 +37,71 @@ from app.services.profiles import registry
 from app.services.profiles.base import TocEntry
 
 _SIDEBAR = "aside.fern-sidebar-desktop"
+
+# One Next.js flight chunk: self.__next_f.push([<n>, "<JSON-escaped string>"]).
+_FLIGHT_PUSH = re.compile(r'self\.__next_f\.push\(\[\d+,\s*("(?:[^"\\]|\\.)*")\]\)')
+# The sidebar's root object is the only one that *opens* with its children list
+# of typed nav nodes; a section's own "children" never starts its object.
+_NAV_ROOT = re.compile(r'\{"children":\[\{"type":"(?:sidebarGroup|section|page|link)"')
+_UNDEFINED = "$undefined"
+
+
+def _nav_tree(html: str):
+    """The sidebar tree embedded in the page's flight payload, or None."""
+    chunks = []
+    for lit in _FLIGHT_PUSH.findall(html or ""):
+        try:
+            chunks.append(json.loads(lit))
+        except ValueError:
+            return None
+    flight = "".join(chunks)
+    m = _NAV_ROOT.search(flight)
+    if not m:
+        return None
+    try:
+        root, _ = json.JSONDecoder().raw_decode(flight[m.start():])
+    except ValueError:
+        return None
+    kids = root.get("children") if isinstance(root, dict) else None
+    return kids if isinstance(kids, list) and kids else None
+
+
+def _toc_from_nav(nodes, origin: str) -> list[TocEntry]:
+    """Walk Fern nav nodes into TOC entries, depth-first.
+
+    * ``sidebarGroup`` is an untitled container — its children sit at its level.
+    * ``section`` is a heading; it carries a URL only when it has an overview
+      page of its own (``overviewPageId``), otherwise it is a URL-less section
+      whose children nest under it by level.
+    * ``page`` is an article at ``origin/<slug>``.
+    * ``link`` points off-site and is skipped, as is anything ``hidden`` (the
+      site doesn't show it in the sidebar either).
+    """
+    out: list[TocEntry] = []
+
+    def defined(v):
+        return v not in (None, _UNDEFINED, "")
+
+    def walk(items, level, parent_url):
+        for n in items or []:
+            if not isinstance(n, dict) or n.get("hidden") is True:
+                continue
+            kind = n.get("type")
+            if kind == "sidebarGroup":
+                walk(n.get("children"), level, parent_url)
+            elif kind == "section":
+                url = (f"{origin}/{n['slug']}" if defined(n.get("overviewPageId"))
+                       and defined(n.get("slug")) else None)
+                out.append(TocEntry(title=n.get("title") or "", url=url, level=level,
+                                    is_article=url is not None, parent_url=parent_url))
+                walk(n.get("children"), level + 1, url)
+            elif kind == "page" and defined(n.get("slug")):
+                out.append(TocEntry(title=n.get("title") or n["slug"],
+                                    url=f"{origin}/{n['slug']}", level=level,
+                                    is_article=True, parent_url=parent_url))
+
+    walk(nodes, 0, None)
+    return out
 
 
 class FernProfile:
@@ -38,6 +117,15 @@ class FernProfile:
             html = await scraper.get_raw(root_url)
         except Exception:
             return []
+        tree = _nav_tree(html)
+        if tree:
+            parsed = urlparse(root_url)
+            entries = _toc_from_nav(tree, f"{parsed.scheme}://{parsed.netloc}")
+            if any(e.url for e in entries):
+                return entries
+
+        # Fallback for Fern builds that don't embed the nav tree: infer nesting
+        # from URL depth over the sidebar's anchors (see module docstring).
         soup = BeautifulSoup(html or "", "html.parser")
         side = soup.select_one(_SIDEBAR)
         if not side:
