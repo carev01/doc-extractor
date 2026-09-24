@@ -34,6 +34,181 @@ def _pub_root(page_url: str, html: str) -> str | None:
     return abs_ref.split("oxygen-webhelp/")[0]  # .../en-us/saas/
 
 
+# ── Post-scrape TOC rebuild ──────────────────────────────────────────────────
+# Oxygen tocids embed a generated build id: "tocId-d33886e917" belongs to build
+# 33886. Within one build a tocid is a reliable *position* id — a topic reused
+# under two parents gets two tocids, and a heading that borrows its child's page
+# gets its own. Across builds it means nothing: the same topic carries a
+# different tocid in every build. A portal serves pages from several builds at
+# once (only republished pages pick up the new one), so the rebuild stitches
+# each build on its own and then overlays them newest-first, matching the same
+# topic across builds by (url, k) — see rebuild_toc.
+
+_BUILD_RE = re.compile(r"-d(\d+)e\d+$")
+
+
+class _Node:
+    __slots__ = ("url", "k", "title", "children")
+
+    def __init__(self, url, k, title):
+        self.url, self.k, self.title, self.children = url, k, title, []
+
+    @property
+    def key(self):
+        return (self.url, self.k)
+
+
+def _own_link(li, page_url):
+    """(url, title) of *li*'s own link — never a descendant item's.
+    ``li.find("a")`` falls through to a child's anchor for an item without a link
+    of its own, mis-titling it and splicing the child into its place."""
+    if li is None:
+        return None
+    for a in li.find_all("a", href=True):
+        if a.find_parent("li", attrs={"role": "treeitem"}) is li:
+            return (urldefrag(urljoin(page_url, a["href"]))[0],
+                    a.get_text(strip=True) or a["href"])
+    return None
+
+
+def _same_url_depth(li, url, page_url):
+    """k: how many consecutive ancestor items link to the same *url*. The
+    outermost heading of such a run is k=0, the real topic under it k=1."""
+    k, up = 0, li.find_parent("li", attrs={"role": "treeitem"})
+    while up is not None:
+        above = _own_link(up, page_url)
+        if not above or above[0] != url:
+            break
+        k += 1
+        up = up.find_parent("li", attrs={"role": "treeitem"})
+    return k
+
+
+def _direct_child_items(container):
+    out = []
+    for ul in container.find_all("ul", recursive=False):
+        out.extend([li for li in ul.find_all("li", recursive=False)
+                    if li.get("role") == "treeitem"])
+    return out
+
+
+def _merge_ordered(into: list, new: list) -> None:
+    """Ordered union: keep *into*'s order and put each unseen item of *new* just
+    before the next item of *new* that *into* already has, else at the end —
+    honouring both orders without shuffling what is already placed."""
+    for i, item in enumerate(new):
+        if item in into:
+            continue
+        succ = next((new[j] for j in range(i + 1, len(new)) if new[j] in into), None)
+        into.insert(into.index(succ) if succ is not None else len(into), item)
+
+
+def _build_of(frag: str):
+    """The build a fragment was published in: the id its tocids share. Every
+    fragment of Rubrik's RSC portal has exactly one (4,885 of 4,885)."""
+    ids = re.findall(r'data-tocid="[^"]*?-d(\d+)e\d+"', frag or "")
+    return max(set(ids), key=ids.count) if ids else None
+
+
+def _stitch_build(fragments) -> list:
+    """One build's tree, keyed by tocid (a reliable position id within a build).
+    Items without a tocid fall back to their (url, k)."""
+    info: dict = {}                 # pid -> (url, k, title)
+    parent_of: dict = {}
+    children: dict = {}
+    top: list = []
+
+    def pid(li, page_url):
+        link = _own_link(li, page_url)
+        if not link:
+            return None
+        tid = li.get("data-tocid") or ("url", link[0], _same_url_depth(li, link[0], page_url))
+        if tid not in info:
+            info[tid] = (link[0], _same_url_depth(li, link[0], page_url), link[1])
+        return tid
+
+    def pids(items, page_url):
+        out = []
+        for li in items:
+            t = pid(li, page_url)
+            if t is not None and t not in out:
+                out.append(t)
+        return out
+
+    for page_url, frag in sorted(fragments, key=lambda f: f[0]):
+        soup = BeautifulSoup(frag or "", "html.parser")
+        nav = (soup.select("#wh_publication_toc") or [soup])[0]
+        _merge_ordered(top, pids(_direct_child_items(nav), page_url))
+        for li in nav.find_all("li", attrs={"role": "treeitem"}):
+            t = pid(li, page_url)
+            if t is None:
+                continue
+            pli = li.find_parent("li", attrs={"role": "treeitem"})
+            p = pid(pli, page_url) if pli is not None else None
+            if p is not None and p != t and t not in parent_of:
+                parent_of[t] = p
+            kids = [c for c in pids(_direct_child_items(li), page_url) if c != t]
+            if kids:
+                _merge_ordered(children.setdefault(t, []), kids)
+
+    listed = {c for kids in children.values() for c in kids}
+    for t, p in parent_of.items():
+        if t not in listed and p in info:
+            children.setdefault(p, []).append(t)
+    roots = [t for t in top if t not in parent_of] or [t for t in info if t not in parent_of]
+
+    seen: set = set()
+
+    def build(t):
+        if t in seen or t not in info:
+            return None
+        seen.add(t)
+        url, k, title = info[t]
+        node = _Node(url, k, title)
+        node.children = [n for n in (build(c) for c in children.get(t, [])) if n]
+        return node
+
+    tree = [n for n in (build(t) for t in roots) if n]
+    for t in sorted(info, key=str):          # anything unreached → top level
+        if t not in seen:
+            n = build(t)
+            if n:
+                tree.append(n)
+    return tree
+
+
+def _overlay(base: list, extra: list) -> None:
+    """Graft an older build's tree onto *base* (newer), in place.
+
+    A topic *base* already has — matched by (url, k) — keeps its newer position:
+    that is how a page that moved between builds loses its stale spot. Only
+    topics *base* lacks are added, under their (mapped) parent, so an old-build
+    page nobody republished still lands where its own build put it.
+    """
+    index: dict = {}
+
+    def walk(nodes):
+        for n in nodes:
+            index.setdefault(n.key, n)
+            walk(n.children)
+    walk(base)
+
+    def graft(nodes, target_list):
+        for n in nodes:
+            if n.key in index:
+                target = index[n.key]
+            else:
+                target = _Node(n.url, n.k, n.title)
+                index[n.key] = target
+                # Before the next sibling (in *extra*'s order) that base has.
+                succ = next((index[m.key] for m in nodes[nodes.index(n) + 1:]
+                             if m.key in index and index[m.key] in target_list), None)
+                target_list.insert(target_list.index(succ) if succ else len(target_list), target)
+            graft(n.children, target.children)
+
+    graft(extra, base)
+
+
 class OxygenWebhelpProfile:
     name = "oxygen_webhelp"
     content_engine = "raw_http"
@@ -84,156 +259,59 @@ class OxygenWebhelpProfile:
     def rebuild_toc(self, fragments: "list[tuple[str, str]]", root_url: str) -> list[TocEntry]:
         """Stitch per-page TOC fragments into one authored hierarchy.
 
-        **Node identity is the topic's URL plus its depth within a run of
-        same-URL ancestors** — ``(url, k)`` — and neither of the two obvious
-        keys works:
+        **Per build, then overlaid newest-first.** Each fragment carries the id
+        of the publishing build its page came from (the ``d<n>`` in every tocid;
+        every RSC fragment has exactly one). Within a build a tocid is a sound
+        position id, so a topic genuinely reused under two parents keeps one
+        entry per context, each with the sub-pages of *that* context (RSC's
+        "Legal hold for snapshot retention" under both IBM Db2 and SAP HANA).
+        Across builds tocids mean nothing, and mixing them tripled RSC's tree —
+        9,268 entries for 4,891 pages, one copy per build.
 
-        * ``data-tocid`` looks stable and is not. It embeds a generated
-          publishing-build id (``tocId-d30118e917``), and a portal whose pages
-          come from different builds hands out different tocids for one topic:
-          Rubrik's RSC docs carry ``tocId-d30118e917``, ``tocId-d30697e917`` and
-          ``getting_started_with_rsc-d30118e923`` for the same page, and 1,163 of
-          2,672 URLs in a 600-page sample had more than one. Keyed by tocid, each
-          id scheme became its own copy of the tree — 9,268 entries for 4,891
-          pages, every top-level section three times.
-        * The URL alone is stable, but Oxygen section headings routinely link to
-          their first child's page (Security → Users and Access both point at
-          ``users_access.html``; 71 such pairs in RSC). Keyed by URL, each heading
-          merged into its child and a level of the manual vanished. Adding the
-          title doesn't rescue it either: 124 RSC URLs carry different titles in
-          different builds ("Node removal from RSC" / "Node removal in RSC").
+        Builds are overlaid newest-first, matching topics by ``(url, k)`` (``k``
+        = consecutive ancestors sharing the URL, which keeps a heading that
+        borrows its child's page distinct from that child). A topic the newer
+        tree already has keeps its newer position, which is how a page that
+        moved between builds sheds its stale one; only topics the newer tree
+        lacks are grafted in, where their own build put them. Newer = higher
+        build id: DITA-OT's ``d<n>`` counts documents processed, and on RSC it
+        matched publish order exactly — all 2,096 pages Rubrik changed on
+        2026-09-24 and all 551 new ones carry the highest id.
 
-        ``k`` counts the consecutive ancestors that share the item's URL, so the
-        outermost heading is ``(url, 0)`` and the real topic under it
-        ``(url, 1)`` — true in every build, and whether or not a given fragment
-        happens to show that heading expanded. For every URL without such a pair
-        ``k`` is 0 and the key is just the URL. A heading is then emitted without
-        a URL (a section; its children nest by level), and the page belongs to
-        the deepest item, which is the actual topic — so every URL still maps to
-        exactly one entry and one article.
+        Why not a single identity for everything: tocid alone tripled the tree;
+        URL alone merged Oxygen headings into the child whose page they borrow
+        (71 pairs on RSC) and put a reused topic's sub-pages all in one context;
+        URL + title breaks on the 124 RSC URLs retitled between builds.
 
-        A topic genuinely listed under two different parents appears once, at
-        its first position in the walk, matching the one-article-one-TOC-
-        position model the rest of the pipeline assumes.
-
-        Children are an ordered **union** across fragments, not the longest list
-        any one fragment showed: pages from different builds list slightly
-        different children, and "longest wins" orphaned the rest to the top
-        level (184 roots for a 16-section manual). A node no child list reaches
-        but whose parent is known is attached under that parent for the same
-        reason. Fragments are processed in URL order: the caller reads them with
-        no ORDER BY and every "first seen" choice depends on order, so without it
-        the same corpus produced a different tree on each run.
+        A heading (a node with a same-URL child) is emitted without a URL; its
+        children nest by level. A reused topic yields one entry per context with
+        the same URL, which the persistence layer handles (parents resolve by
+        parent_url in DFS order; the article links to one of them). Children are
+        an ordered union across a build's fragments, strays attach under their
+        known parent, and fragments are processed in URL order — the caller
+        reads them without ORDER BY and every first-seen choice depends on it.
         """
-        Key = tuple  # (url, k)
-        title_of: dict[Key, str] = {}
-        parent_of: dict[Key, Key] = {}
-        children: dict[Key, list[Key]] = {}
-        top_order: list[Key] = []
-
-        def own_url(li, page_url):
-            """(url, title) of *li*'s own link — never a descendant item's.
-            ``li.find("a")`` would fall through to a child's anchor for an item
-            without a link of its own, mis-titling it and splicing the child in."""
-            for a in li.find_all("a", href=True):
-                if a.find_parent("li", attrs={"role": "treeitem"}) is li:
-                    return (urldefrag(urljoin(page_url, a["href"]))[0],
-                            a.get_text(strip=True) or a["href"])
-            return None
-
-        def key_of(li, page_url):
-            """(url, k) for *li*, or None when it has no link of its own."""
-            link = own_url(li, page_url)
-            if not link:
-                return None
-            url, k, up = link[0], 0, li.find_parent("li", attrs={"role": "treeitem"})
-            while up is not None:
-                above = own_url(up, page_url)
-                if not above or above[0] != url:
-                    break
-                k += 1
-                up = up.find_parent("li", attrs={"role": "treeitem"})
-            return (url, k)
-
-        def direct_child_items(container):
-            # treeitem <li> that are this container's nearest treeitem descendants
-            out = []
-            for ul in container.find_all("ul", recursive=False):
-                out.extend([li for li in ul.find_all("li", recursive=False)
-                            if li.get("role") == "treeitem"])
-            return out
-
-        def keys_of(items, page_url):
-            seen_here, out = set(), []
-            for li in items:
-                k = key_of(li, page_url)
-                if k and k not in seen_here:
-                    seen_here.add(k)
-                    out.append(k)
-            return out
-
-        def merge(into: list, new: list) -> None:
-            """Ordered union: keep *into*'s order, and put each unseen item from
-            *new* just before the next item of *new* that *into* already has —
-            or at the end when none follows. Inserting before the successor
-            (rather than after the predecessor) honours both lists' ordering
-            without shuffling siblings that are already placed."""
-            for i, item in enumerate(new):
-                if item in into:
-                    continue
-                succ = next((new[j] for j in range(i + 1, len(new)) if new[j] in into), None)
-                into.insert(into.index(succ) if succ is not None else len(into), item)
-
-        for page_url, frag in sorted(fragments, key=lambda f: f[0]):
-            soup = BeautifulSoup(frag or "", "html.parser")
-            navs = soup.select("#wh_publication_toc") or [soup]
-            nav = navs[0]
-            merge(top_order, keys_of(direct_child_items(nav), page_url))
-            for li in nav.find_all("li", attrs={"role": "treeitem"}):
-                key = key_of(li, page_url)
-                if key is None:
-                    continue
-                title_of.setdefault(key, own_url(li, page_url)[1])
-                pli = li.find_parent("li", attrs={"role": "treeitem"})
-                pkey = key_of(pli, page_url) if pli is not None else None
-                if pkey and pkey != key and key not in parent_of:
-                    parent_of[key] = pkey
-                kids = [c for c in keys_of(direct_child_items(li), page_url) if c != key]
-                if kids:
-                    merge(children.setdefault(key, []), kids)
-
-        if not title_of:
+        by_build: dict = {}
+        for page_url, frag in fragments:
+            by_build.setdefault(_build_of(frag), []).append((page_url, frag))
+        if not by_build:
             return []
-        # A node no child list mentions, but whose parent is known, belongs under
-        # that parent — not appended at the top level after everything else.
-        listed = {c for kids in children.values() for c in kids}
-        for key, parent in parent_of.items():
-            if key not in listed and parent in title_of:
-                children.setdefault(parent, []).append(key)
-        top_order = [k for k in top_order if k not in parent_of]
+        order = sorted(by_build, key=lambda b: (b is None, -int(b) if b else 0))
+        tree = _stitch_build(by_build[order[0]])
+        for b in order[1:]:
+            _overlay(tree, _stitch_build(by_build[b]))
 
         out: list[TocEntry] = []
-        seen: set = set()
 
-        def walk(key, level: int, parent_url):
-            if key in seen or key not in title_of:
-                return
-            seen.add(key)
-            # A heading that borrows its child's page is a section: the page
-            # belongs to the child, which is the actual topic.
-            heading = any(c[0] == key[0] for c in children.get(key, []))
-            url = None if heading else key[0]
-            out.append(TocEntry(title=title_of[key], url=url, level=level,
-                                is_article=not heading, parent_url=parent_url))
-            for c in children.get(key, []):
-                walk(c, level + 1, url)
+        def emit(nodes, level, parent_url):
+            for n in nodes:
+                heading = any(c.url == n.url for c in n.children)
+                url = None if heading else n.url
+                out.append(TocEntry(title=n.title, url=url, level=level,
+                                    is_article=not heading, parent_url=parent_url))
+                emit(n.children, level + 1, url)
 
-        roots = top_order or [k for k in title_of if k not in parent_of]
-        for k in roots:
-            walk(k, 0, None)
-        for k in sorted(title_of):   # any unreached nodes → append at top
-            if k not in seen:
-                walk(k, 0, None)
+        emit(tree, 0, None)
         return out
 
     def content_config(self) -> dict:

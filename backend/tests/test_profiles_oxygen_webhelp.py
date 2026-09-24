@@ -167,12 +167,12 @@ def test_a_heading_that_borrows_its_childs_page_keeps_its_level():
 
 
 def test_a_collapsed_heading_in_another_fragment_is_still_the_heading():
-    """Most fragments show the heading collapsed — no child visible. It must
-    still resolve to the same node as the expanded one, not a third copy."""
-    expanded = _nav(_li("s1", "users_access.html", "Security",
-                        _li("u1", "users_access.html", "Users and Access")))
-    collapsed = _nav(_li("s2", "users_access.html", "Security"),
-                     _li("w2", "workloads.html", "Workloads"))
+    """Most fragments show a heading collapsed. Within a build the heading keeps
+    its tocid, so it resolves to the same node as the expanded one."""
+    expanded = _nav(_li("s-d500e1", "users_access.html", "Security",
+                        _li("u-d500e2", "users_access.html", "Users and Access")))
+    collapsed = _nav(_li("s-d500e1", "users_access.html", "Security"),
+                     _li("w-d500e3", "workloads.html", "Workloads"))
     toc = OxygenWebhelpProfile().rebuild_toc(
         [(BASE + "users_access.html", expanded), (BASE + "workloads.html", collapsed)], BASE)
     assert [(e.level, e.title) for e in toc] == [
@@ -180,24 +180,82 @@ def test_a_collapsed_heading_in_another_fragment_is_still_the_heading():
     ]
 
 
-def test_children_seen_in_different_builds_are_merged_not_dropped():
-    """'Longest child list wins' orphaned whatever only another build listed,
-    and the walk then dumped those at the top level."""
-    b1 = _nav(_li("r1", "w.html", "Workloads",
-                  _li("a1", "a.html", "A") + _li("b1", "b.html", "B")))
-    b2 = _nav(_li("r2", "w.html", "Workloads",
-                  _li("a2", "a.html", "A") + _li("c2", "c.html", "C")))
+def test_a_heading_collapsed_in_an_older_build_is_not_a_second_copy():
+    """Across builds the tocids differ; (url, k) still matches the heading."""
+    newer = _nav(_li("s-d600e1", "users_access.html", "Security",
+                     _li("u-d600e2", "users_access.html", "Users and Access")))
+    older = _nav(_li("s-d500e7", "users_access.html", "Security"),
+                 _li("w-d500e8", "workloads.html", "Workloads"))
     toc = OxygenWebhelpProfile().rebuild_toc(
-        [(BASE + "a.html", b1), (BASE + "c.html", b2)], BASE)
+        [(BASE + "users_access.html", newer), (BASE + "workloads.html", older)], BASE)
+    assert [(e.level, e.title) for e in toc] == [
+        (0, "Security"), (1, "Users and Access"), (0, "Workloads"),
+    ]
+
+
+def test_children_seen_in_different_fragments_of_a_build_are_merged():
+    """'Longest child list wins' orphaned whatever only another fragment listed,
+    and the walk then dumped those at the top level."""
+    f1 = _nav(_li("w-d500e1", "w.html", "Workloads",
+                  _li("a-d500e2", "a.html", "A") + _li("b-d500e3", "b.html", "B")))
+    f2 = _nav(_li("w-d500e1", "w.html", "Workloads",
+                  _li("a-d500e2", "a.html", "A") + _li("c-d500e4", "c.html", "C")))
+    toc = OxygenWebhelpProfile().rebuild_toc(
+        [(BASE + "b.html", f1), (BASE + "c.html", f2)], BASE)
     assert [(e.level, e.title) for e in toc] == [
         (0, "Workloads"), (1, "A"), (1, "B"), (1, "C"),
     ]
 
 
+def test_an_older_build_only_adds_what_the_newer_one_lacks():
+    """The newer build is authoritative; an older build contributes only pages
+    the newer tree doesn't have, grafted where the older build put them."""
+    newer = _nav(_li("w-d600e1", "w.html", "Workloads",
+                     _li("a-d600e2", "a.html", "A") + _li("c-d600e3", "c.html", "C")))
+    older = _nav(_li("w-d500e1", "w.html", "Workloads",
+                     _li("a-d500e2", "a.html", "A") + _li("b-d500e3", "b.html", "B")))
+    toc = OxygenWebhelpProfile().rebuild_toc(
+        [(BASE + "c.html", newer), (BASE + "b.html", older)], BASE)
+    assert [(e.level, e.title) for e in toc] == [
+        (0, "Workloads"), (1, "A"), (1, "C"), (1, "B"),
+    ]
+
+
+def test_a_page_that_moved_between_builds_keeps_only_its_newer_position():
+    newer = _nav(_li("p2-d600e1", "p2.html", "New parent", _li("x-d600e2", "x.html", "X")),
+                 _li("p1-d600e3", "p1.html", "Old parent"))
+    older = _nav(_li("p1-d500e1", "p1.html", "Old parent", _li("x-d500e2", "x.html", "X")))
+    toc = OxygenWebhelpProfile().rebuild_toc(
+        [(BASE + "x.html", newer), (BASE + "p1.html", older)], BASE)
+    assert [(e.level, e.title) for e in toc] == [
+        (0, "New parent"), (1, "X"), (0, "Old parent"),
+    ]
+
+
+def test_a_topic_reused_under_two_parents_keeps_each_contexts_subpages():
+    """The case that motivated per-build stitching: RSC's "Legal hold for
+    snapshot retention" sits under both IBM Db2 and SAP HANA, with different
+    sub-pages in each. One entry per context, each with its own children."""
+    db2 = _nav(_li("db2-d600e1", "db2.html", "IBM Db2",
+                   _li("lh-d600e2", "legal_hold.html", "Legal hold",
+                       _li("pd-d600e3", "place_db2.html", "Placing a legal hold on Db2"))),
+               _li("hana-d600e4", "hana.html", "SAP HANA"))
+    hana = _nav(_li("db2-d600e1", "db2.html", "IBM Db2"),
+                _li("hana-d600e4", "hana.html", "SAP HANA",
+                    _li("lh-d600e9", "legal_hold.html", "Legal hold",
+                        _li("ph-d600e10", "place_hana.html", "Placing SAP HANA snapshots"))))
+    toc = OxygenWebhelpProfile().rebuild_toc(
+        [(BASE + "place_db2.html", db2), (BASE + "place_hana.html", hana)], BASE)
+    assert [(e.level, e.title) for e in toc] == [
+        (0, "IBM Db2"), (1, "Legal hold"), (2, "Placing a legal hold on Db2"),
+        (0, "SAP HANA"), (1, "Legal hold"), (2, "Placing SAP HANA snapshots"),
+    ]
+
+
 def test_the_tree_does_not_depend_on_fragment_order():
     """The caller reads fragments with no ORDER BY."""
-    b1 = _nav(_li("r1", "w.html", "Workloads", _li("a1", "a.html", "A") + _li("b1", "b.html", "B")))
-    b2 = _nav(_li("r2", "w.html", "Workloads", _li("a2", "a.html", "A") + _li("c2", "c.html", "C")))
+    b1 = _nav(_li("w-d600e1", "w.html", "Workloads", _li("a-d600e2", "a.html", "A") + _li("b-d600e3", "b.html", "B")))
+    b2 = _nav(_li("w-d500e1", "w.html", "Workloads", _li("a-d500e2", "a.html", "A") + _li("c-d500e3", "c.html", "C")))
     frags = [(BASE + "a.html", b1), (BASE + "c.html", b2)]
     sig = lambda t: [(e.level, e.title, e.url, e.parent_url) for e in t]
     prof = OxygenWebhelpProfile()
