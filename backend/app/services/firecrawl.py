@@ -986,14 +986,23 @@ class FirecrawlService:
                 "sort_order": sort_order,
                 "topic_key": topic_key,
             }
+            # Anything that isn't a JSON array — SQL NULL, but also a JSON null
+            # (what a plain JSONB column wrote for Python None) or any other
+            # scalar — starts a fresh list. That test comes FIRST, in its own
+            # WHEN: CASE branches are tried in order, whereas Postgres doesn't
+            # promise to short-circuit AND, so guarding jsonb_array_length with
+            # "is array AND ..." could still evaluate it on a scalar and raise
+            # "cannot get array length of a scalar" — the error that silently
+            # dropped the pages of every blocked-page retry.
             await db.execute(
                 text(
                     "UPDATE extraction_runs SET error_message = :msg, "
                     "blocked_pending = CASE "
+                    "  WHEN jsonb_typeof(blocked_pending) IS DISTINCT FROM 'array' "
+                    "    THEN CAST(:item AS jsonb) "
                     "  WHEN blocked_pending @> CAST(:urlkey AS jsonb) THEN blocked_pending "
-                    "  WHEN jsonb_array_length(COALESCE(blocked_pending, CAST('[]' AS jsonb))) >= :cap "
-                    "    THEN blocked_pending "
-                    "  ELSE COALESCE(blocked_pending, CAST('[]' AS jsonb)) || CAST(:item AS jsonb) "
+                    "  WHEN jsonb_array_length(blocked_pending) >= :cap THEN blocked_pending "
+                    "  ELSE blocked_pending || CAST(:item AS jsonb) "
                     "END "
                     "WHERE id = :rid"
                 ),
