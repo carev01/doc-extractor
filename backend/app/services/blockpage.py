@@ -10,8 +10,20 @@ the sole "article" of a support-manual guide, run reported COMPLETED).
 ``is_block_page`` recognises the common block/challenge fingerprints. It is
 deliberately conservative: long pages are only flagged by markers that
 essentially never occur in real documentation (e.g. ``edgesuite.net``,
-``cf-browser-verification``); generic "access denied" phrasing only counts on a
-short page, so a genuine doc *about* access-denied errors isn't misclassified.
+``cf-browser-verification``).
+
+A short page needs more than the *phrase* "access denied". The rule used to be
+"≤800 chars, mentions 'access denied', and mentions 'permission' or 'denied'" —
+and the second half is always true once the first is, so every short page that
+merely *mentions* access denied was dropped as a block. Short reference pages do
+that constantly: every raw-HTTP page sitting in a blocked list in production was
+real documentation (Cohesity NetBackup status codes such as "Message: VxSS access
+denied", Arcserve troubleshooting and release notes, Commvault's KB "VNU0003 ...
+fails with 'Access denied' error") — 50 to 115 words each, never stored, and
+re-flagged on every run. A short page now counts only with real evidence of a
+denial page: Akamai's reference id, the classic "you don't have permission to
+access ... on this server" wording, or a page that is essentially nothing *but*
+the denial (a handful of words — a bare "Access Denied", S3's AccessDenied XML).
 """
 
 import re
@@ -32,14 +44,18 @@ _STRONG_MARKERS = (
     "pardon our interruption",          # Imperva/Distil bot wall
 )
 
-# Phrases that indicate a block only when the page is short (a real article that
-# merely mentions these would be far longer and structured).
+# Denial phrasing — suggestive on a short page, never conclusive on its own: real
+# reference pages about permission errors are short too (see module docstring).
 _SHORT_PAGE_LIMIT = 800
 _SHORT_MARKERS = (
     "you don't have permission to access",
     "access denied",
     "request unsuccessful",
 )
+# A page that is *only* a denial is a handful of words (bare "Access Denied": 2;
+# S3's AccessDenied XML: ~8; Akamai's page: ~25, and caught by edgesuite.net
+# anyway). The shortest misflagged real doc page was 50 words.
+_BARE_DENIAL_MAX_WORDS = 25
 
 
 def is_block_page(text: str) -> bool:
@@ -55,7 +71,12 @@ def is_block_page(text: str) -> bool:
     stripped = text.strip()
     if len(stripped) <= _SHORT_PAGE_LIMIT:
         if any(m in low for m in _SHORT_MARKERS) and (
-            _AKAMAI_REF_RE.search(low) or "permission" in low or "denied" in low
+            # Akamai stamps its denial page with a reference id.
+            _AKAMAI_REF_RE.search(low)
+            # Apache/Akamai: 'You don't have permission to access "X" on this server.'
+            or ("you don't have permission to access" in low and "on this server" in low)
+            # Nothing but the denial itself.
+            or len(stripped.split()) <= _BARE_DENIAL_MAX_WORDS
         ):
             return True
         # Cloudflare's JS interstitial ("Just a moment…", "Enable JavaScript…").
