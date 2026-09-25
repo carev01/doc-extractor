@@ -68,12 +68,19 @@ class DocumentationSource(Base):
     product: Mapped["Product"] = relationship("Product", back_populates="sources")
     job: Mapped["Job | None"] = relationship("Job", back_populates="sources")
     auth_realm: Mapped["AuthRealm | None"] = relationship("AuthRealm")
+    # passive_deletes: every FK below this row is ON DELETE CASCADE in the
+    # database, so let Postgres cascade in one statement. Without it the ORM
+    # loads every child and deletes them one row at a time — deleting a
+    # source with 9,592 TOC entries took ~7 min and timed the request out.
     extraction_runs: Mapped[list["ExtractionRun"]] = relationship(
-        "ExtractionRun", back_populates="source", cascade="all, delete-orphan"
+        "ExtractionRun", back_populates="source", cascade="all, delete-orphan",
+        passive_deletes=True
     )
     articles: Mapped[list["Article"]] = relationship(
-        "Article", back_populates="source", cascade="all, delete-orphan"
+        "Article", back_populates="source", cascade="all, delete-orphan",
+        passive_deletes=True
     )
     toc_entries: Mapped[list["TOCEntry"]] = relationship(
-        "TOCEntry", back_populates="source", cascade="all, delete-orphan"
+        "TOCEntry", back_populates="source", cascade="all, delete-orphan",
+        passive_deletes=True
     )

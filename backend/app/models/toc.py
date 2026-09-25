@@ -21,10 +21,14 @@ class TOCEntry(Base):
         ForeignKey("documentation_sources.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # Indexed because every delete of a TOC entry (a source delete, and every
+    # run's TOC rebuild) must find and SET NULL its children: unindexed, that was
+    # a full scan of the whole table for each deleted row.
     parent_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("toc_entries.id", ondelete="SET NULL"),
         nullable=True,
+        index=True,
     )
 
     title: Mapped[str] = mapped_column(String(1024), nullable=False)
