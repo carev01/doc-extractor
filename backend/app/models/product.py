@@ -37,5 +37,6 @@ class Product(Base):
     # Relationships
     vendor: Mapped["Vendor"] = relationship("Vendor", back_populates="products")
     sources: Mapped[list["DocumentationSource"]] = relationship(
-        "DocumentationSource", back_populates="product", cascade="all, delete-orphan"
+        "DocumentationSource", back_populates="product", cascade="all, delete-orphan",
+        passive_deletes=True
     )
