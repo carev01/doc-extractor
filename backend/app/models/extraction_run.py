@@ -113,14 +113,25 @@ class ExtractionRun(Base):
     # completed with an escalation *warning* (not a clean green) and is eligible for
     # a kind="escalate" retry (which reuses the cached converted doc). NULL/empty ⇒
     # no warning.
-    escalation_pending: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # Same trap as blocked_pending below (see there); nothing queries this one in
+    # SQL today, so its JSON nulls are latent, not live.
+    escalation_pending: Mapped[list | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     # Pages that tripped bot protection (Akamai/Cloudflare) and were not stored
     # this run: a list of {url, title, toc_entry_id, sort_order, topic_key}.
     # Accumulated during the content phase; after the optional auto-retry pass,
     # a non-empty list ⇒ the run completed with a bot-protection *warning* (not a
     # clean green) and is eligible for a kind="retry_blocked" retry. NULL/empty ⇒
     # no warning. Capped to avoid an unbounded list on a fully-blocked run.
-    blocked_pending: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # none_as_null: a plain JSONB column persists Python None as a JSON ``null``,
+    # not SQL NULL — and every SQL-side COALESCE/IS NULL then misses it. That is
+    # exactly how every blocked-page retry broke: retry_blocked clears this list
+    # with ``= None``, the append's COALESCE(blocked_pending, '[]') passed the
+    # JSON null through, and jsonb_array_length raised on the scalar.
+    blocked_pending: Mapped[list | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     # Cooperative control signal set by the API ("cancel" | "pause"); the worker
     # observes it at batch boundaries and transitions the run accordingly, then
     # clears it. NULL = no pending control request.
