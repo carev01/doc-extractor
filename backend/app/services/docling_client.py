@@ -34,7 +34,10 @@ def _vlm_model_api() -> dict:
     return {
         "url": settings.pdf_vlm_base_url,
         "headers": {"Authorization": f"Bearer {settings.pdf_vlm_api_key}"},
-        "params": {"model": settings.pdf_vlm_model},
+        # docling-serve spreads params into the chat-completions body verbatim, so
+        # OpenRouter's nested reasoning switch reaches the model.
+        "params": {"model": settings.pdf_vlm_model,
+                   "reasoning": {"enabled": settings.pdf_vlm_reasoning}},
         "prompt": _VLM_PROMPT,
         # Required by docling-serve's VlmModelApi; we ask the model for markdown.
         "response_format": "markdown",

@@ -51,7 +51,7 @@ async def test_convert_async_vlm_request_carries_model_api(monkeypatch):
     monkeypatch.setattr(dc.settings, "docling_serve_poll_interval", 0.0)
     monkeypatch.setattr(dc.settings, "pdf_vlm_base_url", "http://router/v1/chat")
     monkeypatch.setattr(dc.settings, "pdf_vlm_api_key", "ork")
-    monkeypatch.setattr(dc.settings, "pdf_vlm_model", "qwen/qwen3-vl-32b-instruct")
+    monkeypatch.setattr(dc.settings, "pdf_vlm_model", "qwen/qwen3.8-flash")
     _SeqClient.posts = []
     _SeqClient.seq = [
         {"task_id": "T1", "task_status": "success"},
@@ -74,7 +74,9 @@ async def test_convert_async_vlm_request_carries_model_api(monkeypatch):
     assert opts["page_range"] == [2, 3]
     assert opts["vlm_pipeline_model_api"]["url"] == "http://router/v1/chat"
     assert opts["vlm_pipeline_model_api"]["headers"]["Authorization"] == "Bearer ork"
-    assert opts["vlm_pipeline_model_api"]["params"]["model"] == "qwen/qwen3-vl-32b-instruct"
+    assert opts["vlm_pipeline_model_api"]["params"]["model"] == "qwen/qwen3.8-flash"
+    # Hybrid-thinking models must not think while transcribing (latency + cost).
+    assert opts["vlm_pipeline_model_api"]["params"]["reasoning"] == {"enabled": False}
     assert opts["vlm_pipeline_model_api"]["response_format"] == "markdown"
 
 

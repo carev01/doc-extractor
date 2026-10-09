@@ -161,7 +161,11 @@ class Settings(BaseSettings):
     pdf_vlm_escalation_enabled: bool = True
     pdf_vlm_base_url: str = "https://openrouter.ai/api/v1/chat/completions"
     pdf_vlm_api_key: str = ""                 # Bearer key (env only)
-    pdf_vlm_model: str = "qwen/qwen3-vl-32b-instruct"
+    pdf_vlm_model: str = "qwen/qwen3.8-flash"
+    # Hybrid models (qwen3.8-flash) think by default. Transcribing a page needs no
+    # reasoning — measured on real pages, word recall was 96-98% with it off vs
+    # 99-100% on, at ~2/3 the latency and cost — so it is sent disabled.
+    pdf_vlm_reasoning: bool = False
     # A segment's page range is VLM-escalated in batches of this many pages, for
     # the same reason standard conversion batches (docling-serve rejects a large
     # upload as "Input document is not valid"). Smaller than pdf_convert_batch_pages
@@ -200,10 +204,15 @@ class Settings(BaseSettings):
     image_vlm_enabled: bool = False
     image_vlm_base_url: str = "https://openrouter.ai/api/v1/chat/completions"
     image_vlm_api_key: str = ""                 # Bearer key (env only)
-    image_vlm_model: str = "qwen/qwen3-vl-32b-instruct"
+    image_vlm_model: str = "qwen/qwen3.8-flash"
     image_vlm_max_per_run: int = 100            # budget: max NEW descriptions per run
     image_vlm_max_consecutive_failures: int = 5  # circuit breaker
     image_vlm_max_tokens: int = 300
+    # Must stay off for a hybrid-thinking model: reasoning tokens count against
+    # image_vlm_max_tokens, and on qwen3.8-flash 3 of 8 real screenshots spent the
+    # whole 300-token budget thinking and returned empty/truncated JSON — each a
+    # "failure" that feeds the circuit breaker. Off: 8/8 described, ~2.3s each.
+    image_vlm_reasoning: bool = False
     # Concurrent VLM describe calls per article (the calls are network-bound;
     # DB writes stay serialized). 1 = the old one-at-a-time behavior.
     image_vlm_concurrency: int = 5

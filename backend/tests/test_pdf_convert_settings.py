@@ -27,7 +27,7 @@ def test_pdf_converter_defaults():
     assert s.pdf_vlm_escalation_enabled is True
     assert s.pdf_vlm_base_url == "https://openrouter.ai/api/v1/chat/completions"
     assert s.pdf_vlm_api_key == ""
-    assert s.pdf_vlm_model == "qwen/qwen3-vl-32b-instruct"
+    assert s.pdf_vlm_model == "qwen/qwen3.8-flash"
     assert s.pdf_vlm_max_pages_pct == 10.0
 
 

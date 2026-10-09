@@ -89,7 +89,7 @@ docling:
 pdfVlm:
   escalationEnabled: true
   baseUrl: https://openrouter.ai/api/v1/chat/completions
-  model: qwen/qwen3-vl-32b-instruct
+  model: qwen/qwen3.8-flash
   apiKey: ""                      # OpenRouter bearer key (OVERRIDE)
   # Per-run escalation page budget as a percentage of the document's total pages
   # (rounded up, min 1 page). Scales the VLM allowance with document size.
@@ -105,7 +105,7 @@ pdfVlm:
 imageVlm:
   enabled: false
   baseUrl: https://openrouter.ai/api/v1/chat/completions
-  model: qwen/qwen3-vl-32b-instruct
+  model: qwen/qwen3.8-flash
   apiKey: ""                      # OpenRouter bearer key (OVERRIDE)
   maxPerRun: 100                  # budget: max new descriptions per run
   maxConsecutiveFailures: 5       # circuit breaker: stop after N failures in a row
