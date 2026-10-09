@@ -161,6 +161,15 @@ class ImageDescription:
     kind: str
 
 
+def api_error_message(resp: "httpx.Response") -> str:
+    """The provider's own error text from a failed chat-completions response."""
+    try:
+        msg = resp.json()["error"]["message"]
+    except Exception:  # noqa: BLE001 — not the OpenAI error shape
+        msg = resp.text
+    return " ".join(str(msg).split())[:300]
+
+
 async def describe_image(
     data: bytes, alt_text: str | None, *, mime: str = "image/png", client: "httpx.AsyncClient | None" = None
 ) -> "ImageDescription | None":
@@ -181,14 +190,24 @@ async def describe_image(
             ],
         }],
         "response_format": {"type": "json_object"},
+        "reasoning": {"enabled": settings.image_vlm_reasoning},
     }
     headers = {"Authorization": f"Bearer {settings.image_vlm_api_key}", "content-type": "application/json"}
     own = client is None
     c = client or httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0))
     try:
         resp = await c.post(settings.image_vlm_base_url, headers=headers, json=body)
-        resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
+        if resp.is_error:
+            # The status alone hides the cause: OpenRouter answers a retired model, a
+            # model the account's guardrail blocks, and a bad route all with 404.
+            logger.warning("describe_image failed: HTTP %d from %s: %s", resp.status_code,
+                           settings.image_vlm_model, api_error_message(resp))
+            return None
+        choice = resp.json()["choices"][0]
+        content = choice["message"].get("content") or ""
+        if choice.get("finish_reason") == "length":
+            logger.warning("describe_image: %s hit max_tokens=%d before finishing (reasoning on?)",
+                           settings.image_vlm_model, settings.image_vlm_max_tokens)
         obj = json.loads(content)
         text = (obj.get("description") or "").strip()
         if not text:

@@ -189,3 +189,52 @@ async def test_drain_collects_failure_reasons_per_page(monkeypatch):
     assert esc.pages_in_ranges(ranges) == {0, 1}          # both still pending
     assert set(failures) == {0, 1}                         # …and both explained
     assert all("tile cannot extend" in r for r in failures.values())
+
+
+def _text_pages_doc():
+    from app.services.pdf_convert import ConvertedDoc
+    # Two pages with a real text layer but nearly nothing in the markdown → sparse_text.
+    return ConvertedDoc(
+        markdown="a\nb",
+        headings=[],
+        page_texts=["word " * 60, "word " * 60],
+        table_pages=set(),
+        page_line_starts=[0, 1],
+    )
+
+
+@pytest.mark.asyncio
+async def test_empty_vlm_result_on_a_text_page_stays_pending(monkeypatch):
+    """docling-serve answers a failed model call (retired model, guardrail refusal)
+    with a *successful* task and empty markdown; that must not count as done."""
+    monkeypatch.setattr(esc, "_extract_page_range", lambda *a: b"%PDF-x")
+
+    async def fake_convert_async(pdf_bytes, **kw):
+        return {"md_content": ""}
+
+    monkeypatch.setattr(esc.docling_client, "convert_async", fake_convert_async)
+    converted = _text_pages_doc()
+    failures: dict[int, str] = {}
+    ranges = await esc.escalate_low_confidence_pages(b"DOC", converted, budget=2, failures=failures)
+
+    assert esc.pages_in_ranges(ranges) == {0, 1}
+    assert all("no content" in r for r in failures.values()) and set(failures) == {0, 1}
+    assert converted.markdown == "a\nb"   # original pages kept
+
+
+@pytest.mark.asyncio
+async def test_empty_vlm_result_on_an_image_only_page_is_accepted(monkeypatch):
+    """A page with no text layer can be genuinely blank — an empty answer is a no-op."""
+    monkeypatch.setattr(esc, "_extract_page_range", lambda *a: b"%PDF-x")
+
+    async def fake_convert_async(pdf_bytes, **kw):
+        return {"md_content": ""}
+
+    monkeypatch.setattr(esc.docling_client, "convert_async", fake_convert_async)
+    from app.services.pdf_convert import ConvertedDoc
+    converted = ConvertedDoc(markdown="\n", headings=[], page_texts=["", ""],
+                             table_pages=set(), page_line_starts=[0, 1])
+    failures: dict[int, str] = {}
+    ranges = await esc.escalate_low_confidence_pages(b"DOC", converted, budget=2, failures=failures)
+
+    assert ranges == [] and failures == {}

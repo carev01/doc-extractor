@@ -117,7 +117,7 @@ Key values (see [`values.yaml`](../deploy/helm/docextractor/values.yaml) for all
 | `pdfVlm.apiKey` | — | OpenRouter bearer key for PDF VLM escalation |
 | `imageVlm.enabled` | `false` | Enable VLM image descriptions (worker runs the phase) |
 | `imageVlm.apiKey` | — | OpenRouter bearer key for image descriptions |
-| `imageVlm.model` | `qwen/qwen3-vl-32b-instruct` | Vision model for image descriptions |
+| `imageVlm.model` | `qwen/qwen3.8-flash` | Vision model for image descriptions |
 | `imageVlm.maxPerRun` | `100` | Max new image descriptions per run (budget) |
 | `extraction.blockedRetryMaxPct` | `5.0` | Auto-retry bot-blocked pages when ≤ this % of a run's pages (`0` disables) |
 | `extraction.tocCollapseMinRatio` | `0.5` | Fail a run instead of mass-removing when the rebuilt TOC drops below this ratio of the source's live articles |
@@ -232,7 +232,7 @@ Improves conversion quality for complex PDF layouts via a vision-language model.
 ```bash
 DOCEXTRACTOR_PDF_VLM_ESCALATION_ENABLED=true
 DOCEXTRACTOR_PDF_VLM_API_KEY=<openrouter-key>
-DOCEXTRACTOR_PDF_VLM_MODEL=qwen/qwen3-vl-32b-instruct
+DOCEXTRACTOR_PDF_VLM_MODEL=qwen/qwen3.8-flash
 ```
 
 ### Image descriptions (optional)
@@ -242,7 +242,7 @@ Describes meaningful scraped images with a VLM and surfaces the descriptions in 
 ```bash
 DOCEXTRACTOR_IMAGE_VLM_ENABLED=true
 DOCEXTRACTOR_IMAGE_VLM_API_KEY=<openrouter-key>
-DOCEXTRACTOR_IMAGE_VLM_MODEL=qwen/qwen3-vl-32b-instruct
+DOCEXTRACTOR_IMAGE_VLM_MODEL=qwen/qwen3.8-flash
 DOCEXTRACTOR_IMAGE_VLM_MAX_PER_RUN=100   # cap new descriptions per run
 ```
 

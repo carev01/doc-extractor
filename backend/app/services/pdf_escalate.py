@@ -228,6 +228,20 @@ async def escalate_low_confidence_pages(
             on_error=(None if failures is None
                       else lambda pg, reason: failures.__setitem__(pg, reason)),
         )
+        if result is not None and not result[0].strip() and "empty_pages" not in issues:
+            # docling-serve swallows a failed VLM API call (a retired model, a key or
+            # guardrail refusal) and reports the task a success with an empty page.
+            # A page with a text layer cannot honestly transcribe to nothing, so this
+            # is a failure — counting it as done drops the page from
+            # escalation_pending for good. An image-only page (empty_pages) can be
+            # genuinely blank, so an empty answer there stays an accepted no-op.
+            reason = ("VLM returned no content for a page with a text layer — "
+                      "docling-serve reports success when the model call fails; "
+                      "check pdf_vlm_model and the API key")
+            logger.warning("pdf_escalate: page %d: %s", p + 1, reason)
+            if failures is not None:
+                failures[p] = reason
+            result = None
         if result is None:
             consecutive_failures += 1
             failed_pages.append(p)
