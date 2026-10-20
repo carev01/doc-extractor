@@ -24,7 +24,7 @@ from app.schemas.auth_realm import (
 )
 from app.services.auth import realm_manager
 from app.services.auth.realm_manager import NeedsLoginError
-from app.services.auth.session import session_expires_at
+from app.services.auth.session import session_expired, session_expires_at
 from app.services.browserless import browserless_client
 
 
@@ -92,6 +92,16 @@ def _normalize_cookies(cookies: list[dict]) -> list[dict]:
     return out
 
 
+def effective_status(realm: AuthRealm) -> str:
+    """The status a reader should act on. ``status`` is only written by login,
+    upload and Test, so a session that lapses afterwards stays ``active`` in the
+    row; report it ``expired`` — the same condition the trigger routes refuse on."""
+    status = realm.status.value if hasattr(realm.status, "value") else realm.status
+    if status == RealmStatus.ACTIVE.value and session_expired(realm):
+        return RealmStatus.EXPIRED.value
+    return status
+
+
 def _response(realm: AuthRealm) -> AuthRealmResponse:
     """Build a safe response, projecting secrets to presence booleans only."""
     return AuthRealmResponse(
@@ -100,9 +110,7 @@ def _response(realm: AuthRealm) -> AuthRealmResponse:
         login_domain=realm.login_domain,
         auth_type=realm.auth_type,
         login_url=realm.login_url,
-        status=(
-            realm.status.value if hasattr(realm.status, "value") else realm.status
-        ),
+        status=effective_status(realm),
         has_username=bool(realm.username),
         has_password=bool(realm.password),
         has_totp=bool(realm.totp_secret),

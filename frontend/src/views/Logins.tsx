@@ -8,14 +8,16 @@ import type { AuthRealm, AuthRealmCreate } from '../types';
 const STATUS_CLASS: Record<string, string> = {
   active: 'is-ok',
   needs_login: 'is-warn',
-  expired: 'is-muted',
+  // Expired needs action (log in / re-upload) just like a failed login.
+  expired: 'is-bad',
   login_failed: 'is-bad',
 };
 
 function expiryLabel(iso: string | null): { text: string; cls: string } | null {
   if (!iso) return null;
   const ms = new Date(iso).getTime() - Date.now();
-  if (ms <= 0) return { text: 'EXPIRED', cls: 'text-bad' };
+  // Lapsed: the API already reports status "expired", so the pill says it.
+  if (ms <= 0) return null;
   const mins = Math.round(ms / 60000);
   const text = mins < 60 ? `expires in ${mins}m` : `expires in ${Math.round(mins / 60)}h`;
   return { text, cls: mins < 120 ? 'text-warn' : 'text-muted' };
@@ -191,7 +193,13 @@ export function Logins() {
           <li key={r.id} className="non-clickable">
             <div className="item-info">
               <div className="card-head">
-                {statusBadge(r.status)}
+                {statusBadge(
+                  // The API reports a lapsed session as expired; this covers one
+                  // that lapses while the page is open.
+                  r.status === 'active' && r.session_expires_at
+                    && new Date(r.session_expires_at).getTime() <= Date.now()
+                    ? 'expired' : r.status,
+                )}
                 {(() => {
                   const e = expiryLabel(r.session_expires_at);
                   return e ? <span className={`sub ${e.cls}`}>{e.text}</span> : null;
