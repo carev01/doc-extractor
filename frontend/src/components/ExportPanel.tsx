@@ -17,6 +17,9 @@ interface Props {
   source: DocumentationSource;
 }
 
+// Same defaults as the batch export dialog (BatchExportModal).
+const SPLIT_DEFAULTS = { articles: 50, size: 10, tokens: 500_000 } as const;
+
 export default function ExportPanel({ source }: Props) {
   const [toc, setToc] = useState<TOCEntry[]>([]);
   const [selectedTocIds, setSelectedTocIds] = useState<Set<string>>(new Set());
@@ -285,7 +288,13 @@ export default function ExportPanel({ source }: Props) {
         <h3>File splitting (optional):</h3>
         <select
           value={splitBy}
-          onChange={(e) => setSplitBy(e.target.value as "" | "size" | "articles" | "tokens")}
+          onChange={(e) => {
+            const next = e.target.value as "" | "size" | "articles" | "tokens";
+            setSplitBy(next);
+            // Each mode has its own scale; carrying 50 over from "articles" would
+            // mean 50-token files.
+            if (next) setSplitValue(SPLIT_DEFAULTS[next]);
+          }}
         >
           <option value="">No splitting — single file</option>
           <option value="articles">Split by article count</option>

@@ -37,6 +37,14 @@ const STATUS_CLASS: Record<string, string> = {
   cancelled: "is-muted",
 };
 
+// Same units as the single-source ExportPanel: articles, MB, plain tokens.
+const SPLIT_DEFAULTS = { articles: 50, size: 10, tokens: 500_000 } as const;
+const SPLIT_PLACEHOLDER = {
+  articles: "Articles per file",
+  size: "MB per file",
+  tokens: "Tokens per file",
+} as const;
+
 function humanBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   const units = ["kB", "MB", "GB"];
@@ -144,7 +152,10 @@ export default function BatchExportModal({ scope, onClose }: Props) {
         split_by: splitBy || null,
         max_articles_per_file: splitBy === "articles" ? splitValue : null,
         max_file_size_bytes: splitBy === "size" ? splitValue * 1024 * 1024 : null,
-        max_tokens_per_file: splitBy === "tokens" ? splitValue * 1000 : null,
+        // A plain token count, as in the single-source ExportPanel. This used to be
+        // thousands ("By tokens (k)"): typing 500000 sent 500 million, so no
+        // source ever split.
+        max_tokens_per_file: splitBy === "tokens" ? splitValue : null,
         respect_chapters: respectChapters,
       };
       const created =
@@ -243,14 +254,18 @@ export default function BatchExportModal({ scope, onClose }: Props) {
                 Split
                 <select
                   value={splitBy}
-                  onChange={(e) =>
-                    setSplitBy(e.target.value as "" | "size" | "articles" | "tokens")
-                  }
+                  onChange={(e) => {
+                    const next = e.target.value as "" | "size" | "articles" | "tokens";
+                    setSplitBy(next);
+                    // Each mode has its own scale; carrying 50 over from "articles"
+                    // would mean 50-token files.
+                    if (next) setSplitValue(SPLIT_DEFAULTS[next]);
+                  }}
                 >
                   <option value="">No split</option>
                   <option value="articles">By articles</option>
                   <option value="size">By size (MB)</option>
-                  <option value="tokens">By tokens (k)</option>
+                  <option value="tokens">By tokens</option>
                 </select>
               </label>
               {splitBy && (
@@ -261,6 +276,8 @@ export default function BatchExportModal({ scope, onClose }: Props) {
                     min={1}
                     value={splitValue}
                     onChange={(e) => setSplitValue(Number(e.target.value) || 1)}
+                    placeholder={SPLIT_PLACEHOLDER[splitBy]}
+                    title={SPLIT_PLACEHOLDER[splitBy]}
                   />
                 </label>
               )}

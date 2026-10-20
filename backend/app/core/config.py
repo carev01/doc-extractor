@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     export_dir: str = "exports"
     max_articles_per_file: int = 50
     max_file_size_bytes: int = 10 * 1024 * 1024  # 10 MB
-    max_tokens_per_file: int = 100_000
+    max_tokens_per_file: int = 500_000
     # Export retention — generated export dirs are purged once older than this many
     # days, and the total export footprint is capped (oldest-first eviction) so the
     # exports volume can't fill from accumulation. 0 days disables the age sweep.
