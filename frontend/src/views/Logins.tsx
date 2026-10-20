@@ -23,6 +23,13 @@ function expiryLabel(iso: string | null): { text: string; cls: string } | null {
   return { text, cls: mins < 120 ? 'text-warn' : 'text-muted' };
 }
 
+// The API reports a lapsed session as expired; this also covers one that
+// lapses while the page is open.
+function effectiveStatus(r: AuthRealm): string {
+  if (r.status !== 'active' || !r.session_expires_at) return r.status;
+  return new Date(r.session_expires_at).getTime() <= Date.now() ? 'expired' : r.status;
+}
+
 function statusBadge(status: string) {
   return (
     <span className={`status-badge ${STATUS_CLASS[status] ?? 'is-muted'}`}>
@@ -193,13 +200,7 @@ export function Logins() {
           <li key={r.id} className="non-clickable">
             <div className="item-info">
               <div className="card-head">
-                {statusBadge(
-                  // The API reports a lapsed session as expired; this covers one
-                  // that lapses while the page is open.
-                  r.status === 'active' && r.session_expires_at
-                    && new Date(r.session_expires_at).getTime() <= Date.now()
-                    ? 'expired' : r.status,
-                )}
+                {statusBadge(effectiveStatus(r))}
                 {(() => {
                   const e = expiryLabel(r.session_expires_at);
                   return e ? <span className={`sub ${e.cls}`}>{e.text}</span> : null;
