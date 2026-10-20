@@ -185,3 +185,127 @@ async def test_include_images_now_defaults_off(client):
             select(ExportJob).where(ExportJob.batch_id == uuid.UUID(batch_id))
         )).scalars().first()
     assert job.request["include_images"] is False
+
+
+# ── Vendor-level export ──────────────────────────────────────────────────────
+
+
+async def _seed_vendor(session_factory):
+    """Acme with three products: two populated (both with a "User Guide" source,
+    the collision the nested zip layout exists for) and one with only an empty source."""
+    async with session_factory() as s:
+        vendor = Vendor(name="Acme")
+        s.add(vendor)
+        await s.flush()
+        ids = {}
+        for pname, n in (("Widget", 2), ("Gadget", 3), ("Doohickey", 0)):
+            product = Product(vendor_id=vendor.id, name=pname)
+            s.add(product)
+            await s.flush()
+            ids[pname] = product.id
+            src = DocumentationSource(
+                product_id=product.id, name="User Guide",
+                base_url=f"https://d.example.com/{pname}",
+            )
+            s.add(src)
+            await s.flush()
+            for a in range(n):
+                s.add(Article(
+                    source_id=src.id, title=f"A{a}", source_url=f"https://d/{pname}/{a}",
+                    topic_key=f"https://d/{pname}/{a}",
+                    content_markdown="body " * 10, content_hash=f"h{pname}{a}",
+                    sort_order=a,
+                ))
+        other = Vendor(name="Other")
+        s.add(other)
+        await s.flush()
+        foreign = Product(vendor_id=other.id, name="Theirs")
+        s.add(foreign)
+        await s.commit()
+        return vendor.id, ids, foreign.id
+
+
+async def test_vendor_preview_breaks_down_per_product(client):
+    c, sf = client
+    vid, ids, _f = await _seed_vendor(sf)
+    r = await c.get(f"/api/export/vendor/{vid}/preview")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["label"] == "Acme"
+    by = {p["name"]: p for p in body["products"]}
+    assert [p["name"] for p in body["products"]] == ["Doohickey", "Gadget", "Widget"]
+    assert by["Widget"]["total_articles"] == 2 and by["Gadget"]["total_articles"] == 3
+    assert by["Doohickey"]["exportable_source_count"] == 0
+    assert by["Doohickey"]["skipped"] == ["User Guide"]
+
+
+async def test_vendor_export_covers_every_product_by_default(client):
+    c, sf = client
+    vid, _ids, _f = await _seed_vendor(sf)
+    r = await c.post(f"/api/export/vendor/{vid}", json={})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total"] == 2
+    assert body["skipped"] == ["Doohickey / User Guide"]
+    status = (await c.get(f"/api/export/batches/{body['batch_id']}")).json()
+    assert status["label"] == "Acme"
+    assert [s["product_name"] for s in status["sources"]] == ["Gadget", "Widget"]
+
+
+async def test_vendor_export_honours_product_selection(client):
+    c, sf = client
+    vid, ids, _f = await _seed_vendor(sf)
+    r = await c.post(f"/api/export/vendor/{vid}", json={"product_ids": [str(ids["Widget"])]})
+    assert r.status_code == 200 and r.json()["total"] == 1
+    status = (await c.get(f"/api/export/batches/{r.json()['batch_id']}")).json()
+    assert [s["product_name"] for s in status["sources"]] == ["Widget"]
+
+
+async def test_vendor_export_rejects_another_vendors_product(client):
+    c, sf = client
+    vid, _ids, foreign = await _seed_vendor(sf)
+    r = await c.post(f"/api/export/vendor/{vid}", json={"product_ids": [str(foreign)]})
+    assert r.status_code == 400
+    assert "not products of this vendor" in r.json()["detail"].lower()
+
+
+async def test_vendor_export_of_only_empty_products_is_refused(client):
+    c, sf = client
+    vid, ids, _f = await _seed_vendor(sf)
+    r = await c.post(f"/api/export/vendor/{vid}", json={"product_ids": [str(ids["Doohickey"])]})
+    assert r.status_code == 400
+
+
+async def test_unknown_vendor_is_404(client):
+    c, _sf = client
+    assert (await c.get(f"/api/export/vendor/{uuid.uuid4()}/preview")).status_code == 404
+
+
+async def test_vendor_zip_nests_sources_under_their_product(client, tmp_path, monkeypatch):
+    """Both products have a "User Guide": flat folders would merge them."""
+    import zipfile
+    from app.models.export_job import ExportStatus
+    from app.services.exporter import export_engine
+    monkeypatch.setattr(export_engine, "export_dir", str(tmp_path))
+
+    c, sf = client
+    vid, _ids, _f = await _seed_vendor(sf)
+    batch_id = (await c.post(f"/api/export/vendor/{vid}", json={})).json()["batch_id"]
+    async with sf() as s:
+        jobs = (await s.execute(
+            select(ExportJob).where(ExportJob.batch_id == uuid.UUID(batch_id))
+        )).scalars().all()
+        for job in jobs:
+            job.export_id = uuid.uuid4()
+            job.status = ExportStatus.COMPLETED
+            d = tmp_path / str(job.export_id)
+            d.mkdir()
+            (d / "guide.md").write_text(f"# {job.id}")
+        await s.commit()
+
+    r = await c.get(f"/api/export/batches/{batch_id}/download")
+    assert r.status_code == 200, r.text
+    zpath = tmp_path / "out.zip"
+    zpath.write_bytes(r.content)
+    names = sorted(zipfile.ZipFile(zpath).namelist())
+    assert names == ["Gadget/User_Guide/guide.md", "Widget/User_Guide/guide.md"]

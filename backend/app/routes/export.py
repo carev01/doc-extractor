@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.authz import (
     Principal, authorize_product, authorize_source, get_principal, require_admin,
+    require_vendor_read,
 )
 from app.core.config import settings
 from app.core.database import get_db
@@ -31,6 +32,9 @@ from app.schemas.export import (
     ProductExportCreatedResponse,
     ProductExportPreview,
     ProductExportRequest,
+    VendorExportPreview,
+    VendorExportProduct,
+    VendorExportRequest,
 )
 from app.services.export_retention import BATCH_DIR_PREFIX
 from app.services.exporter import export_engine
@@ -335,19 +339,15 @@ async def _product_label(db: AsyncSession, product: Product) -> str:
     return f"{vendor} / {product.name}" if vendor else product.name
 
 
-async def _exportable_sources(db: AsyncSession, product_id: uuid.UUID, only: list[uuid.UUID] | None):
-    """Sources of *product_id* that have at least one live article, plus the
-    names of those skipped for having none.
-
-    Skipping is not cosmetic: ``export_sync`` raises "No articles matched the
-    selection criteria" for an empty source, so including one would put a
-    permanent FAILED row in the batch that the operator can do nothing about.
-    """
-    rows = (
+async def _source_rows(db: AsyncSession, product_ids: list[uuid.UUID]):
+    """(source_id, name, product_id, live_article_count) for every source of
+    *product_ids*, in name order."""
+    return (
         await db.execute(
             select(
                 DocumentationSource.id,
                 DocumentationSource.name,
+                DocumentationSource.product_id,
                 func.count(Article.id).label("live"),
             )
             .outerjoin(
@@ -355,18 +355,71 @@ async def _exportable_sources(db: AsyncSession, product_id: uuid.UUID, only: lis
                 (Article.source_id == DocumentationSource.id)
                 & (Article.removed_at.is_(None)),
             )
-            .where(DocumentationSource.product_id == product_id)
-            .group_by(DocumentationSource.id, DocumentationSource.name)
+            .where(DocumentationSource.product_id.in_(product_ids))
+            .group_by(
+                DocumentationSource.id, DocumentationSource.name,
+                DocumentationSource.product_id,
+            )
             .order_by(DocumentationSource.name)
         )
     ).all()
+
+
+def _split_exportable(rows, only: list[uuid.UUID] | None = None):
+    """Partition source rows into (keep, skipped_names).
+
+    Skipping is not cosmetic: ``export_sync`` raises "No articles matched the
+    selection criteria" for an empty source, so including one would put a
+    permanent FAILED row in the batch that the operator can do nothing about.
+    """
     wanted = set(only or [])
     keep, skipped = [], []
-    for sid, name, live in rows:
+    for sid, name, _pid, live in rows:
         if wanted and sid not in wanted:
             continue
         (keep if live else skipped).append((sid, name))
     return keep, [n for _sid, n in skipped]
+
+
+async def _exportable_sources(db: AsyncSession, product_id: uuid.UUID, only: list[uuid.UUID] | None):
+    """Sources of *product_id* that have at least one live article, plus the
+    names of those skipped for having none."""
+    return _split_exportable(await _source_rows(db, [product_id]), only)
+
+
+async def _sizes_by_source(db: AsyncSession, source_ids: list[uuid.UUID]) -> dict:
+    """source_id -> (articles, markdown_bytes, image_bytes) over live articles."""
+    if not source_ids:
+        return {}
+    text = (
+        await db.execute(
+            select(
+                Article.source_id,
+                func.count(Article.id),
+                func.coalesce(func.sum(func.length(Article.content_markdown)), 0),
+            )
+            .where(Article.source_id.in_(source_ids), Article.removed_at.is_(None))
+            .group_by(Article.source_id)
+        )
+    ).all()
+    images = dict(
+        (
+            await db.execute(
+                select(
+                    Article.source_id,
+                    func.coalesce(func.sum(ArticleImage.file_size_bytes), 0),
+                )
+                .select_from(ArticleImage)
+                .join(Article, Article.id == ArticleImage.article_id)
+                .where(Article.source_id.in_(source_ids), Article.removed_at.is_(None))
+                .group_by(Article.source_id)
+            )
+        ).all()
+    )
+    return {
+        sid: (int(n or 0), int(md or 0), int(images.get(sid) or 0))
+        for sid, n, md in text
+    }
 
 
 @router.get("/product/{product_id}/preview", response_model=ProductExportPreview)
@@ -390,28 +443,10 @@ async def preview_product_export(
     keep, skipped = await _exportable_sources(db, product_id, None)
     keep_ids = [sid for sid, _n in keep]
 
-    articles = md_bytes = image_bytes = 0
-    if keep_ids:
-        articles, md_bytes = (
-            await db.execute(
-                select(
-                    func.count(Article.id),
-                    func.coalesce(func.sum(func.length(Article.content_markdown)), 0),
-                ).where(
-                    Article.source_id.in_(keep_ids), Article.removed_at.is_(None)
-                )
-            )
-        ).one()
-        image_bytes = (
-            await db.execute(
-                select(func.coalesce(func.sum(ArticleImage.file_size_bytes), 0))
-                .select_from(ArticleImage)
-                .join(Article, Article.id == ArticleImage.article_id)
-                .where(
-                    Article.source_id.in_(keep_ids), Article.removed_at.is_(None)
-                )
-            )
-        ).scalar_one()
+    sizes = await _sizes_by_source(db, keep_ids)
+    articles = sum(v[0] for v in sizes.values())
+    md_bytes = sum(v[1] for v in sizes.values())
+    image_bytes = sum(v[2] for v in sizes.values())
 
     return ProductExportPreview(
         product_id=product_id,
@@ -463,20 +498,124 @@ async def create_product_export(
     )
 
 
+async def _vendor_products(
+    db: AsyncSession, principal: Principal, vendor_id: uuid.UUID,
+) -> tuple[Vendor, list[tuple[uuid.UUID, str]]]:
+    require_vendor_read(principal, vendor_id)
+    vendor = await db.get(Vendor, vendor_id)
+    if vendor is None:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    products = (
+        await db.execute(
+            select(Product.id, Product.name)
+            .where(Product.vendor_id == vendor_id)
+            .order_by(Product.name)
+        )
+    ).all()
+    return vendor, [(pid, name) for pid, name in products]
+
+
+@router.get("/vendor/{vendor_id}/preview", response_model=VendorExportPreview)
+async def preview_vendor_export(
+    vendor_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """Per-product breakdown of what a vendor export would generate.
+
+    Returned per product rather than as one total so the dialog can show the
+    size of each include/exclude choice without a round trip per checkbox.
+    """
+    vendor, products = await _vendor_products(db, principal, vendor_id)
+    rows = await _source_rows(db, [pid for pid, _n in products]) if products else []
+    sizes = await _sizes_by_source(db, [sid for sid, _n, _p, live in rows if live])
+    out = []
+    for pid, name in products:
+        keep, skipped = _split_exportable([r for r in rows if r[2] == pid])
+        mine = [sizes.get(sid, (0, 0, 0)) for sid, _n in keep]
+        out.append(VendorExportProduct(
+            product_id=pid, name=name,
+            source_count=len(keep) + len(skipped),
+            exportable_source_count=len(keep),
+            skipped=skipped,
+            total_articles=sum(v[0] for v in mine),
+            markdown_bytes=sum(v[1] for v in mine),
+            image_bytes=sum(v[2] for v in mine),
+        ))
+    return VendorExportPreview(vendor_id=vendor_id, label=vendor.name, products=out)
+
+
+@router.post("/vendor/{vendor_id}", response_model=ProductExportCreatedResponse)
+async def create_vendor_export(
+    vendor_id: uuid.UUID,
+    body: VendorExportRequest,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """Enqueue one export job per source across the chosen products of a vendor,
+    as a single batch: the same fan-out as a product export, one level up."""
+    vendor, products = await _vendor_products(db, principal, vendor_id)
+    names = dict(products)
+    if body.product_ids:
+        foreign = [str(pid) for pid in body.product_ids if pid not in names]
+        if foreign:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Not products of this vendor: {', '.join(foreign)}",
+            )
+        chosen = [pid for pid, _n in products if pid in set(body.product_ids)]
+    else:
+        chosen = [pid for pid, _n in products]
+    if not chosen:
+        raise HTTPException(status_code=400, detail="This vendor has no products.")
+
+    rows = await _source_rows(db, chosen)
+    # Product order, then source name within it, so the batch reads like the tree.
+    rows = sorted(rows, key=lambda r: (chosen.index(r[2]), r[1]))
+    keep, skipped = [], []
+    for pid in chosen:
+        k, sk = _split_exportable([r for r in rows if r[2] == pid])
+        keep += k
+        skipped += [f"{names[pid]} / {n}" for n in sk]
+    if not keep:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No exportable sources ({len(skipped)} hold no articles yet)."
+                if skipped else "No exportable sources: the chosen products have none."
+            ),
+        )
+
+    shared = body.model_dump(mode="json", exclude={"product_ids"})
+    jobs = [(sid, {**shared, "source_id": str(sid)}) for sid, _name in keep]
+    batch_id = await enqueue_export_batch(db, jobs, batch_label=vendor.name)
+    return ProductExportCreatedResponse(batch_id=batch_id, total=len(jobs), skipped=skipped)
+
+
 async def _load_batch(db: AsyncSession, batch_id: uuid.UUID, principal: Principal):
-    """Batch jobs in order, after authorizing the product they belong to."""
+    """Batch jobs in order as (job, source_name, product_id, product_name), after
+    authorizing every product they belong to.
+
+    A product export spans one product and a vendor export several, so each
+    distinct product is authorized — checking only the first row's would let a
+    vendor batch be read on the strength of one product's grant.
+    """
     rows = (
         await db.execute(
-            select(ExportJob, DocumentationSource.name, DocumentationSource.product_id)
+            select(
+                ExportJob, DocumentationSource.name,
+                DocumentationSource.product_id, Product.name,
+            )
             .join(DocumentationSource, DocumentationSource.id == ExportJob.source_id)
+            .join(Product, Product.id == DocumentationSource.product_id)
             .where(ExportJob.batch_id == batch_id)
             .order_by(ExportJob.batch_seq)
         )
     ).all()
     if not rows:
         raise HTTPException(status_code=404, detail="Export batch not found")
-    # Every job in a batch belongs to one product by construction; authorize once.
-    await authorize_product(db, principal, rows[0][2], write=False)
+    for pid in dict.fromkeys(r[2] for r in rows):
+        await authorize_product(db, principal, pid, write=False)
     return rows
 
 
@@ -486,17 +625,17 @@ async def get_export_batch(
     db: AsyncSession = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    """Aggregate status of a product export, plus a row per source."""
+    """Aggregate status of a product or vendor export, plus a row per source."""
     rows = await _load_batch(db, batch_id, principal)
     counts = {s.value: 0 for s in ExportStatus}
     sources, total_size = [], 0
-    for job, source_name, _pid in rows:
+    for job, source_name, _pid, product_name in rows:
         counts[job.status.value] += 1
         result = job.result or {}
         total_size += int(result.get("total_size_bytes") or 0)
         sources.append(BatchSourceStatus(
             job_id=job.id, source_id=job.source_id, source_name=source_name,
-            seq=job.batch_seq or 0, status=job.status.value, export_id=job.export_id,
+            product_name=product_name, seq=job.batch_seq or 0, status=job.status.value, export_id=job.export_id,
             article_count=result.get("total_articles"),
             size_bytes=result.get("total_size_bytes"),
             error_message=job.error_message,
@@ -529,7 +668,8 @@ async def download_export_batch(
     db: AsyncSession = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    """One zip for the whole product, a folder per source.
+    """One zip for the whole batch: a folder per source, under a folder per
+    product when the batch spans several (a vendor export).
 
     Each completed source contributes exactly what its own export produced. When
     that export made a zip, its entries are copied across verbatim rather than
@@ -549,9 +689,12 @@ async def download_export_batch(
     """
     rows = await _load_batch(db, batch_id, principal)
     done = [
-        (job, name) for job, name, _pid in rows
+        (job, name, product) for job, name, _pid, product in rows
         if job.status == ExportStatus.COMPLETED and job.export_id
     ]
+    # A vendor batch nests sources under their product: two products routinely
+    # both have a source called "User Guide", and flat folders would merge them.
+    nested = len({pid for _j, _n, pid, _p in rows}) > 1
     if not done:
         raise HTTPException(
             status_code=409, detail="No source of this batch has completed yet"
@@ -568,7 +711,7 @@ async def download_export_batch(
 
     in_flight = any(
         job.status in (ExportStatus.PENDING, ExportStatus.RUNNING)
-        for job, _n, _p in rows
+        for job, _n, _p, _pn in rows
     )
     if os.path.isfile(zip_path):
         # A cached zip built while sources were still running would be missing
@@ -583,11 +726,13 @@ async def download_export_batch(
     written = 0
     try:
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as out:
-            for job, source_name in done:
+            for job, source_name, product_name in done:
                 src_dir = os.path.join(export_engine.export_dir, str(job.export_id))
                 if not os.path.isdir(src_dir):
                     continue  # purged by retention since the job completed
                 folder = _batch_zip_name(source_name)[:-4] or str(job.export_id)
+                if nested:
+                    folder = f"{_batch_zip_name(product_name)[:-4] or 'product'}/{folder}"
                 written += _append_export(out, src_dir, folder)
     except Exception:
         # Never leave a half-written archive behind to be served as cached.
