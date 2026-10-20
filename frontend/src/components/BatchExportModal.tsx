@@ -38,7 +38,7 @@ const STATUS_CLASS: Record<string, string> = {
 };
 
 // Same units as the single-source ExportPanel: articles, MB, plain tokens.
-const SPLIT_DEFAULTS = { articles: 50, size: 10, tokens: 100_000 } as const;
+const SPLIT_DEFAULTS = { articles: 50, size: 10, tokens: 500_000 } as const;
 const SPLIT_PLACEHOLDER = {
   articles: "Articles per file",
   size: "MB per file",

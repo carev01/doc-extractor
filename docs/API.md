@@ -353,8 +353,10 @@ curl -sN -H "X-API-Key: $KEY" \
 | `DELETE` | `/api/export/{export_id}` | Delete an export |
 | `GET` | `/api/export/product/{id}/preview` | Project a product export's size |
 | `POST` | `/api/export/product/{id}` | Export every source of a product |
-| `GET` | `/api/export/batches/{batch_id}` | Product export status, per source |
-| `GET` | `/api/export/batches/{batch_id}/download` | Combined zip, a folder per source |
+| `GET` | `/api/export/vendor/{id}/preview` | Per-product size breakdown of a vendor export |
+| `POST` | `/api/export/vendor/{id}` | Export the sources of a vendor's products (optional `product_ids`) |
+| `GET` | `/api/export/batches/{batch_id}` | Product/vendor export status, per source |
+| `GET` | `/api/export/batches/{batch_id}/download` | Combined zip, a folder per source (per product, then source, for a vendor export) |
 
 ### Export Request Body
 
@@ -363,14 +365,18 @@ curl -sN -H "X-API-Key: $KEY" \
   "source_id": "uuid",
   "format": "markdown",
   "article_ids": ["uuid1", "uuid2"],
-  "split_max_articles": 50,
-  "split_max_bytes": 10485760,
-  "split_max_tokens": 100000
+  "split_by": "tokens",
+  "max_tokens_per_file": 500000,
+  "respect_chapters": false
 }
 ```
 
 - `article_ids` — optional; omit for full export
-- `split_*` — optional; omit for single file
+- `split_by` — `"articles"`, `"size"` or `"tokens"`; omit for a single file. The
+  matching limit is `max_articles_per_file`, `max_file_size_bytes` or
+  `max_tokens_per_file` (a plain token count); an omitted limit falls back to
+  the server default (50 articles / 10 MB / 500,000 tokens). An article is never
+  split across files.
 - `format` — `"markdown"` or `"pdf"`
 - `include_images` — **defaults to `false`**. Image payloads dwarf the text
   (one product carries 27 MB of markdown against 495 MB of images), so images
