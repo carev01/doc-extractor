@@ -31,7 +31,7 @@ import {
 } from "../api/client";
 import ProductVersionBar from "./ProductVersionBar";
 import UrlTemplate from "./UrlTemplate";
-import ProductExportModal from "./ProductExportModal";
+import BatchExportModal from "./BatchExportModal";
 import type { Access } from "../access";
 import { apiError } from "../api/errors";
 
@@ -214,9 +214,8 @@ export default function SourceList({
         )}
       </div>
       {showProductExport && (
-        <ProductExportModal
-          productId={product.id}
-          productName={product.name}
+        <BatchExportModal
+          scope={{ kind: "product", id: product.id, name: product.name }}
           onClose={() => setShowProductExport(false)}
         />
       )}

@@ -79,12 +79,12 @@ class ExtractionTriggerResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ProductExportRequest(BaseModel):
-    """Export every source of a product, as one job per source.
+class _BatchExportOptions(BaseModel):
+    """Options shared by every multi-source (batch) export.
 
     Deliberately a *subset* of ExportRequest. ``article_ids`` and
     ``toc_entry_ids`` identify rows within a single source, so they have no
-    meaning across a product and are omitted rather than silently ignored.
+    meaning across sources and are omitted rather than silently ignored.
     ``topic_query`` does generalise — it is applied within each source — and a
     source it matches nothing in is skipped rather than failing the batch.
     """
@@ -97,14 +97,27 @@ class ProductExportRequest(BaseModel):
     format: str = "markdown"
     include_images: bool = False
     topic_query: str | None = None
+
+
+class ProductExportRequest(_BatchExportOptions):
+    """Export every source of a product, as one job per source."""
+
     # Restrict to a subset of the product's sources; None/empty = all of them.
     source_ids: list[uuid.UUID] | None = None
+
+
+class VendorExportRequest(_BatchExportOptions):
+    """Export every source of the chosen products of a vendor, as one job per source."""
+
+    # Restrict to a subset of the vendor's products; None/empty = all of them.
+    product_ids: list[uuid.UUID] | None = None
 
 
 class BatchSourceStatus(BaseModel):
     job_id: uuid.UUID
     source_id: uuid.UUID
     source_name: str
+    product_name: str = ""
     seq: int
     status: str
     export_id: uuid.UUID | None = None
@@ -151,3 +164,24 @@ class ProductExportPreview(BaseModel):
     image_bytes: int
     # markdown_bytes + (image_bytes when images are included)
     projected_bytes: int
+
+
+class VendorExportProduct(BaseModel):
+    """One product's share of a vendor export, so the operator can weigh each
+    product before choosing which to include."""
+
+    product_id: uuid.UUID
+    name: str
+    source_count: int
+    exportable_source_count: int
+    skipped: list[str] = []
+    total_articles: int
+    markdown_bytes: int
+    image_bytes: int
+
+
+class VendorExportPreview(BaseModel):
+    vendor_id: uuid.UUID
+    label: str
+    # Totals are left to the client: they depend on which products are ticked.
+    products: list[VendorExportProduct]

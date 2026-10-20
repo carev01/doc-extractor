@@ -697,10 +697,30 @@ export interface ProductExportPreview {
   projected_bytes: number;
 }
 
+export interface VendorExportProduct {
+  product_id: string;
+  name: string;
+  source_count: number;
+  exportable_source_count: number;
+  skipped: string[];
+  total_articles: number;
+  markdown_bytes: number;
+  image_bytes: number;
+}
+
+/** Per-product breakdown; totals depend on which products are ticked. */
+export interface VendorExportPreview {
+  vendor_id: string;
+  label: string;
+  products: VendorExportProduct[];
+}
+
 export interface BatchSourceStatus {
   job_id: string;
   source_id: string;
   source_name: string;
+  /** Owning product; a vendor export spans several. */
+  product_name: string;
   seq: number;
   status: string;
   export_id: string | null;
@@ -741,4 +761,9 @@ export interface ProductExportOptions {
   include_images?: boolean;
   topic_query?: string | null;
   source_ids?: string[] | null;
+}
+
+export interface VendorExportOptions extends Omit<ProductExportOptions, "source_ids"> {
+  /** Subset of the vendor's products; omitted/empty = all of them. */
+  product_ids?: string[] | null;
 }

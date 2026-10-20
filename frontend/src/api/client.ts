@@ -12,6 +12,8 @@ import type {
   ProductExportCreated,
   ProductExportOptions,
   ExportBatch,
+  VendorExportOptions,
+  VendorExportPreview,
   DocumentationSource,
   SourceList,
   ArticleDetail,
@@ -755,12 +757,29 @@ export async function createProductExport(
   return res.data;
 }
 
+// ── Vendor-level (batch) export ──────────────────────────────────────────────
+
+export async function previewVendorExport(vendorId: string): Promise<VendorExportPreview> {
+  const res = await api.get(`/export/vendor/${vendorId}/preview`);
+  return res.data;
+}
+
+/** Enqueue one export job per source across the chosen products of a vendor. */
+export async function createVendorExport(
+  vendorId: string,
+  options: VendorExportOptions,
+): Promise<ProductExportCreated> {
+  const res = await api.post(`/export/vendor/${vendorId}`, options);
+  return res.data;
+}
+
 export async function getExportBatch(batchId: string): Promise<ExportBatch> {
   const res = await api.get(`/export/batches/${batchId}`);
   return res.data;
 }
 
-/** Download the combined zip for a product export — a folder per source.
+/** Download the combined zip for a batch export — a folder per source (under a
+ *  folder per product for a vendor export).
  *  Goes through axios like every other export download: the API needs the auth
  *  header, and a bare <a href> would save the 401 JSON as an unusable "file". */
 export async function downloadExportBatch(batchId: string): Promise<void> {

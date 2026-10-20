@@ -1,16 +1,32 @@
 import { useCallback, useEffect, useState } from "react";
-import type { ExportBatch, ProductExportPreview } from "../types";
+import type { ExportBatch, VendorExportProduct } from "../types";
 import {
   createProductExport,
+  createVendorExport,
   downloadExportBatch,
   getExportBatch,
   previewProductExport,
+  previewVendorExport,
 } from "../api/client";
 
+/** What the batch covers: every source of one product, or of the chosen
+ *  products of a vendor. Both fan out to one ordinary export job per source. */
+export type BatchScope =
+  | { kind: "product"; id: string; name: string }
+  | { kind: "vendor"; id: string; name: string };
+
 interface Props {
-  productId: string;
-  productName: string;
+  scope: BatchScope;
   onClose: () => void;
+}
+
+/** The numbers the dialog shows, whichever scope produced them. */
+interface Projection {
+  sources: number;
+  articles: number;
+  markdownBytes: number;
+  imageBytes: number;
+  skipped: string[];
 }
 
 const STATUS_CLASS: Record<string, string> = {
@@ -33,32 +49,71 @@ function humanBytes(n: number): string {
   return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
 }
 
-export default function ProductExportModal({ productId, productName, onClose }: Props) {
+export default function BatchExportModal({ scope, onClose }: Props) {
   const [format, setFormat] = useState<"markdown" | "pdf">("markdown");
   const [includeImages, setIncludeImages] = useState(false);
   const [splitBy, setSplitBy] = useState<"" | "size" | "articles" | "tokens">("");
   const [splitValue, setSplitValue] = useState(50);
   const [respectChapters, setRespectChapters] = useState(false);
-  const [preview, setPreview] = useState<ProductExportPreview | null>(null);
+  const [projection, setProjection] = useState<Projection | null>(null);
+  const [products, setProducts] = useState<VendorExportProduct[] | null>(null);
+  // Exclusions rather than a selection, so "everything" needs no initialisation
+  // once the preview lands.
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [batch, setBatch] = useState<ExportBatch | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const what = scope.kind === "product" ? "product" : "vendor";
 
   // Project the size before committing the worker to it. Image payloads dwarf
   // the text, so this is the number worth seeing first.
   useEffect(() => {
     let cancelled = false;
-    previewProductExport(productId, includeImages)
-      .then((p) => {
-        if (!cancelled) setPreview(p);
-      })
-      .catch(() => {
-        if (!cancelled) setError("Could not read this product's sources");
-      });
+    const load =
+      scope.kind === "product"
+        ? previewProductExport(scope.id, false).then((p) => {
+            if (cancelled) return;
+            setProjection({
+              sources: p.exportable_source_count,
+              articles: p.total_articles,
+              markdownBytes: p.markdown_bytes,
+              imageBytes: p.image_bytes,
+              skipped: p.skipped,
+            });
+          })
+        : previewVendorExport(scope.id).then((p) => {
+            if (!cancelled) setProducts(p.products);
+          });
+    load.catch(() => {
+      if (!cancelled) setError(`Could not read this ${what}'s sources`);
+    });
     return () => {
       cancelled = true;
     };
-  }, [productId, includeImages]);
+  }, [scope.kind, scope.id, what]);
+
+  // A vendor's totals follow the ticked products; derived, not stored.
+  const chosen = (products ?? []).filter(
+    (p) => p.exportable_source_count > 0 && !excluded.has(p.product_id),
+  );
+  const preview: Projection | null =
+    scope.kind === "product"
+      ? projection
+      : products && {
+          sources: chosen.reduce((n, p) => n + p.exportable_source_count, 0),
+          articles: chosen.reduce((n, p) => n + p.total_articles, 0),
+          markdownBytes: chosen.reduce((n, p) => n + p.markdown_bytes, 0),
+          imageBytes: chosen.reduce((n, p) => n + p.image_bytes, 0),
+          skipped: chosen.flatMap((p) => p.skipped.map((s) => `${p.name} / ${s}`)),
+        };
+
+  const toggle = (id: string) =>
+    setExcluded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   const refresh = useCallback(async (id: string) => {
     try {
@@ -83,7 +138,7 @@ export default function ProductExportModal({ productId, productName, onClose }: 
     setBusy(true);
     setError("");
     try {
-      const created = await createProductExport(productId, {
+      const options = {
         format,
         include_images: format === "pdf" ? false : includeImages,
         split_by: splitBy || null,
@@ -91,7 +146,14 @@ export default function ProductExportModal({ productId, productName, onClose }: 
         max_file_size_bytes: splitBy === "size" ? splitValue * 1024 * 1024 : null,
         max_tokens_per_file: splitBy === "tokens" ? splitValue * 1000 : null,
         respect_chapters: respectChapters,
-      });
+      };
+      const created =
+        scope.kind === "product"
+          ? await createProductExport(scope.id, options)
+          : await createVendorExport(scope.id, {
+              ...options,
+              product_ids: chosen.map((p) => p.product_id),
+            });
       await refresh(created.batch_id);
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data
@@ -104,22 +166,54 @@ export default function ProductExportModal({ productId, productName, onClose }: 
 
   const sizeNote =
     preview && format === "markdown"
-      ? `${humanBytes(preview.projected_bytes)}${
-          includeImages ? "" : ` text only — images would add ${humanBytes(preview.image_bytes)}`
-        }`
+      ? includeImages
+        ? humanBytes(preview.markdownBytes + preview.imageBytes)
+        : `${humanBytes(preview.markdownBytes)} text only — images would add ${humanBytes(
+            preview.imageBytes,
+          )}`
       : null;
 
   return (
     <div className="picker-backdrop" onClick={onClose}>
       <div className="picker-panel is-wide" onClick={(e) => e.stopPropagation()}>
-        <h3>Export all sources — {productName}</h3>
+        <h3>
+          {scope.kind === "product" ? "Export all sources" : "Export vendor"} — {scope.name}
+        </h3>
 
         {!batch && (
           <>
+            {scope.kind === "vendor" && products && (
+              <ul className="bump-plan">
+                {products.map((p) => {
+                  const empty = p.exportable_source_count === 0;
+                  return (
+                    <li key={p.product_id} className="bump-plan-row">
+                      <label className="chapter-toggle">
+                        <input
+                          type="checkbox"
+                          disabled={empty}
+                          checked={!empty && !excluded.has(p.product_id)}
+                          onChange={() => toggle(p.product_id)}
+                        />
+                        <span className="bump-plan-name">{p.name}</span>
+                        <span className="hint">
+                          {" "}
+                          —{" "}
+                          {empty
+                            ? "no articles yet"
+                            : `${p.exportable_source_count} source(s), ${p.total_articles.toLocaleString()} articles, ${humanBytes(
+                                p.markdown_bytes,
+                              )}`}
+                        </span>
+                      </label>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
             {preview ? (
               <p className="muted">
-                {preview.exportable_source_count} source(s),{" "}
-                {preview.total_articles.toLocaleString()} articles
+                {preview.sources} source(s), {preview.articles.toLocaleString()} articles
                 {sizeNote ? ` · ~${sizeNote}` : ""}
                 {preview.skipped.length > 0 && (
                   <>
@@ -131,7 +225,7 @@ export default function ProductExportModal({ productId, productName, onClose }: 
                 )}
               </p>
             ) : (
-              <p className="muted">Reading this product's sources…</p>
+              <p className="muted">Reading this {what}'s sources…</p>
             )}
 
             <div className="export-row">
@@ -181,7 +275,7 @@ export default function ProductExportModal({ productId, productName, onClose }: 
                 />
                 Include images
                 {preview && (
-                  <span className="hint"> — adds {humanBytes(preview.image_bytes)}</span>
+                  <span className="hint"> — adds {humanBytes(preview.imageBytes)}</span>
                 )}
               </label>
             )}
@@ -211,7 +305,10 @@ export default function ProductExportModal({ productId, productName, onClose }: 
               {batch.sources.map((s) => (
                 <li key={s.job_id} className="bump-plan-row">
                   <div className="bump-plan-head">
-                    <span className="bump-plan-name">{s.source_name}</span>
+                    <span className="bump-plan-name">
+                      {scope.kind === "vendor" ? `${s.product_name} / ` : ""}
+                      {s.source_name}
+                    </span>
                     <span className={`status-badge ${STATUS_CLASS[s.status] ?? "is-muted"}`}>
                       {s.status}
                     </span>
@@ -238,10 +335,14 @@ export default function ProductExportModal({ productId, productName, onClose }: 
             <button
               type="button"
               className="btn-primary"
-              disabled={busy || !preview || preview.exportable_source_count === 0}
+              disabled={busy || !preview || preview.sources === 0}
               onClick={start}
             >
-              {busy ? "Starting…" : "Export all sources"}
+              {busy
+                ? "Starting…"
+                : scope.kind === "product"
+                  ? "Export all sources"
+                  : `Export ${chosen.length} product(s)`}
             </button>
           ) : (
             <button

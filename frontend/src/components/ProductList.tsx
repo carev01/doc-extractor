@@ -3,6 +3,7 @@ import type { Vendor, Product } from "../types";
 import { listProducts, createProduct, updateProduct, deleteProduct } from "../api/client";
 import { apiError } from "../api/errors";
 import type { Access } from "../access";
+import BatchExportModal from "./BatchExportModal";
 
 interface Props {
   vendor: Vendor;
@@ -20,6 +21,7 @@ export default function ProductList({ vendor, onSelect, selectedId, access }: Pr
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [showVendorExport, setShowVendorExport] = useState(false);
 
   const fetchProducts = useCallback(async () => {
     try {
@@ -75,7 +77,27 @@ export default function ProductList({ vendor, onSelect, selectedId, access }: Pr
 
   return (
     <div className="product-list">
-      <h2>Products — {vendor.name}</h2>
+      <div className="product-heading">
+        <h2>Products — {vendor.name}</h2>
+        {/* Exporting only reads, so it is offered to read-only grants too —
+            the same as the per-product "Export all sources". */}
+        {products.length > 1 && (
+          <button
+            type="button"
+            className="btn-secondary-sm"
+            title="Export the sources of several products of this vendor in one go"
+            onClick={() => setShowVendorExport(true)}
+          >
+            Export products
+          </button>
+        )}
+      </div>
+      {showVendorExport && (
+        <BatchExportModal
+          scope={{ kind: "vendor", id: vendor.id, name: vendor.name }}
+          onClose={() => setShowVendorExport(false)}
+        />
+      )}
 
       {error && <div className="error">{error}</div>}
 
