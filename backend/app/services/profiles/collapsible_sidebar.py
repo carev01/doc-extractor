@@ -26,7 +26,7 @@ that their children nest under; a section that is also a page carries its ``<a>`
 """
 
 import re
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 
@@ -34,6 +34,20 @@ from app.services.profiles import registry
 from app.services.profiles.base import TocEntry
 
 _SIDEBAR_SELECTOR = "div[data-slot='sidebar-inner']"
+
+# Navigation-only query parameters dropped from page URLs. The Flex Appliance
+# sidebar appends ?platform=Veritas%20<model> to every link; the scraped body is
+# identical with no parameter, 5340 or 5372 (measured on 8 pages), and the model
+# the site picks is not stable (landing 5372, sidebar 5340) — kept, it would make
+# every article's URL and topic_key flip with the vendor's default.
+_NAV_ONLY_PARAMS = {"platform"}
+
+
+def _page_url(href: str, root_url: str) -> str:
+    parts = urlsplit(urljoin(root_url, href))
+    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+             if k not in _NAV_ONLY_PARAMS]
+    return urlunsplit(parts._replace(query=urlencode(query)))
 
 # ── zDocs URL grammar ────────────────────────────────────────────────────────
 # This platform addresses a page as
@@ -89,7 +103,7 @@ def parse_collapsible_sidebar(html: str, root_url: str) -> list[TocEntry]:
         btn = li.find("button", attrs={"data-slot": "collapsible-trigger"})
         el = a or btn
         title = el.get_text(strip=True) if el else ""
-        url = urljoin(root_url, a["href"]) if a else None
+        url = _page_url(a["href"], root_url) if a else None
         return title, url
 
     def walk(ul, level: int, parent_url: str | None) -> None:

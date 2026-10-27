@@ -141,3 +141,23 @@ async def test_build_toc_falls_back_to_single_render_without_browserless():
     by_title = {e.title: e for e in toc}
     assert by_title["Quick Start"].is_article is True
     assert by_title["Admin Guide"].url is None
+
+
+def test_platform_query_is_not_part_of_a_page_url():
+    # The Flex Appliance sidebar appends ?platform=Veritas%20<model> to every link.
+    # It only drives the site's navigation — the scraped body is identical with no
+    # parameter, 5340 or 5372 (measured on 8 pages) — and the model it picks is not
+    # stable (the landing page defaults to 5372, this sidebar used 5340), so keeping
+    # it would make every article's identity flip with the vendor's default.
+    html = """
+    <div data-slot="sidebar-inner"><div data-slot="sidebar-content">
+      <ul data-slot="sidebar-menu">
+        <li data-slot="sidebar-menu-item"><a href="/docs/flexappliances/8.0/1-2-0/v3-2?platform=Veritas%205340">Overview</a></li>
+        <li data-slot="sidebar-menu-item"><a href="/docs/flexappliances/8.0/1-2-0/v4-2?platform=Veritas%205372&amp;lang=en">Keep</a></li>
+      </ul>
+    </div></div>"""
+    urls = [e.url for e in parse_collapsible_sidebar(html, "https://docs.cohesity.com/docs/flexappliances/8.0/1-2-0")]
+    assert urls == [
+        "https://docs.cohesity.com/docs/flexappliances/8.0/1-2-0/v3-2",
+        "https://docs.cohesity.com/docs/flexappliances/8.0/1-2-0/v4-2?lang=en",
+    ]
