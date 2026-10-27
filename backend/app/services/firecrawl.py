@@ -15,7 +15,8 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
-from sqlalchemy import bindparam, delete, func, select, text, update
+from sqlalchemy import bindparam, delete, exists, func, select, text, update
+from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -2117,11 +2118,23 @@ class FirecrawlService:
         # article's, so a section relinks to its own entry instead of an arbitrary
         # sibling. For web sources (one TOC entry per URL) there is a single
         # candidate, so the title ordering is a no-op.
+        #
+        # Only to an entry no other article already holds. Every article this run
+        # processed is linked by now, so an unlinked article that shares its URL
+        # is a stale twin (same page, different topic_key — the literal-version
+        # rows a bad run left behind) or a removed row. Linking it too kept the
+        # twin live forever and revived the removed row, re-linked next to the
+        # real article on every run: production had 14,511 such pairs on CommCell
+        # Console and 356 on Arcserve RHA. Left unlinked, it is removed below like
+        # any page gone from the TOC. A resumed run's skipped pages are unaffected
+        # — nothing else holds their entry.
+        holder = aliased(Article)
         relink = (
             select(TOCEntry.id)
             .where(
                 TOCEntry.source_id == source_id,
                 TOCEntry.url == Article.source_url,
+                ~exists().where(holder.toc_entry_id == TOCEntry.id),
             )
             .order_by((TOCEntry.title == Article.title).desc())
             .limit(1)

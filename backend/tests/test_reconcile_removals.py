@@ -162,3 +162,62 @@ async def test_same_url_articles_keep_distinct_toc_links(db):
     assert rows["k1"].toc_entry_id == te1.id
     assert rows["k2"].toc_entry_id == te2.id
     assert rows["k1"].removed_at is None and rows["k2"].removed_at is None
+
+
+# ── a URL already owned by a live article ───────────────────────────────────
+# The relink fallback used to link EVERY unlinked article to the TOC entry with
+# its URL, so a stale twin (same URL, different topic_key — e.g. the literal-
+# version rows a bad run left behind) was re-linked next to the real article on
+# every run and never removed, and a removed row sharing the URL was revived.
+# Production on 2026-10-27: CommCell Console 14,511 live duplicate pairs,
+# Arcserve RHA 356, NetBackup Flex 1 revived "Index" row.
+
+def _keyed(source_id, url, key, toc_entry_id=None, removed=False):
+    from datetime import datetime, timezone
+    a = _article(source_id, url, toc_entry_id=toc_entry_id)
+    a.topic_key = key
+    if removed:
+        a.removed_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    return a
+
+
+@pytest.mark.asyncio
+async def test_stale_twin_of_a_linked_article_is_removed_not_relinked(db):
+    from app.models.content_change import ContentChange
+    source_id = await _source(db)
+    run_id = await _run(db, source_id)
+    te = _toc(source_id, "http://x/a", 0)
+    db.add(te)
+    await db.flush()
+    real = _keyed(source_id, "http://x/a", "http://x/{version}/a", toc_entry_id=te.id)
+    stale = _keyed(source_id, "http://x/a", "http://x/11.40/a")
+    db.add_all([real, stale])
+    await db.commit()
+
+    await firecrawl_service._reconcile_removals(db, source_id, run_id)
+
+    await db.refresh(real); await db.refresh(stale)
+    assert real.removed_at is None and real.toc_entry_id == te.id
+    assert stale.toc_entry_id is None
+    assert stale.removed_at is not None and stale.removal_run_id == run_id
+    tomb = (await db.execute(select(ContentChange).where(ContentChange.article_id == stale.id))).scalars().all()
+    assert [t.change_type for t in tomb] == ["removed"]
+
+
+@pytest.mark.asyncio
+async def test_removed_row_sharing_an_owned_url_is_not_revived(db):
+    source_id = await _source(db)
+    run_id = await _run(db, source_id)
+    te = _toc(source_id, "http://x/a", 0)
+    db.add(te)
+    await db.flush()
+    real = _keyed(source_id, "http://x/a", "http://x/{version}/a", toc_entry_id=te.id)
+    ghost = _keyed(source_id, "http://x/a", "http://x/a#index", removed=True)
+    db.add_all([real, ghost])
+    await db.commit()
+
+    await firecrawl_service._reconcile_removals(db, source_id, run_id)
+
+    await db.refresh(ghost)
+    assert ghost.removed_at is not None, "a removed row must not be revived onto a URL a live article owns"
+    assert ghost.toc_entry_id is None
