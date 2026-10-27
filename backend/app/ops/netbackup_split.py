@@ -36,6 +36,7 @@ from app.services.profiles.collapsible_sidebar import CollapsibleSidebarProfile
 from app.services.versioning import VERSION_PLACEHOLDER, derive_topic_key
 
 _BATCH = 1000
+_REQUIRED_INDEXES = ("ix_article_versions_article_id", "ix_article_images_article_id")
 
 DEFAULT_SOURCE_ID = uuid.UUID("cb3a6f6a-f51e-414e-b2ec-64eb9a2217b5")
 EXPECTED_VERSION = "11.2.0.1"
@@ -263,6 +264,17 @@ async def apply_split(db: AsyncSession, source_id: uuid.UUID, plan: SplitPlan) -
     # Same lock as other out-of-band outbox writers, so outbox ids cannot
     # interleave with a concurrent source deletion's commit order.
     await db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": change_log._DELETION_LOCK_KEY})
+
+    # The cascaded article deletes need these FK indexes (migration a7b8c9d0e1f2):
+    # without them each deleted row seq-scans article_versions, and on a
+    # production copy the split ran past ten minutes holding its locks.
+    valid = set((await db.execute(text(
+        "SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+        "WHERE c.relname = ANY(:names) AND i.indisvalid"
+    ), {"names": list(_REQUIRED_INDEXES)})).scalars())
+    missing = sorted(set(_REQUIRED_INDEXES) - valid)
+    if missing:
+        raise SplitAborted(f"missing or invalid index(es) {missing}: deploy migration a7b8c9d0e1f2 first")
 
     active = (await db.execute(
         select(func.count()).select_from(ExtractionRun).where(ExtractionRun.status.in_(_ACTIVE))

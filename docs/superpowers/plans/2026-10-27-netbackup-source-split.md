@@ -158,12 +158,12 @@ No code. Deliverable: a dry-run and an applied run on a local copy, both clean.
 ### Task 6: Production phase 1 (owner OK required)
 
 - [ ] **Step 1:** Confirm no active runs (`GET /api/extraction/runs?limit=20`), and that `prod.dump` from Task 5 is newer than the last completed run; otherwise take a fresh dump.
-- [ ] **Step 2:** Copy the module into the worker: `kubectl cp backend/app/ops/netbackup_split.py <worker>:/tmp/netbackup_split.py -c worker`; dry run: `kubectl exec <worker> -c worker -- sh -c 'cd /app && PYTHONPATH=/app python /tmp/netbackup_split.py'` — expect the same counts as the rehearsal (± changes since the snapshot).
-- [ ] **Step 3:** **Ask the owner for the go-ahead**, then rerun with `--apply`. Expect the `SplitResult` and exit 0.
+- [ ] **Step 2:** (Final-review fix I2/I3.) With the owner's OK, merge the PR and deploy it (Helm, image tags pinned to the merge sha): the `migrate` init container applies `a7b8c9d0e1f2`, and the ops modules ship in the image. Confirm `alembic current` = `a7b8c9d0e1f2` and both `ix_article_*_article_id` indexes are valid; `apply_split` also refuses without them. Dry run in the worker: `kubectl exec deploy/docextractor-worker -c worker -- python -m app.ops.netbackup_split` — expect the rehearsal's counts (± changes since the snapshot).
+- [ ] **Step 3:** **Ask the owner for the go-ahead**, then rerun with `--apply` (`python -m app.ops.netbackup_split --apply`). Expect the `SplitResult` and exit 0.
 - [ ] **Step 4:** Verify via API: 34 sources under the NetBackup product; original has 0 live; `GET /api/articles/delta` tail shows `updated` rows with new `source_id`s.
 
 ### Task 7: Production phase 2 + phase 3
 
-- [ ] **Step 1:** Run the phase-2 runner (from this machine, against the API): `DOCEXTRACTOR_API_KEY=… .venv/bin/python -m app.ops.split_phase2`. Expect 33 completed runs, each ~all unchanged. On a stop: report the run's numbers and investigate before continuing (systematic-debugging).
+- [ ] **Step 1:** Run the phase-2 runner in the worker (it needs the DB for live and outbox counts): `kubectl exec deploy/docextractor-worker -c worker -- env DOCEXTRACTOR_API_KEY=… python -m app.ops.split_phase2`. Stop rule judges each run by its own outbox rows (added/updated/removed). Expect 33 completed runs, each ~all unchanged. On a stop: report the run's numbers and investigate before continuing (systematic-debugging).
 - [ ] **Step 2:** **Ask the owner for the go-ahead** to delete the original source; then `DELETE /api/sources/cb3a6f6a-f51e-414e-b2ec-64eb9a2217b5`. Verify it emitted 0 `removed` rows (no live articles were left) and the 33 sources are intact.
 - [ ] **Step 3:** Update memory (`cohesity-flex-single-page.md`) with the outcome, and clean up `/tmp` files in the worker and the scratchpad dump.

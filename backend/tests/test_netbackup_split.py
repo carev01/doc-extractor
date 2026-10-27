@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -28,7 +28,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import json
 
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import func
 
 from app.core.config import settings
 from app.core.database import Base, get_db
@@ -288,3 +287,13 @@ async def test_apply_run_commits(corpus):
     result = await run(TEST_DATABASE_URL, corpus.source_id, apply=True, guides=corpus.guides)
     async with corpus.factory() as s:
         assert (await s.get(Article, corpus.L1)).source_id == result.source_ids[SC]
+
+
+async def test_apply_refuses_without_the_child_fk_indexes(corpus):
+    # Without them every cascaded article delete seq-scans article_versions; on a
+    # production copy the split's bulk delete ran past ten minutes.
+    async with corpus.factory() as s:
+        await s.execute(text("DROP INDEX ix_article_versions_article_id"))
+        await s.commit()
+    with pytest.raises(SplitAborted, match="ix_article_versions_article_id"):
+        await _apply(corpus)
