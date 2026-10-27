@@ -38,7 +38,7 @@ from app.models import (
 )
 from app.models.content_change import ContentChange
 from app.models.toc import TOCEntry
-from app.ops.netbackup_split import Guide, SplitAborted, apply_split, build_split_plan
+from app.ops.netbackup_split import Guide, SplitAborted, apply_split, build_split_plan, run
 from app.schemas.delta import encode_delta_cursor
 from app.services.versioning import derive_topic_key
 
@@ -271,3 +271,20 @@ async def test_delta_feed_serves_the_move(corpus):
     assert (l1["parent_chapter"], l1["top_level_chapter"]) == ("H", "H")
     assert l1["content_changed_at"].startswith("2026-08-30")
     assert by_id[str(corpus.L2)]["top_level_chapter"] == "RN page"
+
+
+# ── CLI ──────────────────────────────────────────────────────────────────────
+
+async def test_dry_run_writes_nothing(corpus):
+    result = await run(TEST_DATABASE_URL, corpus.source_id, apply=False, guides=corpus.guides)
+    assert result.moved == 2
+    async with corpus.factory() as s:
+        assert (await s.execute(select(func.count()).select_from(DocumentationSource))).scalar_one() == 1
+        assert (await s.get(Article, corpus.L1)).source_id == corpus.source_id
+        assert await s.get(Article, corpus.T1a) is not None
+
+
+async def test_apply_run_commits(corpus):
+    result = await run(TEST_DATABASE_URL, corpus.source_id, apply=True, guides=corpus.guides)
+    async with corpus.factory() as s:
+        assert (await s.get(Article, corpus.L1)).source_id == result.source_ids[SC]

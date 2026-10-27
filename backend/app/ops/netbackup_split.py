@@ -414,3 +414,53 @@ async def apply_split(db: AsyncSession, source_id: uuid.UUID, plan: SplitPlan) -
         versions_repointed=repointed, deleted=len(folded_all) + len(plan.retired),
         toc_moved=len(moves), outbox=len(outbox),
     )
+
+
+async def run(db_url: str, source_id: uuid.UUID, apply: bool,
+              guides: Sequence[Guide] = GUIDES) -> SplitResult:
+    """Plan and perform the split. A dry run (``apply=False``) executes the real
+    apply — every write and postcondition — and then rolls back."""
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    url = make_url(db_url)
+    print(f"target: {url.host}:{url.port}/{url.database}  mode: {'APPLY' if apply else 'dry run'}")
+    engine = create_async_engine(db_url, poolclass=NullPool)
+    try:
+        async with AsyncSession(engine, expire_on_commit=False) as db:
+            plan = await build_split_plan(db, source_id, guides)
+            print("plan:", plan.counts())
+            try:
+                result = await apply_split(db, source_id, plan)
+            except BaseException:
+                await db.rollback()
+                raise
+            if apply:
+                await db.commit()
+            else:
+                await db.rollback()
+            print("result:", {k: v for k, v in result.__dict__.items() if k != "source_ids"},
+                  f"({len(result.source_ids)} sources)", "COMMITTED" if apply else "ROLLED BACK")
+            return result
+    finally:
+        await engine.dispose()
+
+
+if __name__ == "__main__":
+    import argparse
+    import asyncio
+    import sys
+
+    from app.core.config import settings
+
+    ap = argparse.ArgumentParser(description="Split the NetBackup source per publication (one-off).")
+    ap.add_argument("--db-url", default=settings.database_url)
+    ap.add_argument("--source-id", type=uuid.UUID, default=DEFAULT_SOURCE_ID)
+    ap.add_argument("--apply", action="store_true", help="commit (default: dry run, rolled back)")
+    args = ap.parse_args()
+    try:
+        asyncio.run(run(args.db_url, args.source_id, args.apply))
+    except SplitAborted as exc:
+        print(f"ABORTED: {exc}", file=sys.stderr)
+        sys.exit(1)
