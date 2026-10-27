@@ -25,6 +25,7 @@ class ArticleVersion(Base):
         UUID(as_uuid=True),
         ForeignKey("articles.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
     )
     extraction_run_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),

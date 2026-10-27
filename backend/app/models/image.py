@@ -20,6 +20,7 @@ class ArticleImage(Base):
         UUID(as_uuid=True),
         ForeignKey("articles.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
     )
 
     original_url: Mapped[str] = mapped_column(String(2048), nullable=False)
