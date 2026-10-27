@@ -316,8 +316,18 @@ export default async function ({ page, context }) {
       }
     }
   }
-  await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
-  await page.waitForSelector("[data-slot='sidebar-inner']", { timeout: 30000 });
+  // Tolerate a networkidle2 timeout: Flex Appliances pages keep prefetching and
+  // never go idle, so the throw failed the whole script at 60s.
+  try { await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 }); } catch (e) {}
+  // sidebar-inner is server-rendered as a loading skeleton, so waiting for it
+  // alone returned before the menu mounted (0 triggers → a 1-page TOC). Wait
+  // for the content menu itself, with no skeleton left.
+  await page.waitForFunction(() => {
+    const sb = document.querySelector("[data-slot='sidebar-inner']");
+    return !!sb
+      && !sb.querySelector("[data-slot='skeleton']")
+      && !!sb.querySelector("[data-slot='sidebar-content'] ul[data-slot='sidebar-menu']");
+  }, { timeout: 30000 });
   let rounds = 0;
   while (rounds++ < 120) {
     const clicked = await page.evaluate(() => {

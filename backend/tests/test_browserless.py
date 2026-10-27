@@ -233,3 +233,23 @@ def test_download_and_warmup_snippets_spoof_a_real_ua():
         assert "page.setUserAgent(" in code
         assert "HeadlessChrome" not in code
         assert "Chrome/" in code  # a normal desktop Chrome token
+
+
+def test_collapsible_expand_tolerates_a_navigation_that_never_goes_idle():
+    # docs.cohesity.com/docs/flexappliances never reaches networkidle2 (it keeps
+    # prefetching), so an unguarded goto threw at 60s and failed the script.
+    from app.services.browserless import _COLLAPSIBLE_EXPAND_CODE as code
+
+    goto = code.index("page.goto(url,")
+    assert "try {" in code[code.rindex("\n", 0, goto):goto]
+
+
+def test_collapsible_expand_waits_for_the_mounted_menu_not_the_skeleton():
+    # The server-rendered sidebar-inner is a loading skeleton, so waiting for it
+    # alone returned before the menu mounted: 0 triggers, 0 entries, 1-page TOC.
+    from app.services.browserless import _COLLAPSIBLE_EXPAND_CODE as code
+
+    assert "waitForSelector(\"[data-slot='sidebar-inner']\"" not in code
+    wait = code[code.index("waitForFunction"):code.index("let rounds")]
+    assert "[data-slot='sidebar-content'] ul[data-slot='sidebar-menu']" in wait
+    assert "[data-slot='skeleton']" in wait
