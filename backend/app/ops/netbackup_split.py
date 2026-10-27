@@ -20,15 +20,22 @@ import re
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import bindparam, delete, func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Article, DocumentationSource, Product
+from app.core.sql import any_of
+from app.models import Article, ArticleVersion, DocumentationSource, ExtractionRun, Product
+from app.models.content_change import ChangeType, ContentChange
 from app.models.toc import TOCEntry
+from app.services import change_log
+from app.services.delta_feed import _ACTIVE
 from app.services.profiles.collapsible_sidebar import CollapsibleSidebarProfile
 from app.services.versioning import VERSION_PLACEHOLDER, derive_topic_key
+
+_BATCH = 1000
 
 DEFAULT_SOURCE_ID = uuid.UUID("cb3a6f6a-f51e-414e-b2ec-64eb9a2217b5")
 EXPECTED_VERSION = "11.2.0.1"
@@ -223,3 +230,187 @@ async def build_split_plan(
             below = pubs_below(t)
             plan.toc[t.id] = next(iter(below)) if len(below) == 1 and below <= sources.keys() else None
     return plan
+
+
+@dataclass
+class SplitResult:
+    source_ids: dict[str, uuid.UUID]
+    moved: int
+    versions_added: int
+    versions_repointed: int
+    deleted: int
+    toc_moved: int
+    outbox: int
+
+
+def _batches(items: list, n: int = _BATCH):
+    for i in range(0, len(items), n):
+        yield items[i:i + n]
+
+
+async def _executemany(db: AsyncSession, stmt, params: list[dict]) -> None:
+    for chunk in _batches(params):
+        await db.execute(stmt, chunk)
+
+
+async def apply_split(db: AsyncSession, source_id: uuid.UUID, plan: SplitPlan) -> SplitResult:
+    """Perform the split described by *plan* in the caller's transaction.
+
+    Never commits: every postcondition is checked here and a failure raises
+    SplitAborted, so the caller rolls back and nothing is left half-split. Bulk
+    writes go through Core executemany on the tables (an ORM bulk update by a
+    parameter list keys only on the primary key and has bitten this codebase)."""
+    # Same lock as other out-of-band outbox writers, so outbox ids cannot
+    # interleave with a concurrent source deletion's commit order.
+    await db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": change_log._DELETION_LOCK_KEY})
+
+    active = (await db.execute(
+        select(func.count()).select_from(ExtractionRun).where(ExtractionRun.status.in_(_ACTIVE))
+    )).scalar_one()
+    if active:
+        raise SplitAborted(f"{active} active extraction run(s); refusing to split during a run")
+    original = await db.get(DocumentationSource, source_id)
+    live_left = (await db.execute(
+        select(func.count()).select_from(Article)
+        .where(Article.source_id == source_id, Article.removed_at.is_(None))
+    )).scalar_one()
+    if not live_left:
+        raise SplitAborted("original source has no live articles — already split?")
+    names = [ns.name for ns in plan.sources.values()]
+    clash = (await db.execute(
+        select(DocumentationSource.name).where(
+            DocumentationSource.product_id == plan.product_id, DocumentationSource.name.in_(names))
+    )).scalars().all()
+    if clash:
+        raise SplitAborted(f"sources already exist under the product: {sorted(clash)[:3]}")
+    fresh = await build_split_plan(db, source_id, [
+        Guide(ns.pub, ns.base_url.rsplit("-", 2)[-2], ns.name) for ns in plan.sources.values()])
+    if fresh.counts() != plan.counts():
+        raise SplitAborted(f"corpus drifted since planning: {plan.counts()} -> {fresh.counts()}")
+
+    live_ids = list(plan.live)
+    changed_before = dict((await db.execute(
+        select(Article.id, Article.content_changed_at).where(any_of(Article.id, live_ids))
+    )).all())
+
+    # 1. The new sources.
+    source_ids: dict[str, uuid.UUID] = {}
+    for pub, ns in plan.sources.items():
+        new = DocumentationSource(
+            product_id=plan.product_id, name=ns.name, base_url=ns.base_url,
+            url_template=ns.url_template, platform="collapsible_sidebar",
+            source_type=original.source_type, profile_config=original.profile_config,
+            auth_realm_id=original.auth_realm_id,
+        )
+        db.add(new)
+        await db.flush()
+        source_ids[pub] = new.id
+
+    # 2. TOC entries follow their guide; one whose parent stayed behind (a
+    # cross-guide root) becomes a root, or ChapterResolver — which only loads the
+    # article's own source's entries — would walk to a parent it cannot see.
+    toc = TOCEntry.__table__
+    parents = dict((await db.execute(
+        select(TOCEntry.id, TOCEntry.parent_id).where(TOCEntry.source_id == source_id)
+    )).all())
+    moves = [{"_id": tid, "_src": source_ids[pub],
+              "_parent": parents[tid] if parents[tid] is not None and plan.toc.get(parents[tid]) == pub else None}
+             for tid, pub in plan.toc.items() if pub is not None]
+    await _executemany(db, update(toc).where(toc.c.id == bindparam("_id"))
+                       .values(source_id=bindparam("_src"), parent_id=bindparam("_parent")), moves)
+
+    # 3. Fold prior copies into the survivor's history, oldest first.
+    art, ver = Article.__table__, ArticleVersion.__table__
+    survivors = list(plan.history)
+    folded_all = [fid for ids in plan.history.values() for fid in ids]
+    repointed = added = 0
+    for chunk in _batches(survivors, 500):
+        folded = [fid for sid in chunk for fid in plan.history[sid]]
+        rows = {r.id: r for r in (await db.execute(
+            select(art.c.id, art.c.content_markdown, art.c.content_hash, art.c.source_url,
+                   art.c.extracted_at, art.c.extraction_run_id).where(any_of(art.c.id, folded))
+        )).all()}
+        current = dict((await db.execute(
+            select(art.c.id, art.c.content_hash).where(any_of(art.c.id, chunk)))).all())
+        repoint = [{"_old": fid, "_new": sid} for sid in chunk for fid in plan.history[sid]]
+        res = await db.execute(select(func.count()).select_from(ver).where(any_of(ver.c.article_id, folded)))
+        repointed += res.scalar_one()
+        await _executemany(db, update(ver).where(ver.c.article_id == bindparam("_old"))
+                           .values(article_id=bindparam("_new")), repoint)
+        chain: dict[uuid.UUID, list[tuple[datetime, str | None]]] = defaultdict(list)
+        for aid, at, h in (await db.execute(
+            select(ver.c.article_id, ver.c.extracted_at, ver.c.content_hash)
+            .where(any_of(ver.c.article_id, chunk)))).all():
+            chain[aid].append((at, h))
+        new_versions = []
+        for sid in chunk:
+            for fid in plan.history[sid]:
+                r = rows[fid]
+                versions = sorted(chain[sid], key=lambda v: v[0])
+                before = [v for v in versions if v[0] < r.extracted_at]
+                is_newest = not any(v[0] > r.extracted_at for v in versions)
+                if (before and before[-1][1] == r.content_hash) or (
+                        is_newest and r.content_hash == current[sid]):
+                    continue
+                chain[sid].append((r.extracted_at, r.content_hash))
+                new_versions.append({
+                    "id": uuid.uuid4(), "article_id": sid, "extraction_run_id": r.extraction_run_id,
+                    "content_markdown": r.content_markdown, "content_hash": r.content_hash,
+                    "source_url": r.source_url, "extracted_at": r.extracted_at,
+                })
+        if new_versions:
+            await _executemany(db, insert(ver), new_versions)
+            added += len(new_versions)
+    for chunk in _batches(folded_all, 5000):
+        await db.execute(delete(art).where(any_of(art.c.id, chunk)))
+
+    # 4. Live articles and removed survivors move with a key under their guide's template.
+    article_moves = [{"_id": aid, "_src": source_ids[pub], "_key": k}
+                     for aid, (pub, k) in {**plan.live, **plan.removed_moves}.items()]
+    await _executemany(db, update(art).where(art.c.id == bindparam("_id"))
+                       .values(source_id=bindparam("_src"), topic_key=bindparam("_key")), article_moves)
+
+    # 5. Pages of retired publications (already tombstoned on the feed when removed).
+    for chunk in _batches(plan.retired, 5000):
+        await db.execute(delete(art).where(any_of(art.c.id, chunk)))
+
+    # 6. One 'updated' outbox row per moved live article, written directly rather
+    # than through change_log.record_change: a move is not a content mutation, so
+    # content_changed_at must not move (graph-rag dates facts by it).
+    now = datetime.now(timezone.utc)
+    hashes = dict((await db.execute(
+        select(art.c.id, art.c.content_hash).where(any_of(art.c.id, live_ids)))).all())
+    outbox = [{"article_id": aid, "source_id": source_ids[pub], "run_id": None,
+               "change_type": ChangeType.UPDATED.value, "content_hash": hashes[aid],
+               "topic_key": k, "created_at": now} for aid, (pub, k) in plan.live.items()]
+    await _executemany(db, insert(ContentChange.__table__), outbox)
+
+    # Postconditions.
+    new_ids = list(source_ids.values())
+    if (await db.execute(select(func.count()).select_from(art).where(
+            art.c.source_id == source_id, art.c.removed_at.is_(None)))).scalar_one():
+        raise SplitAborted("postcondition: original source still has live articles")
+    moved_live = (await db.execute(select(func.count()).select_from(art).where(
+        any_of(art.c.source_id, new_ids), art.c.removed_at.is_(None)))).scalar_one()
+    if moved_live != len(plan.live):
+        raise SplitAborted(f"postcondition: {moved_live} live articles in new sources, expected {len(plan.live)}")
+    dupes = (await db.execute(select(func.count()).select_from(
+        select(art.c.source_id, art.c.topic_key).where(any_of(art.c.source_id, new_ids))
+        .group_by(art.c.source_id, art.c.topic_key).having(func.count() > 1).subquery()))).scalar_one()
+    if dupes:
+        raise SplitAborted(f"postcondition: {dupes} duplicate (source_id, topic_key) pairs")
+    lacking = (await db.execute(select(func.count()).select_from(art).where(
+        any_of(art.c.id, [s for s in survivors if s in plan.live]),
+        ~select(ver.c.id).where(ver.c.article_id == art.c.id).exists()))).scalar_one()
+    if lacking:
+        raise SplitAborted(f"postcondition: {lacking} live articles with folded history have no version")
+    changed_after = dict((await db.execute(
+        select(art.c.id, art.c.content_changed_at).where(any_of(art.c.id, live_ids)))).all())
+    if changed_after != changed_before:
+        raise SplitAborted("postcondition: content_changed_at moved on a moved article")
+
+    return SplitResult(
+        source_ids=source_ids, moved=len(plan.live), versions_added=added,
+        versions_repointed=repointed, deleted=len(folded_all) + len(plan.retired),
+        toc_moved=len(moves), outbox=len(outbox),
+    )

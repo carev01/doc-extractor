@@ -25,11 +25,21 @@ from sqlalchemy.pool import NullPool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import json
+
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import func
+
 from app.core.config import settings
-from app.core.database import Base
-from app.models import Article, ArticleVersion, DocumentationSource, Product, Vendor
+from app.core.database import Base, get_db
+from app.main import app
+from app.models import (
+    Article, ArticleVersion, DocumentationSource, ExtractionRun, Product, Vendor,
+)
+from app.models.content_change import ContentChange
 from app.models.toc import TOCEntry
-from app.ops.netbackup_split import Guide, SplitAborted, build_split_plan
+from app.ops.netbackup_split import Guide, SplitAborted, apply_split, build_split_plan
+from app.schemas.delta import encode_delta_cursor
 from app.services.versioning import derive_topic_key
 
 TEST_DATABASE_URL = settings.database_url.rsplit("/", 1)[0] + "/docextractor_test"
@@ -163,3 +173,101 @@ async def test_version_mismatch_aborts(corpus):
         await s.commit()
     with pytest.raises(SplitAborted, match="version"):
         await _plan(corpus)
+
+
+# ── apply ────────────────────────────────────────────────────────────────────
+
+async def _apply(c):
+    async with c.factory() as s:
+        plan = await build_split_plan(s, c.source_id, c.guides)
+        result = await apply_split(s, c.source_id, plan)
+        await s.commit()
+        return result
+
+
+async def _versions(c, article_id):
+    async with c.factory() as s:
+        return (await s.execute(
+            select(ArticleVersion.content_markdown).where(ArticleVersion.article_id == article_id)
+            .order_by(ArticleVersion.extracted_at)
+        )).scalars().all()
+
+
+async def test_apply_moves_folds_and_drops(corpus):
+    result = await _apply(corpus)
+    sc_src, rn_src = result.source_ids[SC], result.source_ids[RN]
+    async with corpus.factory() as s:
+        l1 = await s.get(Article, corpus.L1)
+        assert l1.source_id == sc_src
+        assert l1.topic_key == f"{NB}/{{version}}/{SC}-{{rev}}-0/v15098603-{{rev}}"
+        assert (await s.get(Article, corpus.L2)).source_id == rn_src
+        for gone in (corpus.T1a, corpus.T1b, corpus.R1old, corpus.X1):
+            assert await s.get(Article, gone) is None
+        r1 = await s.get(Article, corpus.R1new)
+        assert r1.source_id == sc_src and r1.removed_at is not None
+        new = await s.get(DocumentationSource, sc_src)
+        assert (new.name, new.base_url, new.platform, new.profile_config) == (
+            "Status Codes", f"{NB}/11.2.0.1/{SC}-173488551-0", "collapsible_sidebar", {"k": "v"})
+        assert new.url_template == f"{NB}/{{version}}/{SC}-{{rev}}-0"
+        left = (await s.execute(select(func.count()).select_from(Article).where(
+            Article.source_id == corpus.source_id, Article.removed_at.is_(None)))).scalar_one()
+        assert left == 0
+        assert (await s.get(TOCEntry, corpus.ROOT)).source_id == corpus.source_id
+        h = await s.get(TOCEntry, corpus.H)
+        assert h.source_id == sc_src and h.parent_id is None  # parent ROOT stayed behind
+    assert await _versions(corpus, corpus.L1) == ["T1a v0", "body of T1a", "body of T1b"]
+    assert await _versions(corpus, corpus.R1new) == ["body of R1old"]
+    assert result.moved == 2 and result.outbox == 2
+
+
+async def test_apply_does_not_touch_content_changed_at(corpus):
+    await _apply(corpus)
+    async with corpus.factory() as s:
+        assert (await s.get(Article, corpus.L1)).content_changed_at == T0 + timedelta(days=60)
+
+
+async def test_identical_consecutive_hash_is_not_duplicated(corpus):
+    async with corpus.factory() as s:
+        (await s.get(Article, corpus.T1b)).content_hash = "h-L1"
+        await s.commit()
+    await _apply(corpus)
+    assert await _versions(corpus, corpus.L1) == ["T1a v0", "body of T1a"]
+
+
+async def test_apply_refuses_when_a_run_is_active(corpus):
+    async with corpus.factory() as s:
+        s.add(ExtractionRun(source_id=corpus.source_id, status="running"))
+        await s.commit()
+    with pytest.raises(SplitAborted, match="active"):
+        await _apply(corpus)
+    async with corpus.factory() as s:
+        n = (await s.execute(select(func.count()).select_from(DocumentationSource))).scalar_one()
+        assert n == 1
+
+
+async def test_second_apply_aborts(corpus):
+    await _apply(corpus)
+    with pytest.raises(SplitAborted):
+        await _apply(corpus)
+
+
+async def test_delta_feed_serves_the_move(corpus):
+    async def override_get_db():
+        async with corpus.factory() as session:
+            yield session
+    result = await _apply(corpus)
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.get(f"/api/articles/delta?since={encode_delta_cursor(0)}")
+    finally:
+        app.dependency_overrides.clear()
+    records = [r for r in map(json.loads, resp.text.splitlines()) if "control" not in r]
+    by_id = {r["id"]: r for r in records}
+    assert set(by_id) == {str(corpus.L1), str(corpus.L2)}
+    l1 = by_id[str(corpus.L1)]
+    assert l1["change_type"] == "updated" and l1["source_id"] == str(result.source_ids[SC])
+    assert l1["topic_key"] == f"{NB}/{{version}}/{SC}-{{rev}}-0/v15098603-{{rev}}"
+    assert (l1["parent_chapter"], l1["top_level_chapter"]) == ("H", "H")
+    assert l1["content_changed_at"].startswith("2026-08-30")
+    assert by_id[str(corpus.L2)]["top_level_chapter"] == "RN page"
