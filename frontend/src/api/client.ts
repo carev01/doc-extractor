@@ -9,6 +9,8 @@ import type {
   BumpPlan,
   BumpPlanEntry,
   ProductExportPreview,
+  BulkExtractPreview,
+  BulkExtractResult,
   ProductExportCreated,
   ProductExportOptions,
   ExportBatch,
@@ -272,6 +274,20 @@ export async function deleteSource(id: string): Promise<void> {
 }
 
 // ── Extraction ──
+
+/** Sources a product's or vendor's "Extract" action would queue, with eligibility. */
+export async function previewBulkExtract(
+  scope: { product_id: string } | { vendor_id: string },
+): Promise<BulkExtractPreview> {
+  const res = await api.get("/extraction/bulk/preview", { params: scope });
+  return res.data;
+}
+
+/** Queue an ordinary extraction for each eligible source; the rest come back skipped. */
+export async function bulkExtract(sourceIds: string[]): Promise<BulkExtractResult> {
+  const res = await api.post("/extraction/bulk", { source_ids: sourceIds });
+  return res.data;
+}
 
 export async function triggerExtraction(
   sourceId: string,

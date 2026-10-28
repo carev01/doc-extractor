@@ -767,3 +767,32 @@ export interface VendorExportOptions extends Omit<ProductExportOptions, "source_
   /** Subset of the vendor's products; omitted/empty = all of them. */
   product_ids?: string[] | null;
 }
+
+/** Why a source is left out of a bulk extract (null = it will be queued). */
+export type BulkExtractSkipReason =
+  | "not_found"
+  | "no_write_access"
+  | "active_run"
+  | "session_expired";
+
+export interface BulkExtractSource {
+  source_id: string;
+  source_name: string;
+  eligible: boolean;
+  reason: BulkExtractSkipReason | null;
+}
+
+export interface BulkExtractProduct {
+  product_id: string;
+  product_name: string;
+  sources: BulkExtractSource[];
+}
+
+export interface BulkExtractPreview {
+  products: BulkExtractProduct[];
+}
+
+export interface BulkExtractResult {
+  queued: { source_id: string; run_id: string }[];
+  skipped: { source_id: string; reason: BulkExtractSkipReason }[];
+}
