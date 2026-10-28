@@ -1,4 +1,4 @@
-"""GET /api/sources/pickable returns labelled sources with current job."""
+"""GET /api/sources/pickable returns labelled sources ."""
 import os
 import sys
 import uuid
@@ -17,7 +17,6 @@ from app.core.config import settings
 from app.core.database import Base, get_db
 from app.main import app
 from app.models import Vendor, Product, DocumentationSource
-from app.models.job import Job
 
 TEST_DATABASE_URL = settings.database_url.rsplit("/", 1)[0] + "/docextractor_test"
 pytestmark = pytest.mark.asyncio
@@ -44,14 +43,13 @@ async def client():
     await engine.dispose()
 
 
-async def test_pickable_lists_sources_with_labels_and_job(client):
+async def test_pickable_lists_sources_with_labels(client):
     c, factory = client
     async with factory() as s:
         v = Vendor(name="Acme"); s.add(v); await s.flush()
         p = Product(vendor_id=v.id, name="Cloud"); s.add(p); await s.flush()
-        job = Job(name="Nightly"); s.add(job); await s.flush()
         s.add(DocumentationSource(product_id=p.id, name="Guide",
-                                  base_url="https://d/1", job_id=job.id))
+                                  base_url="https://d/1"))
         s.add(DocumentationSource(product_id=p.id, name="API",
                                   base_url="https://d/2"))
         await s.commit()
@@ -60,6 +58,5 @@ async def test_pickable_lists_sources_with_labels_and_job(client):
     rows = {r["name"]: r for r in body["sources"]}
     assert rows["Guide"]["vendor_name"] == "Acme"
     assert rows["Guide"]["product_name"] == "Cloud"
-    assert rows["Guide"]["job_name"] == "Nightly"
     assert rows["API"]["job_id"] is None
     assert rows["API"]["job_name"] is None

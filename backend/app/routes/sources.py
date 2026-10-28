@@ -25,7 +25,6 @@ from app.services.pdf_import import pdf_path_for
 from app.models.article import Article
 from app.models.article_version import ArticleVersion
 from app.models.extraction_run import ExtractionRun, RunStatus
-from app.models.job import Job
 from app.models.product import Product
 from app.models.source import DocumentationSource
 from app.models.toc import TOCEntry
@@ -192,12 +191,9 @@ async def list_pickable_sources(
             DocumentationSource.name,
             Vendor.name.label("vendor_name"),
             Product.name.label("product_name"),
-            DocumentationSource.job_id,
-            Job.name.label("job_name"),
         )
         .join(Product, DocumentationSource.product_id == Product.id)
         .join(Vendor, Product.vendor_id == Vendor.id)
-        .outerjoin(Job, DocumentationSource.job_id == Job.id)
         .order_by(Vendor.name, Product.name, DocumentationSource.name)
     )
     if visible is not None:
@@ -207,7 +203,7 @@ async def list_pickable_sources(
     return PickableSourceList(sources=[
         PickableSource(
             id=r.id, name=r.name, vendor_name=r.vendor_name,
-            product_name=r.product_name, job_id=r.job_id, job_name=r.job_name,
+            product_name=r.product_name, job_id=None, job_name=None,
         )
         for r in rows
     ])

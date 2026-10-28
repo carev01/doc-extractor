@@ -1,15 +1,15 @@
-"""Job model — a named group of sources with a shared (optional) schedule.
+"""Job model — a named coverage (explicit targets and/or a vendor tier) with an
+optional schedule.
 
-Modelled on backup jobs (e.g. Veeam): a job owns a set of documentation
-sources and one schedule. When the job fires it fans out into one extraction
-run per assigned source, grouped under a ``JobRun`` for monitoring. Scheduling
-lives here, not on individual sources (a source is assigned to at most one job).
+When the job fires it fans out into one extraction run per covered source,
+grouped under a ``JobRun`` for monitoring. Scheduling lives here, not on
+individual sources.
 """
 
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Integer, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -28,9 +28,15 @@ class Job(Base):
     # manual group (enabled=False, no cron). When enabled, cron must be set —
     # enforced by the route, not the column.
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    frequency: Mapped[str | None] = mapped_column(String(16), nullable=True)  # hourly|daily|weekly|monthly
+    schedule_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)  # daily|weekly|monthly_day|monthly_nth
+    interval_months: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1,2,3,4,6,12
+    start_month: Mapped[int | None] = mapped_column(Integer, nullable=True)      # 1-12
+    nth: Mapped[str | None] = mapped_column(String(8), nullable=True)            # first|last
+    weekday: Mapped[int | None] = mapped_column(Integer, nullable=True)          # 0-6, 0=Sun
+    tier_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tiers.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     time_of_day: Mapped[str | None] = mapped_column(String(5), nullable=True)  # HH:MM
-    day_of_week: Mapped[int | None] = mapped_column(Integer, nullable=True)    # 0-6, 0=Sun (weekly)
     day_of_month: Mapped[int | None] = mapped_column(Integer, nullable=True)   # 1-28 (monthly)
     cron: Mapped[str | None] = mapped_column(String(128), nullable=True)
     timezone: Mapped[str] = mapped_column(String(64), default="UTC", nullable=False)
@@ -45,10 +51,8 @@ class Job(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    # Assigned sources (one job per source; FK on the source side, SET NULL on
-    # job delete so deleting a job just un-assigns its sources).
-    sources: Mapped[list["DocumentationSource"]] = relationship(
-        "DocumentationSource", back_populates="job"
+    targets: Mapped[list["JobTarget"]] = relationship(
+        "JobTarget", back_populates="job", cascade="all, delete-orphan", passive_deletes=True
     )
     runs: Mapped[list["JobRun"]] = relationship(
         "JobRun", back_populates="job", cascade="all, delete-orphan"

@@ -27,11 +27,6 @@ class DocumentationSource(Base):
     product_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False
     )
-    # Optional job assignment (one job per source). NULL = manual-only.
-    # SET NULL on job delete so removing a job just un-assigns its sources.
-    job_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
-    )
     # Optional login realm. NULL = public source (no auth). SET NULL on realm
     # delete so removing a realm just makes its sources public-only again.
     auth_realm_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -66,7 +61,6 @@ class DocumentationSource(Base):
 
     # Relationships
     product: Mapped["Product"] = relationship("Product", back_populates="sources")
-    job: Mapped["Job | None"] = relationship("Job", back_populates="sources")
     auth_realm: Mapped["AuthRealm | None"] = relationship("AuthRealm")
     # passive_deletes: every FK below this row is ON DELETE CASCADE in the
     # database, so let Postgres cascade in one statement. Without it the ORM

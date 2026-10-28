@@ -12,7 +12,7 @@ from enum import Enum
 from sqlalchemy import (
     DateTime, Enum as SAEnum, ForeignKey, Integer, String, func,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -46,6 +46,9 @@ class JobRun(Base):
     sources_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     sources_done: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     sources_failed: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+
+    # Sources the fan-out skipped: [{"source_id": str, "reason": str}]
+    skipped: Mapped[list[dict] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

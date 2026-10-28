@@ -10,7 +10,6 @@ from app.core.database import get_db
 from app.models.article import Article
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.image import ArticleImage
-from app.models.job import Job
 from app.models.product import Product
 from app.models.source import DocumentationSource, SourceStatus
 from app.models.vendor import Vendor
@@ -20,7 +19,7 @@ from app.schemas.dashboard import (
     OverviewBlocked, OverviewEnrichment, OverviewEscalation, OverviewLastRun,
     OverviewSourceRow,
     SourceEnrichmentRow,
-)
+        )
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -77,13 +76,9 @@ async def dashboard_sources(
             DocumentationSource,
             Vendor.name.label("vendor_name"),
             Product.name.label("product_name"),
-            Job.id.label("job_id"),
-            Job.name.label("job_name"),
-            Job.next_run_at.label("next_run_at"),
         )
         .join(Product, DocumentationSource.product_id == Product.id)
         .join(Vendor, Product.vendor_id == Vendor.id)
-        .outerjoin(Job, DocumentationSource.job_id == Job.id)
         .order_by(Vendor.name, Product.name, DocumentationSource.name)
     )
     if visible is not None:
@@ -94,7 +89,8 @@ async def dashboard_sources(
     total = never = stale = failing = running = 0
     stale_cutoff = now - timedelta(days=stale_days)
 
-    for src, vendor_name, product_name, job_id, job_name, next_run_at in rows:
+    for src, vendor_name, product_name in rows:
+        job_id = job_name = next_run_at = None  # coverage-based lookup lands with the jobs API (T6)
         total += 1
         last = src.last_extracted_at
         age = int((now - last).total_seconds()) if last else None
@@ -262,11 +258,9 @@ async def dashboard_overview(
     rows_q = (
         select(
             DocumentationSource, Vendor.name.label("vendor"), Product.name.label("product"),
-            Job.id.label("job_id"), Job.name.label("job_name"), Job.next_run_at.label("next_run_at"),
         )
         .join(Product, DocumentationSource.product_id == Product.id)
         .join(Vendor, Product.vendor_id == Vendor.id)
-        .outerjoin(Job, DocumentationSource.job_id == Job.id)
         .order_by(Vendor.name, Product.name, DocumentationSource.name)
     )
     if visible is not None:
@@ -278,7 +272,8 @@ async def dashboard_overview(
     agg_described = agg_pending = backlog = 0
     stale_cutoff = now - timedelta(days=stale_days)
 
-    for src, vendor, product, job_id, job_name, next_run_at in rows:
+    for src, vendor, product in rows:
+        job_id = job_name = next_run_at = None  # coverage-based lookup lands with the jobs API (T6)
         total += 1
         last = src.last_extracted_at
         age = int((now - last).total_seconds()) if last else None

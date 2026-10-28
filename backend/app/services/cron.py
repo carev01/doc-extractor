@@ -123,3 +123,17 @@ def next_runs(spec: ScheduleSpec, after: datetime, count: int = 3) -> list[datet
         cursor = compute_next_run(cron, spec.timezone, cursor)
         runs.append(cursor)
     return runs
+
+
+def job_spec(job) -> ScheduleSpec:
+    """Rebuild the ScheduleSpec a Job's stored schedule fields describe."""
+    return ScheduleSpec(
+        kind=job.schedule_kind,
+        time_of_day=job.time_of_day or "02:00",
+        timezone=job.timezone or "UTC",
+        weekday=job.weekday,
+        interval_months=job.interval_months or 1,
+        start_month=job.start_month,
+        day_of_month=job.day_of_month,
+        nth=job.nth,
+    )

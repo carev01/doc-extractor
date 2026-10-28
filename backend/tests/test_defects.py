@@ -65,8 +65,10 @@ def test_defect1_all_tables_in_metadata():
         "extraction_runs",
         "image_descriptions",
         "job_runs",
+        "job_targets",
         "jobs",
         "products",
+        "tiers",
         "toc_checkpoints",
         "toc_entries",
         "user_vendor_permissions",
@@ -74,7 +76,7 @@ def test_defect1_all_tables_in_metadata():
         "vendors",
         "webhook_deliveries",
         "webhooks",
-    ], f"Expected 20 tables, got {len(table_names)}: {table_names}"
+    ], f"Expected 22 tables, got {len(table_names)}: {table_names}"
 
 
 def test_defect1_tables_created_on_startup(db_session):

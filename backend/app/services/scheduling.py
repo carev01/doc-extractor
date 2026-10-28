@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.job import Job
 from app.models.job_run import JobRun, JobRunStatus
-from app.models.source import DocumentationSource
+from app.models.job_target import JobTarget
 from app.services.cron import compute_next_run
 from app.services.queue import reap_stale_runs, reap_stale_exports
 
@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 async def fan_out_job(
     db: AsyncSession, job: Job, trigger: str, now: datetime | None = None
 ) -> JobRun | None:
-    """Create a JobRun and enqueue one pending ExtractionRun per assigned source.
+    """Create a JobRun and enqueue one pending ExtractionRun per explicit source target (interim: coverage
+    resolution replaces this).
 
     A source that already has an active run is coalesced (skipped) via a
     savepoint so it never rolls back the whole fan-out. Returns the JobRun, or
@@ -29,7 +30,9 @@ async def fan_out_job(
     now = now or datetime.now(timezone.utc)
     source_ids = (
         await db.execute(
-            select(DocumentationSource.id).where(DocumentationSource.job_id == job.id)
+            select(JobTarget.source_id).where(
+                JobTarget.job_id == job.id, JobTarget.source_id.is_not(None)
+            )
         )
     ).scalars().all()
     if not source_ids:
