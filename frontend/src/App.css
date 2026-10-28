@@ -2293,13 +2293,60 @@ a.btn-primary {
   overflow-y: auto;
 }
 
-/* Sources nested under a product in SourceTreePicker: indented, and scrolled
-   by the outer list rather than each having its own scroll area. */
-.bump-plan.tree-sources {
-  margin: 6px 0 0 1.6rem;
-  gap: 4px;
-  max-height: none;
-  overflow: visible;
+/* SourceTreePicker: products are compact cards that expand on demand; the
+   sources inside are plain lines, not cards, so a long product stays short. */
+.tree-product {
+  padding: 6px 10px;
+}
+
+.tree-product-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tree-caret {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 4px 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  font-size: 0.88rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tree-caret .hint {
+  margin-left: auto;
+}
+
+.tree-sources,
+.bump-plan.tree-flat {
+  list-style: none;
+  margin: 2px 0 4px 1.6rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.bump-plan.tree-flat {
+  margin-left: 0;
+}
+
+.tree-row .chapter-toggle {
+  margin-top: 0;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.tree-row .chapter-toggle:hover {
+  background: var(--ink-1);
 }
 
 .bump-plan-row {

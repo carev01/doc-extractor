@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /** One pickable source. A ``disabled`` source cannot be ticked; ``note`` says why. */
 export interface TreeSource {
@@ -28,17 +28,28 @@ function ProductBox({
   some,
   disabled,
   onToggle,
+  label,
 }: {
   all: boolean;
   some: boolean;
   disabled: boolean;
   onToggle: () => void;
+  label: string;
 }) {
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (ref.current) ref.current.indeterminate = some && !all;
   }, [some, all]);
-  return <input ref={ref} type="checkbox" checked={all} disabled={disabled} onChange={onToggle} />;
+  return (
+    <input
+      ref={ref}
+      type="checkbox"
+      aria-label={label}
+      checked={all}
+      disabled={disabled}
+      onChange={onToggle}
+    />
+  );
 }
 
 /**
@@ -47,6 +58,10 @@ function ProductBox({
  * can each decide what starts ticked.
  */
 export default function SourceTreePicker({ products, selected, onChange, flat }: Props) {
+  // Products start collapsed: a vendor can have dozens of sources, and the
+  // product checkbox already selects or clears all of them without expanding.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
   const setMany = (ids: string[], on: boolean) => {
     const next = new Set(selected);
     for (const id of ids) {
@@ -56,8 +71,16 @@ export default function SourceTreePicker({ products, selected, onChange, flat }:
     onChange(next);
   };
 
+  const toggleExpanded = (id: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
   const sourceRow = (s: TreeSource) => (
-    <li key={s.id} className="bump-plan-row">
+    <li key={s.id} className="tree-row">
       <label className="chapter-toggle">
         <input
           type="checkbox"
@@ -65,14 +88,16 @@ export default function SourceTreePicker({ products, selected, onChange, flat }:
           checked={!s.disabled && selected.has(s.id)}
           onChange={() => setMany([s.id], !selected.has(s.id))}
         />
-        <span className={s.disabled ? "muted" : "bump-plan-name"}>{s.name}</span>
+        <span className={s.disabled ? "muted" : undefined}>{s.name}</span>
         {s.note && <span className="hint"> — {s.note}</span>}
       </label>
     </li>
   );
 
   if (flat) {
-    return <ul className="bump-plan">{products.flatMap((p) => p.sources.map(sourceRow))}</ul>;
+    return (
+      <ul className="bump-plan tree-flat">{products.flatMap((p) => p.sources.map(sourceRow))}</ul>
+    );
   }
 
   return (
@@ -81,22 +106,31 @@ export default function SourceTreePicker({ products, selected, onChange, flat }:
         const enabled = p.sources.filter((s) => !s.disabled).map((s) => s.id);
         const ticked = enabled.filter((id) => selected.has(id)).length;
         const all = enabled.length > 0 && ticked === enabled.length;
+        const open = expanded.has(p.id);
         return (
-          <li key={p.id} className="bump-plan-row">
-            <label className="chapter-toggle">
+          <li key={p.id} className="bump-plan-row tree-product">
+            <div className="tree-product-head">
               <ProductBox
                 all={all}
                 some={ticked > 0}
                 disabled={enabled.length === 0}
                 onToggle={() => setMany(enabled, !all)}
+                label={`Select all sources of ${p.name}`}
               />
-              <span className="bump-plan-name">{p.name}</span>
-              <span className="hint">
-                {" "}
-                — {ticked} of {p.sources.length} source(s)
-              </span>
-            </label>
-            <ul className="bump-plan tree-sources">{p.sources.map(sourceRow)}</ul>
+              <button
+                type="button"
+                className="tree-caret"
+                aria-expanded={open}
+                onClick={() => toggleExpanded(p.id)}
+              >
+                <span aria-hidden="true">{open ? "▾" : "▸"}</span>
+                <span className="bump-plan-name">{p.name}</span>
+                <span className="hint">
+                  {ticked} of {p.sources.length} source(s)
+                </span>
+              </button>
+            </div>
+            {open && <ul className="tree-sources">{p.sources.map(sourceRow)}</ul>}
           </li>
         );
       })}
