@@ -35,12 +35,17 @@ from app.services.profiles.base import TocEntry
 
 _SIDEBAR_SELECTOR = "div[data-slot='sidebar-inner']"
 
-# Navigation-only query parameters dropped from page URLs. The Flex Appliance
-# sidebar appends ?platform=Veritas%20<model> to every link; the scraped body is
-# identical with no parameter, 5340 or 5372 (measured on 8 pages), and the model
-# the site picks is not stable (landing 5372, sidebar 5340) — kept, it would make
-# every article's URL and topic_key flip with the vendor's default.
-_NAV_ONLY_PARAMS = {"platform"}
+# Navigation-only query parameters dropped from page URLs, each measured to leave
+# the scraped body identical:
+# * ``platform`` — Flex Appliance appends ?platform=Veritas%20<model> to every
+#   link (8/8 pages identical with none, 5340 or 5372), and the model the site
+#   picks is not stable (landing 5372, sidebar 5340), so kept it would make every
+#   article's URL and topic_key flip with the vendor's default.
+# * ``via`` — Resiliency Platform / IT Analytics links carry the breadcrumb trail
+#   the page was reached through. A page listed under several parents gets a
+#   different trail each time, so kept it stored the same page 2-5 times (37
+#   Resiliency pages, 106 IT Analytics; 6/6 bodies identical without it).
+_NAV_ONLY_PARAMS = {"platform", "via"}
 
 
 def _page_url(href: str, root_url: str) -> str:
@@ -48,6 +53,11 @@ def _page_url(href: str, root_url: str) -> str:
     query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
              if k not in _NAV_ONLY_PARAMS]
     return urlunsplit(parts._replace(query=urlencode(query)))
+
+
+def normalize_page_url(url: str) -> str:
+    """An absolute page URL with its navigation-only parameters dropped."""
+    return _page_url(url, url)
 
 # ── zDocs URL grammar ────────────────────────────────────────────────────────
 # This platform addresses a page as

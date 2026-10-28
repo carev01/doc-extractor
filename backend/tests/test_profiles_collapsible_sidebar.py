@@ -161,3 +161,19 @@ def test_platform_query_is_not_part_of_a_page_url():
         "https://docs.cohesity.com/docs/flexappliances/8.0/1-2-0/v3-2",
         "https://docs.cohesity.com/docs/flexappliances/8.0/1-2-0/v4-2?lang=en",
     ]
+
+
+def test_via_breadcrumb_query_is_not_part_of_a_page_url():
+    # Resiliency Platform / IT Analytics links carry ?via=<parent>,<parent>,… — the
+    # breadcrumb trail the page was reached through. The same page is listed under
+    # several parents with different trails (37 Resiliency pages were stored 2-5
+    # times), and the body is identical without it (6/6 pages measured).
+    html = """
+    <div data-slot="sidebar-inner"><div data-slot="sidebar-content">
+      <ul data-slot="sidebar-menu">
+        <li data-slot="sidebar-menu-item"><a href="/docs/resiliencyplatform/10.3/1-2-0/v3-2?via=1-2-0%2F%2C1-2-0%2Fv9-2">A</a></li>
+        <li data-slot="sidebar-menu-item"><a href="/docs/resiliencyplatform/10.3/1-2-0/v3-2?via=1-2-0%2F%2C1-2-0%2Fv8-2">A again</a></li>
+      </ul>
+    </div></div>"""
+    urls = [e.url for e in parse_collapsible_sidebar(html, "https://docs.cohesity.com/docs/resiliencyplatform/10.3/1-2-0")]
+    assert urls == ["https://docs.cohesity.com/docs/resiliencyplatform/10.3/1-2-0/v3-2"] * 2
