@@ -66,33 +66,35 @@ async def extract_sequentially(
     return runs
 
 
-async def main() -> None:
+async def main(target: str = "netbackup") -> None:
     import uuid
 
     from sqlalchemy import func, select
 
     from app.core.database import async_session
     from app.models import Article, DocumentationSource
-    from app.ops.netbackup_split import DEFAULT_SOURCE_ID, GUIDES
+    from app.ops.netbackup_split import TARGETS
     from app.services.change_log import run_change_counts
 
+    t = TARGETS[target]
+    original_id, guides = t.source_id, t.guides
     async with async_session() as db:
-        original = await db.get(DocumentationSource, DEFAULT_SOURCE_ID)
+        original = await db.get(DocumentationSource, original_id)
         product_id = original.product_id if original else None
-        # Only the 33 guide sources the split created — never another source that
+        # Only the guide sources the split created — never another source that
         # happens to sit under the same product.
         rows = (await db.execute(
             select(DocumentationSource.id, func.count(Article.id))
             .outerjoin(Article, (Article.source_id == DocumentationSource.id) & Article.removed_at.is_(None))
             .where(DocumentationSource.product_id == product_id,
-                   DocumentationSource.id != DEFAULT_SOURCE_ID,
-                   DocumentationSource.name.in_([g.title for g in GUIDES]))
+                   DocumentationSource.id != original_id,
+                   DocumentationSource.name.in_([g.title for g in guides]))
             .group_by(DocumentationSource.id).order_by(func.count(Article.id))
         )).all()
     counts = {str(sid): n for sid, n in rows}
     print(f"{len(counts)} sources, {sum(counts.values())} live articles", flush=True)
-    if len(counts) != len(GUIDES):
-        raise SystemExit(f"expected {len(GUIDES)} guide sources, found {len(counts)}")
+    if len(counts) != len(guides):
+        raise SystemExit(f"expected {len(guides)} guide sources, found {len(counts)}")
 
     async def change_counts(run_id: str) -> Mapping[str, int]:
         async with async_session() as db:
@@ -105,4 +107,6 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import sys
+
+    asyncio.run(main(sys.argv[1] if len(sys.argv) > 1 else "netbackup"))

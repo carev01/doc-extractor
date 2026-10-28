@@ -297,3 +297,68 @@ async def test_apply_refuses_without_the_child_fk_indexes(corpus):
         await s.commit()
     with pytest.raises(SplitAborted, match="ix_article_versions_article_id"):
         await _apply(corpus)
+
+
+# ── other products on the same portal ────────────────────────────────────────
+# IT Analytics (17 guides) and Resiliency Platform (3) were single sources built
+# while the sidebar was product-wide, exactly like NetBackup; the split is
+# parameterised per product rather than copied.
+
+from app.ops.netbackup_split import TARGETS, _pub  # noqa: E402
+from app.services.profiles.collapsible_sidebar import CollapsibleSidebarProfile  # noqa: E402
+
+
+@pytest.mark.parametrize("name,count", [("netbackup", 33), ("itanalytics", 17), ("resiliency", 3)])
+def test_every_target_guide_root_templatizes_on_its_own_publication(name, count):
+    t = TARGETS[name]
+    assert len(t.guides) == count and len({g.pub for g in t.guides}) == count
+    for g in t.guides:
+        base = f"{t.origin}/{t.version}/{g.pub}-{g.build}-0"
+        assert CollapsibleSidebarProfile().templatize_url(base, t.version) == \
+            f"{t.origin}/{{version}}/{g.pub}-{{rev}}-0"
+        assert _pub(base + f"/v1-{g.build}") == g.pub
+
+
+async def test_plan_uses_the_targets_origin(corpus):
+    # A Resiliency-shaped source: same grammar, different product path.
+    t = TARGETS["resiliency"]
+    async with corpus.factory() as s:
+        p = Product(vendor_id=(await s.get(Product, corpus.product_id)).vendor_id,
+                    name="Resiliency", version=t.version)
+        s.add(p); await s.flush()
+        g = t.guides[0]
+        src = DocumentationSource(product_id=p.id, name="User Guide", base_url=f"{t.origin}/{t.version}/{g.pub}-{g.build}-0",
+                                  url_template=f"{t.origin}/{{version}}/{g.pub}-{{rev}}-0")
+        s.add(src); await s.flush()
+        s.add(_article(src.id, "A", f"{t.origin}/{t.version}/{g.pub}-{g.build}-0/v7-{g.build}",
+                       f"{t.origin}/{{version}}/{g.pub}-{g.build}-0/v7-{g.build}"))
+        await s.commit()
+        plan = await build_split_plan(s, src.id, t.guides, origin=t.origin, version=t.version)
+    assert plan.counts()["live"] == 1
+    assert list(plan.live.values()) == [(g.pub, f"{t.origin}/{{version}}/{g.pub}-{{rev}}-0/v7-{{rev}}")]
+
+
+async def test_pages_stored_once_per_breadcrumb_collapse_into_one(corpus):
+    # The same page stored under two ?via= trails (identical content): one survives
+    # with the clean URL and key, the other folds into it without adding a version.
+    async with corpus.factory() as s:
+        for i, at in ((1, T0 + timedelta(days=61)), (2, T0 + timedelta(days=62))):
+            url = f"{NB}/11.2.0.1/{SC}-173488551-0/v555-173488551?via={SC}-173488551-0%2Fv{i}-173488551"
+            s.add(_article(corpus.source_id, f"V{i}", url, url.replace("11.2.0.1", "{version}", 1), at=at, h="h-same"))
+        await s.commit()
+    plan = await _plan(corpus)
+    survivors = [aid for aid, (pub, k) in plan.live.items() if k.endswith("/v555-{rev}")]
+    assert len(survivors) == 1 and len(plan.history[survivors[0]]) == 1
+    await _apply(corpus)
+    async with corpus.factory() as s:
+        rows = (await s.execute(select(Article).where(Article.source_url.contains("v555")))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].title == "V2"  # most recently extracted
+    assert "?" not in rows[0].source_url and "?" not in rows[0].topic_key
+    assert await _versions(corpus, rows[0].id) == []
+    # The folded copy was LIVE (unlike prior-release copies, already tombstoned
+    # when removed), so downstream must be told it is gone.
+    async with corpus.factory() as s:
+        gone = (await s.execute(select(ContentChange.change_type, ContentChange.source_id).where(
+            ContentChange.topic_key.contains("v555"), ContentChange.change_type == "removed"))).all()
+    assert gone == [("removed", corpus.source_id)]

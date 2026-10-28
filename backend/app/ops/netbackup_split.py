@@ -32,7 +32,7 @@ from app.models.content_change import ChangeType, ContentChange
 from app.models.toc import TOCEntry
 from app.services import change_log
 from app.services.delta_feed import _ACTIVE
-from app.services.profiles.collapsible_sidebar import CollapsibleSidebarProfile
+from app.services.profiles.collapsible_sidebar import CollapsibleSidebarProfile, normalize_page_url
 from app.services.versioning import VERSION_PLACEHOLDER, derive_topic_key
 
 _BATCH = 1000
@@ -42,7 +42,9 @@ DEFAULT_SOURCE_ID = uuid.UUID("cb3a6f6a-f51e-414e-b2ec-64eb9a2217b5")
 EXPECTED_VERSION = "11.2.0.1"
 ORIGIN = "https://docs.cohesity.com/docs/netbackup"
 
-_PUB_RE = re.compile(r"/docs/netbackup/[^/]+/(\d+)-(\d+)-\d+")
+# /docs/<product>/<version>/<publication>-<build>-<variant>/… — the zDocs grammar
+# every product on docs.cohesity.com shares.
+_PUB_RE = re.compile(r"/docs/[^/]+/[^/]+/(\d+)-(\d+)-\d+")
 
 
 class SplitAborted(Exception):
@@ -95,6 +97,53 @@ GUIDES: tuple[Guide, ...] = (
 )
 
 
+# Captured 2026-10-28 from each product's landing page; each matches its live
+# corpus' publications and build ids exactly.
+ITA_GUIDES: tuple[Guide, ...] = (
+    Guide('140670999', '171083349', 'IT Analytics Administrator Guide'),
+    Guide('149465233', '171083370', 'IT Analytics Backup Manager Solution for ServiceNow Installation and Configuration Guide'),
+    Guide('140726178', '171083189', 'IT Analytics Certified Configuration Guide'),
+    Guide('166883440', '171083367', 'IT Analytics Data Collector Installation and Configuration Guide'),
+    Guide('165991070', '171083360', 'IT Analytics Data Collector Installation and Configuration Guide for Cohesity NetBackup'),
+    Guide('140726114', '171083347', 'IT Analytics Data Collector Notes and Troubleshooting'),
+    Guide('156156279', '171083365', 'IT Analytics Foundation License Inclusions and Implementation Guide'),
+    Guide('140578616', '171083185', 'IT Analytics Help'),
+    Guide('140810972', '171083352', 'IT Analytics Installation and Upgrade Guide for Linux'),
+    Guide('140810895', '171083350', 'IT Analytics Installation and Upgrade Guide for Windows'),
+    Guide('141196457', '171083356', 'IT Analytics Inventory Reports'),
+    Guide('140726297', '171083354', 'IT Analytics Licensing Guide'),
+    Guide('164450162', '171083358', 'IT Analytics OpsCenter Transition Reference'),
+    Guide('149597085', '171083363', 'IT Analytics Release Notes'),
+    Guide('140388457', '171083345', 'IT Analytics Report Reference Guide'),
+    Guide('152009398', '171083372', 'IT Analytics Security and Encryption Reference'),
+    Guide('140558946', '171083343', 'IT Analytics User Guide'),
+)
+
+RESILIENCY_GUIDES: tuple[Guide, ...] = (
+    Guide('128099408', '162546655', 'HSCL'),
+    Guide('107347178', '162526731', 'Product Documentation'),
+    Guide('128101596', '162546752', 'Release Notes'),
+)
+
+
+@dataclass(frozen=True)
+class Target:
+    """One product's split: its original source, portal path, version, guides."""
+    source_id: uuid.UUID
+    origin: str
+    version: str
+    guides: tuple[Guide, ...]
+
+
+TARGETS: dict[str, Target] = {
+    "netbackup": Target(DEFAULT_SOURCE_ID, ORIGIN, EXPECTED_VERSION, GUIDES),
+    "itanalytics": Target(uuid.UUID("1e08edbc-871d-4023-b202-1b316a21ec20"),
+                          "https://docs.cohesity.com/docs/netbackupitanalytics", "11.8", ITA_GUIDES),
+    "resiliency": Target(uuid.UUID("21e75c03-1cc3-4d1f-9aaf-a90c905b9267"),
+                         "https://docs.cohesity.com/docs/resiliencyplatform", "10.3", RESILIENCY_GUIDES),
+}
+
+
 @dataclass
 class NewSource:
     pub: str
@@ -107,6 +156,7 @@ class NewSource:
 class SplitPlan:
     version: str
     product_id: uuid.UUID
+    origin: str
     sources: dict[str, NewSource]
     # article id -> (publication, new topic_key)
     live: dict[uuid.UUID, tuple[str, str]] = field(default_factory=dict)
@@ -117,6 +167,8 @@ class SplitPlan:
     retired: list[uuid.UUID] = field(default_factory=list)
     # toc entry id -> publication, or None (stays; deleted with the original)
     toc: dict[uuid.UUID, str | None] = field(default_factory=dict)
+    # moved article id -> its source_url without navigation-only parameters
+    urls: dict[uuid.UUID, str] = field(default_factory=dict)
 
     def counts(self) -> dict[str, int]:
         return {
@@ -135,26 +187,26 @@ def _pub(url: str | None) -> str | None:
 
 
 async def build_split_plan(
-    db: AsyncSession, source_id: uuid.UUID, guides: Sequence[Guide] = GUIDES
+    db: AsyncSession, source_id: uuid.UUID, guides: Sequence[Guide] = GUIDES,
+    *, origin: str = ORIGIN, version: str = EXPECTED_VERSION,
 ) -> SplitPlan:
     """Classify every row of *source_id*; reads only."""
     src = await db.get(DocumentationSource, source_id)
     if src is None:
         raise SplitAborted(f"source {source_id} not found")
     product = await db.get(Product, src.product_id)
-    version = product.version
-    if version != EXPECTED_VERSION:
-        raise SplitAborted(f"product version is {version!r}, expected {EXPECTED_VERSION!r}")
+    if product.version != version:
+        raise SplitAborted(f"product version is {product.version!r}, expected {version!r}")
 
     profile = CollapsibleSidebarProfile()
     sources: dict[str, NewSource] = {}
     for g in guides:
-        base_url = f"{ORIGIN}/{version}/{g.pub}-{g.build}-0"
+        base_url = f"{origin}/{version}/{g.pub}-{g.build}-0"
         template = profile.templatize_url(base_url, version)
         if not template:
             raise SplitAborted(f"cannot templatize {base_url}")
         sources[g.pub] = NewSource(g.pub, g.title, base_url, template)
-    plan = SplitPlan(version=version, product_id=product.id, sources=sources)
+    plan = SplitPlan(version=version, product_id=product.id, origin=origin, sources=sources)
 
     rows = (await db.execute(
         select(Article.id, Article.source_url, Article.topic_key,
@@ -165,39 +217,49 @@ async def build_split_plan(
     def key(url: str, pub: str) -> str:
         return derive_topic_key(url, sources[pub].url_template, version)
 
-    live_by_key: dict[tuple[str, str], uuid.UUID] = {}
+    # Live rows grouped by identity. The same page can be stored more than once
+    # under navigation-only URL parameters (Resiliency / IT Analytics ?via=
+    # breadcrumbs); the most recently extracted copy survives with the clean URL
+    # and the others fold into its history like prior-release copies.
+    live_groups: dict[tuple[str, str], list] = defaultdict(list)
     for r in rows:
         if r.removed_at is not None:
             continue
-        pub = _pub(r.source_url)
+        url = normalize_page_url(r.source_url)
+        pub = _pub(url)
         if pub not in sources:
             raise SplitAborted(f"live article {r.id} is in publication {pub}, not a known guide")
-        k = key(r.source_url, pub)
-        if (pub, k) in live_by_key:
-            raise SplitAborted(f"live articles {live_by_key[(pub, k)]} and {r.id} derive the same key {k}")
-        live_by_key[(pub, k)] = r.id
-        plan.live[r.id] = (pub, k)
+        live_groups[(pub, key(url, pub))].append((r, url))
+    live_by_key: dict[tuple[str, str], uuid.UUID] = {}
+    folded: dict[uuid.UUID, list] = defaultdict(list)
+    for (pub, k), group in live_groups.items():
+        group.sort(key=lambda ru: ru[0].extracted_at)
+        survivor, url = group[-1]
+        live_by_key[(pub, k)] = survivor.id
+        plan.live[survivor.id] = (pub, k)
+        if url != survivor.source_url:
+            plan.urls[survivor.id] = url
+        folded[survivor.id].extend(r for r, _ in group[:-1])
 
     # Removed rows: source_url still carries the release they were removed in, so
     # the identity is rebuilt from the stored (version-templated) key instead.
-    twins: dict[uuid.UUID, list] = defaultdict(list)
     orphans: dict[tuple[str, str], list] = defaultdict(list)
     for r in rows:
-        if r.removed_at is None:
-            continue
-        url = r.topic_key.replace(VERSION_PLACEHOLDER, version)
-        pub = _pub(url)
-        if pub not in sources:
-            plan.retired.append(r.id)
-            continue
-        k = key(url, pub)
-        if (pub, k) in live_by_key:
-            twins[live_by_key[(pub, k)]].append(r)
-        else:
-            orphans[(pub, k)].append(r)
+        if r.removed_at is not None:
+            url = normalize_page_url(r.topic_key.replace(VERSION_PLACEHOLDER, version))
+            pub = _pub(url)
+            if pub not in sources:
+                plan.retired.append(r.id)
+                continue
+            k = key(url, pub)
+            if (pub, k) in live_by_key:
+                folded[live_by_key[(pub, k)]].append(r)
+            else:
+                orphans[(pub, k)].append(r)
 
-    for live_id, group in twins.items():
-        plan.history[live_id] = [r.id for r in sorted(group, key=lambda r: r.extracted_at)]
+    for live_id, group in folded.items():
+        if group:
+            plan.history[live_id] = [r.id for r in sorted(group, key=lambda r: r.extracted_at)]
     for (pub, k), group in orphans.items():
         group = sorted(group, key=lambda r: r.extracted_at)
         survivor = group[-1]
@@ -242,6 +304,7 @@ class SplitResult:
     deleted: int
     toc_moved: int
     outbox: int
+    tombstoned: int = 0  # live duplicates folded away (removed rows on the feed)
 
 
 def _batches(items: list, n: int = _BATCH):
@@ -296,7 +359,8 @@ async def apply_split(db: AsyncSession, source_id: uuid.UUID, plan: SplitPlan) -
     if clash:
         raise SplitAborted(f"sources already exist under the product: {sorted(clash)[:3]}")
     fresh = await build_split_plan(db, source_id, [
-        Guide(ns.pub, ns.base_url.rsplit("-", 2)[-2], ns.name) for ns in plan.sources.values()])
+        Guide(ns.pub, ns.base_url.rsplit("-", 2)[-2], ns.name) for ns in plan.sources.values()],
+        origin=plan.origin, version=plan.version)
     if fresh.counts() != plan.counts():
         raise SplitAborted(f"corpus drifted since planning: {plan.counts()} -> {fresh.counts()}")
 
@@ -373,6 +437,14 @@ async def apply_split(db: AsyncSession, source_id: uuid.UUID, plan: SplitPlan) -
         if new_versions:
             await _executemany(db, insert(ver), new_versions)
             added += len(new_versions)
+    # A folded row that was still LIVE (a duplicate stored under a navigation-only
+    # URL parameter) is known downstream, unlike a prior-release copy that was
+    # tombstoned when it was removed — tell the feed it is gone, under the
+    # source and key the consumer knew it by.
+    live_folded = (await db.execute(
+        select(art.c.id, art.c.topic_key).where(any_of(art.c.id, folded_all), art.c.removed_at.is_(None))
+    )).all()
+    await change_log.record_removals(db, rows=live_folded, source_id=source_id, run_id=None)
     for chunk in _batches(folded_all, 5000):
         await db.execute(delete(art).where(any_of(art.c.id, chunk)))
 
@@ -381,6 +453,9 @@ async def apply_split(db: AsyncSession, source_id: uuid.UUID, plan: SplitPlan) -
                      for aid, (pub, k) in {**plan.live, **plan.removed_moves}.items()]
     await _executemany(db, update(art).where(art.c.id == bindparam("_id"))
                        .values(source_id=bindparam("_src"), topic_key=bindparam("_key")), article_moves)
+    await _executemany(db, update(art).where(art.c.id == bindparam("_id"))
+                       .values(source_url=bindparam("_url")),
+                       [{"_id": aid, "_url": u} for aid, u in plan.urls.items()])
 
     # 5. Pages of retired publications (already tombstoned on the feed when removed).
     for chunk in _batches(plan.retired, 5000):
@@ -411,11 +486,10 @@ async def apply_split(db: AsyncSession, source_id: uuid.UUID, plan: SplitPlan) -
         .group_by(art.c.source_id, art.c.topic_key).having(func.count() > 1).subquery()))).scalar_one()
     if dupes:
         raise SplitAborted(f"postcondition: {dupes} duplicate (source_id, topic_key) pairs")
-    lacking = (await db.execute(select(func.count()).select_from(art).where(
-        any_of(art.c.id, [s for s in survivors if s in plan.live]),
-        ~select(ver.c.id).where(ver.c.article_id == art.c.id).exists()))).scalar_one()
-    if lacking:
-        raise SplitAborted(f"postcondition: {lacking} live articles with folded history have no version")
+    remaining = (await db.execute(select(func.count()).select_from(art).where(
+        any_of(art.c.id, folded_all)))).scalar_one()
+    if remaining:
+        raise SplitAborted(f"postcondition: {remaining} folded rows still exist")
     changed_after = dict((await db.execute(
         select(art.c.id, art.c.content_changed_at).where(any_of(art.c.id, live_ids)))).all())
     if changed_after != changed_before:
@@ -424,12 +498,13 @@ async def apply_split(db: AsyncSession, source_id: uuid.UUID, plan: SplitPlan) -
     return SplitResult(
         source_ids=source_ids, moved=len(plan.live), versions_added=added,
         versions_repointed=repointed, deleted=len(folded_all) + len(plan.retired),
-        toc_moved=len(moves), outbox=len(outbox),
+        toc_moved=len(moves), outbox=len(outbox), tombstoned=len(live_folded),
     )
 
 
 async def run(db_url: str, source_id: uuid.UUID, apply: bool,
-              guides: Sequence[Guide] = GUIDES) -> SplitResult:
+              guides: Sequence[Guide] = GUIDES, *, origin: str = ORIGIN,
+              version: str = EXPECTED_VERSION) -> SplitResult:
     """Plan and perform the split. A dry run (``apply=False``) executes the real
     apply — every write and postcondition — and then rolls back."""
     from sqlalchemy.engine import make_url
@@ -441,7 +516,7 @@ async def run(db_url: str, source_id: uuid.UUID, apply: bool,
     engine = create_async_engine(db_url, poolclass=NullPool)
     try:
         async with AsyncSession(engine, expire_on_commit=False) as db:
-            plan = await build_split_plan(db, source_id, guides)
+            plan = await build_split_plan(db, source_id, guides, origin=origin, version=version)
             print("plan:", plan.counts())
             try:
                 result = await apply_split(db, source_id, plan)
@@ -468,11 +543,14 @@ if __name__ == "__main__":
 
     ap = argparse.ArgumentParser(description="Split the NetBackup source per publication (one-off).")
     ap.add_argument("--db-url", default=settings.database_url)
-    ap.add_argument("--source-id", type=uuid.UUID, default=DEFAULT_SOURCE_ID)
+    ap.add_argument("--target", choices=sorted(TARGETS), default="netbackup")
+    ap.add_argument("--source-id", type=uuid.UUID, help="override the target's original source")
     ap.add_argument("--apply", action="store_true", help="commit (default: dry run, rolled back)")
     args = ap.parse_args()
+    t = TARGETS[args.target]
     try:
-        asyncio.run(run(args.db_url, args.source_id, args.apply))
+        asyncio.run(run(args.db_url, args.source_id or t.source_id, args.apply, t.guides,
+                        origin=t.origin, version=t.version))
     except SplitAborted as exc:
         print(f"ABORTED: {exc}", file=sys.stderr)
         sys.exit(1)
