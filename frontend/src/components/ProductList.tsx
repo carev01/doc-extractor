@@ -81,30 +81,32 @@ export default function ProductList({ vendor, onSelect, selectedId, access }: Pr
     <div className="product-list">
       <div className="product-heading">
         <h2>Products — {vendor.name}</h2>
-        {/* Exporting only reads, so it is offered to read-only grants too —
-            the same as the per-product "Export all sources". */}
-        {products.length > 1 && (
-          <button
-            type="button"
-            className="btn-secondary-sm"
-            title="Export the sources of several products of this vendor in one go"
-            onClick={() => setShowVendorExport(true)}
-          >
-            Export products
-          </button>
-        )}
-        {/* Extracting writes, so it needs a read_write grant — every source is
-            still authorized again server-side. */}
-        {canWrite && products.length > 0 && (
-          <button
-            type="button"
-            className="btn-secondary-sm"
-            title="Queue an extraction for the chosen sources of this vendor's products"
-            onClick={() => setShowVendorExtract(true)}
-          >
-            Extract products
-          </button>
-        )}
+        <div className="heading-actions">
+          {/* Exporting only reads, so it is offered to read-only grants too —
+              the same as the per-product "Export all sources". */}
+          {products.length > 1 && (
+            <button
+              type="button"
+              className="btn-secondary-sm"
+              title="Export the sources of several products of this vendor in one go"
+              onClick={() => setShowVendorExport(true)}
+            >
+              Export products
+            </button>
+          )}
+          {/* Extracting writes, so it needs a read_write grant — every source is
+              still authorized again server-side. */}
+          {canWrite && products.length > 0 && (
+            <button
+              type="button"
+              className="btn-secondary-sm"
+              title="Queue an extraction for the chosen sources of this vendor's products"
+              onClick={() => setShowVendorExtract(true)}
+            >
+              Extract products
+            </button>
+          )}
+        </div>
       </div>
       {showVendorExtract && (
         <BulkExtractModal

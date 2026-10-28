@@ -204,26 +204,28 @@ export default function SourceList({
       )}
       <div className="product-heading">
         <h2>Documentation Sources — {product.name}</h2>
-        {sources.length > 1 && (
-          <button
-            type="button"
-            className="btn-secondary-sm"
-            title="Export every source of this product in one go"
-            onClick={() => setShowProductExport(true)}
-          >
-            Export all sources
-          </button>
-        )}
-        {canWrite && sources.length > 1 && (
-          <button
-            type="button"
-            className="btn-secondary-sm"
-            title="Queue an extraction for the chosen sources of this product"
-            onClick={() => setShowProductExtract(true)}
-          >
-            Extract sources
-          </button>
-        )}
+        <div className="heading-actions">
+          {sources.length > 1 && (
+            <button
+              type="button"
+              className="btn-secondary-sm"
+              title="Export every source of this product in one go"
+              onClick={() => setShowProductExport(true)}
+            >
+              Export all sources
+            </button>
+          )}
+          {canWrite && sources.length > 1 && (
+            <button
+              type="button"
+              className="btn-secondary-sm"
+              title="Queue an extraction for the chosen sources of this product"
+              onClick={() => setShowProductExtract(true)}
+            >
+              Extract sources
+            </button>
+          )}
+        </div>
       </div>
       {showProductExtract && (
         <BulkExtractModal
