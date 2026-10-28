@@ -2468,6 +2468,15 @@ a.btn-primary {
   margin: 0;
 }
 
+/* The heading's buttons, kept together on the right. As separate children of
+   the space-between heading, a second button floated to the middle. */
+.heading-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
 /* Inline option row inside a dialog: label above control, wrapping on narrow. */
 .export-row {
   display: flex;
