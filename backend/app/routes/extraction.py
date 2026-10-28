@@ -9,7 +9,10 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.authz import Principal, authorize_run, authorize_source, get_principal
+from app.core.authz import (
+    Principal, authorize_product, authorize_run, authorize_source, get_principal,
+    require_vendor_read,
+)
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.article import Article
@@ -22,7 +25,12 @@ from app.models.source import DocumentationSource
 from app.models.toc import TOCEntry
 from app.models.toc_checkpoint import TocCheckpoint
 from app.models.vendor import Vendor
+from app.schemas.bulk_extract import (
+    BulkExtractRequest, BulkExtractResponse, BulkPreviewResponse, BulkProduct, BulkQueued,
+    BulkSkipped, BulkSource,
+)
 from app.schemas.export import ExtractionTriggerResponse
+from app.services import bulk_extract
 from app.services.auth.session import session_expired
 from app.services.diffing import compute_unified_diff
 from app.services import pdf_cache
@@ -45,6 +53,47 @@ def _is_toc_collapse(run: ExtractionRun) -> bool:
     return bool(
         run.status == RunStatus.FAILED
         and (run.error_message or "").startswith(TOC_COLLAPSE_PREFIX)
+    )
+
+
+@router.get("/bulk/preview", response_model=BulkPreviewResponse)
+async def bulk_extract_preview(
+    vendor_id: uuid.UUID | None = None,
+    product_id: uuid.UUID | None = None,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """Sources a product's or vendor's "Extract" action would queue, each with
+    its eligibility (and why not). Exactly one of ``vendor_id`` / ``product_id``."""
+    if (vendor_id is None) == (product_id is None):
+        raise HTTPException(status_code=422, detail="Pass exactly one of vendor_id or product_id")
+    if product_id is not None:
+        await authorize_product(db, principal, product_id, write=False)
+    else:
+        if await db.get(Vendor, vendor_id) is None:
+            raise HTTPException(status_code=404, detail="Vendor not found")
+        require_vendor_read(principal, vendor_id)
+    products: dict[uuid.UUID, BulkProduct] = {}
+    for c in await bulk_extract.preview(db, principal, vendor_id=vendor_id, product_id=product_id):
+        products.setdefault(c.product_id, BulkProduct(
+            product_id=c.product_id, product_name=c.product_name, sources=[]))
+        products[c.product_id].sources.append(BulkSource(
+            source_id=c.source_id, source_name=c.source_name, eligible=c.eligible, reason=c.reason))
+    return BulkPreviewResponse(products=list(products.values()))
+
+
+@router.post("/bulk", response_model=BulkExtractResponse)
+async def bulk_extract_trigger(
+    body: BulkExtractRequest,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """Queue an ordinary extraction for each listed source that is eligible; the
+    rest come back in ``skipped`` with a reason. Runs execute one at a time."""
+    queued, skipped = await bulk_extract.trigger(db, principal, body.source_ids)
+    return BulkExtractResponse(
+        queued=[BulkQueued(source_id=s, run_id=r) for s, r in queued],
+        skipped=[BulkSkipped(source_id=s, reason=why) for s, why in skipped],
     )
 
 
