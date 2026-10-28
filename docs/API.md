@@ -98,6 +98,8 @@ pass `force: true` to proceed and let the next run resolve it.
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/extraction/trigger/{source_id}` | Trigger an extraction run (`?force=true` re-converts a PDF whose bytes are unchanged) |
+| `GET` | `/api/extraction/bulk/preview` | Sources a bulk extract would cover — exactly one of `?product_id=` / `?vendor_id=` — grouped by product, each with `eligible` and a skip `reason` (see [Bulk extract](#bulk-extract)) |
+| `POST` | `/api/extraction/bulk` | Queue an ordinary extraction for each eligible source in `{"source_ids": [...]}`; returns `queued` / `skipped` |
 | `POST` | `/api/extraction/enrich/{source_id}` | Queue an image-enrichment-only run (`kind=enrich`; describe all missing images, no re-scrape). 409 if descriptions are disabled, nothing needs describing, or a run is already active. |
 | `GET` | `/api/extraction/runs` | List runs (optional `source_id` filter) |
 | `GET` | `/api/extraction/runs/{run_id}` | Get run status |
@@ -108,6 +110,26 @@ pass `force: true` to proceed and let the next run resolve it.
 | `POST` | `/api/extraction/runs/{run_id}/retry-escalation` | Retry VLM escalation for failed pages |
 | `POST` | `/api/extraction/runs/{run_id}/retry-blocked` | Re-scrape only the pages a run recorded as bot-blocked (no TOC re-discovery). 409 if nothing blocked or a run is active. |
 | `POST` | `/api/extraction/resanitize/{source_id}` | Re-sanitize all articles for a source |
+
+### Bulk extract
+
+The product view's **Extract sources** and the vendor view's **Extract products** queue one ordinary `extract` run (`trigger: "bulk"`) per chosen source. They go through the normal queue, so they still run **one at a time**, oldest first, and progress shows on each source as usual. `force` and `allow_toc_collapse` are deliberately not offered in bulk.
+
+A source is skipped, with a `reason`, wherever a single trigger would refuse it. Eligibility is re-checked when you `POST`, because a run may have started since the preview.
+
+| `reason` | Meaning |
+|---|---|
+| `active_run` | A run is already queued, running or paused for this source (never a second one) |
+| `session_expired` | The source's login realm has expired; log in or re-upload cookies first |
+| `no_write_access` | The caller has only read access to the source's vendor |
+| `not_found` | No such source, or one in a vendor the caller cannot see (not revealed) |
+
+```bash
+curl -s "$API/api/extraction/bulk/preview?product_id=$PRODUCT" -H "X-API-Key: $KEY"
+curl -s -X POST "$API/api/extraction/bulk" -H "X-API-Key: $KEY" \
+  -H 'Content-Type: application/json' -d '{"source_ids": ["…", "…"]}'
+# → {"queued": [{"source_id": "…", "run_id": "…"}], "skipped": [{"source_id": "…", "reason": "active_run"}]}
+```
 
 ---
 

@@ -32,6 +32,7 @@ import {
 import ProductVersionBar from "./ProductVersionBar";
 import UrlTemplate from "./UrlTemplate";
 import BatchExportModal from "./BatchExportModal";
+import BulkExtractModal from "./BulkExtractModal";
 import type { Access } from "../access";
 import { apiError } from "../api/errors";
 
@@ -82,6 +83,7 @@ export default function SourceList({
   const canWrite = access.canWriteVendor(product.vendor_id);
   const [sources, setSources] = useState<DocumentationSource[]>([]);
   const [showProductExport, setShowProductExport] = useState(false);
+  const [showProductExtract, setShowProductExtract] = useState(false);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [authRealms, setAuthRealms] = useState<AuthRealm[]>([]);
   const [enrichment, setEnrichment] = useState<Map<string, SourceEnrichment>>(new Map());
@@ -212,7 +214,24 @@ export default function SourceList({
             Export all sources
           </button>
         )}
+        {canWrite && sources.length > 1 && (
+          <button
+            type="button"
+            className="btn-secondary-sm"
+            title="Queue an extraction for the chosen sources of this product"
+            onClick={() => setShowProductExtract(true)}
+          >
+            Extract sources
+          </button>
+        )}
       </div>
+      {showProductExtract && (
+        <BulkExtractModal
+          scope={{ kind: "product", id: product.id, name: product.name }}
+          onClose={() => setShowProductExtract(false)}
+          onQueued={fetchSources}
+        />
+      )}
       {showProductExport && (
         <BatchExportModal
           scope={{ kind: "product", id: product.id, name: product.name }}

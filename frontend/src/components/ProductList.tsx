@@ -4,6 +4,7 @@ import { listProducts, createProduct, updateProduct, deleteProduct } from "../ap
 import { apiError } from "../api/errors";
 import type { Access } from "../access";
 import BatchExportModal from "./BatchExportModal";
+import BulkExtractModal from "./BulkExtractModal";
 
 interface Props {
   vendor: Vendor;
@@ -22,6 +23,7 @@ export default function ProductList({ vendor, onSelect, selectedId, access }: Pr
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [showVendorExport, setShowVendorExport] = useState(false);
+  const [showVendorExtract, setShowVendorExtract] = useState(false);
 
   const fetchProducts = useCallback(async () => {
     try {
@@ -91,7 +93,25 @@ export default function ProductList({ vendor, onSelect, selectedId, access }: Pr
             Export products
           </button>
         )}
+        {/* Extracting writes, so it needs a read_write grant — every source is
+            still authorized again server-side. */}
+        {canWrite && products.length > 0 && (
+          <button
+            type="button"
+            className="btn-secondary-sm"
+            title="Queue an extraction for the chosen sources of this vendor's products"
+            onClick={() => setShowVendorExtract(true)}
+          >
+            Extract products
+          </button>
+        )}
       </div>
+      {showVendorExtract && (
+        <BulkExtractModal
+          scope={{ kind: "vendor", id: vendor.id, name: vendor.name }}
+          onClose={() => setShowVendorExtract(false)}
+        />
+      )}
       {showVendorExport && (
         <BatchExportModal
           scope={{ kind: "vendor", id: vendor.id, name: vendor.name }}

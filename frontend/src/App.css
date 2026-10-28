@@ -2293,6 +2293,15 @@ a.btn-primary {
   overflow-y: auto;
 }
 
+/* Sources nested under a product in SourceTreePicker: indented, and scrolled
+   by the outer list rather than each having its own scroll area. */
+.bump-plan.tree-sources {
+  margin: 6px 0 0 1.6rem;
+  gap: 4px;
+  max-height: none;
+  overflow: visible;
+}
+
 .bump-plan-row {
   padding: 10px 12px;
   background: var(--ink-1);
