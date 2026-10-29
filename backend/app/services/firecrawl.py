@@ -27,6 +27,7 @@ from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.image import ArticleImage
 from app.models.product import Product
 from app.models.source import DocumentationSource, SourceStatus
+from app.models.toc_checkpoint import TocCheckpoint
 from app.models.toc import TOCEntry
 from app.models.auth_realm import AuthRealm, RealmStatus
 from app.schemas.delta import encode_delta_cursor
@@ -297,6 +298,18 @@ def _requeue_like_resume(run) -> None:
     run.error_message = None
 
 
+async def _cancel_requested(db, run) -> bool:
+    """Re-read ``run.control`` from the DB, locking the row until commit.
+
+    A scripted re-login takes a while, and a Cancel clicked meanwhile is committed
+    by the API from its own session — the in-memory ``run`` still shows the old
+    control. Checked before any re-queue so the cancel wins instead of being
+    overwritten by ``_requeue_like_resume``; the lock keeps a cancel from
+    landing between this check and the re-queue's commit."""
+    await db.refresh(run, attribute_names=["control"], with_for_update=True)
+    return run.control == "cancel"
+
+
 async def _pause_for_expiry(db, src, realm, run_id) -> None:
     """Session died mid raw_http scrape: re-login a job run once, else pause.
 
@@ -311,8 +324,10 @@ async def _pause_for_expiry(db, src, realm, run_id) -> None:
     """
     run = await db.get(ExtractionRun, run_id)
     if run is not None and await realm_manager.try_auto_relogin(db, realm, run):
+        cancelled = await _cancel_requested(db, run)
         await db.commit()
-        raise RunControlSignal("requeue")
+        # A Cancel clicked during the login wins over the re-queue.
+        raise RunControlSignal("cancel" if cancelled else "requeue")
     if realm.status != RealmStatus.LOGIN_FAILED:
         await realm_manager.invalidate(
             db, realm, RealmStatus.EXPIRED, "Session expired during extraction"
@@ -2014,7 +2029,17 @@ class FirecrawlService:
             realm = await db.get(AuthRealm, source.auth_realm_id)
 
         if await realm_manager.try_auto_relogin(db, realm, run):
-            _requeue_like_resume(run)
+            if await _cancel_requested(db, run):
+                # Cancel clicked during the login: honour it, don't re-queue.
+                logger.info("Run %s cancelled during automatic re-login", run.id)
+                run.status = RunStatus.CANCELLED
+                run.control = None
+                run.completed_at = datetime.now(timezone.utc)
+                await db.execute(
+                    delete(TocCheckpoint).where(TocCheckpoint.source_id == run.source_id)
+                )
+            else:
+                _requeue_like_resume(run)
             source.status = SourceStatus.PENDING
             source.error_message = None
             await db.commit()
@@ -3166,6 +3191,9 @@ class FirecrawlService:
 
         except RunControlSignal as sig:
             now = datetime.now(timezone.utc)
+            if sig.action == "requeue" and await _cancel_requested(db, run):
+                # A Cancel landed after the re-login's commit: it still wins.
+                sig = RunControlSignal("cancel")
             run.control = None  # consume the signal
             if sig.action == "requeue":
                 # Session re-logged in mid-run (job run): continue from the

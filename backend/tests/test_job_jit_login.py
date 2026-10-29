@@ -382,3 +382,57 @@ async def test_non_credential_edit_keeps_login_failed(factory, client):
                               json={"name": "renamed", "password": "secret"})
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "login_failed"
+
+
+# --- Final review: a Cancel clicked during the re-login wins ----------------
+
+class CancellingLogin(FakeLogin):
+    """A scripted login during which the user clicks Cancel (the API commits
+    ``control='cancel'`` from its own session while the login is in flight)."""
+
+    def __init__(self, factory, run_id):
+        super().__init__()
+        self.factory, self.run_id = factory, run_id
+
+    async def __call__(self, db, realm):
+        async with self.factory() as other:
+            r = await other.get(ExtractionRun, self.run_id)
+            r.control = "cancel"
+            await other.commit()
+        await super().__call__(db, realm)
+
+
+async def test_cancel_during_mid_run_relogin_cancels_instead_of_requeue(factory, monkeypatch):
+    from app.models import TocCheckpoint
+    async with factory() as db:
+        realm, src, jr = await _setup(db, expires_in=timedelta(hours=3))
+        run = await _run(db, src, job_run=jr)
+        db.add(TocCheckpoint(source_id=src.id))
+        await db.commit()
+        fake = CancellingLogin(factory, run.id)
+        monkeypatch.setattr(realm_manager, "run_scripted_login", fake)
+
+        out = await firecrawl_mod.firecrawl_service._handle_auth_wall(
+            db, src, run.id, NeedsLoginError("wall"))
+        assert fake.calls == 1
+        assert out.status == RunStatus.CANCELLED
+        assert out.completed_at is not None
+    async with factory() as fresh:
+        row = await fresh.get(ExtractionRun, run.id)
+        assert row.status == RunStatus.CANCELLED and row.control is None
+        from sqlalchemy import select as _sel
+        assert (await fresh.execute(
+            _sel(TocCheckpoint).where(TocCheckpoint.source_id == src.id))).first() is None
+
+
+async def test_cancel_during_raw_http_relogin_raises_cancel(factory, monkeypatch):
+    async with factory() as db:
+        realm, src, jr = await _setup(db, expires_in=timedelta(hours=3))
+        run = await _run(db, src, job_run=jr)
+        await db.commit()
+        fake = CancellingLogin(factory, run.id)
+        monkeypatch.setattr(realm_manager, "run_scripted_login", fake)
+        with pytest.raises(firecrawl_mod.RunControlSignal) as ei:
+            await firecrawl_mod._pause_for_expiry(db, src, realm, run.id)
+        assert ei.value.action == "cancel"
+        assert fake.calls == 1
