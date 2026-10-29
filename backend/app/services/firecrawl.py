@@ -1970,6 +1970,68 @@ class FirecrawlService:
                 except Exception as exc:
                     logger.warning("Individual retry failed for %s: %s", url, exc)
 
+    async def _handle_auth_wall(
+        self, db: AsyncSession, source, run_pk: uuid.UUID, exc: Exception,
+    ) -> ExtractionRun:
+        """An auth wall was hit mid-run — the session expired.
+
+        A job-triggered run whose realm has stored credentials gets ONE scripted
+        re-login (``run.auto_relogin_used``) and is re-queued exactly as
+        ``POST /runs/{id}/resume`` does, so the worker continues from the
+        checkpoint with the fresh session. Otherwise — a manual run, no
+        credentials, the re-login already spent, or the re-login failed — mark the
+        realm EXPIRED, notify, and PAUSE (keep the checkpoint) so a fresh cookie +
+        Resume continues from where it stopped."""
+        run = (
+            await db.execute(select(ExtractionRun).where(ExtractionRun.id == run_pk))
+        ).scalar_one()
+        realm = None
+        if source.auth_realm_id is not None:
+            realm = await db.get(AuthRealm, source.auth_realm_id)
+
+        if realm_manager.can_auto_relogin(realm, run):
+            run.auto_relogin_used = True
+            try:
+                await realm_manager.run_scripted_login(db, realm)
+            except Exception as login_exc:  # fall through to the PAUSE path
+                logger.warning(
+                    "Auto re-login for realm %s failed on run %s: %s",
+                    realm.id, run_pk, login_exc,
+                )
+            else:
+                logger.info(
+                    "Auth wall on run %s: re-logged realm %s in, re-queuing run",
+                    run_pk, realm.id,
+                )
+                run.status = RunStatus.PENDING
+                run.control = None
+                run.claimed_by = None
+                run.claimed_at = None
+                run.heartbeat_at = None
+                run.error_message = None
+                source.status = SourceStatus.PENDING
+                source.error_message = None
+                await db.commit()
+                return run
+
+        if realm is not None and realm.status != RealmStatus.LOGIN_FAILED:
+            # A failed re-login has already marked the realm LOGIN_FAILED; keep
+            # that (it is what stops later job firings retrying bad creds).
+            await realm_manager.invalidate(db, realm, RealmStatus.EXPIRED, str(exc))
+        await notify(
+            "Session expired",
+            f"Realm '{realm.name if realm else '?'}' expired during "
+            f"extraction of '{source.name}' — the run is PAUSED. "
+            f"Upload a fresh cookie and hit Resume to continue.",
+            realm=(realm.name if realm else None),
+        )
+        run.status = RunStatus.PAUSED
+        run.control = None
+        source.status = SourceStatus.PENDING
+        source.error_message = None
+        await db.commit()
+        return run
+
     async def _apply_rebuilt_toc(
         self, db: AsyncSession, source_id: uuid.UUID, toc_dicts: list[dict],
     ) -> bool:
@@ -2231,7 +2293,7 @@ class FirecrawlService:
             try:
                 if realm is None:
                     raise NeedsLoginError("Auth realm not found for source")
-                auth_state = await realm_manager.ensure_session(db, realm)
+                auth_state = await realm_manager.session_for_run(db, realm, run=run)
             except NeedsLoginError as exc:
                 run.status = RunStatus.FAILED
                 run.error_message = f"Authenticated source needs login: {exc}"
@@ -2407,7 +2469,7 @@ class FirecrawlService:
             try:
                 if realm is None:
                     raise NeedsLoginError("Auth realm not found for source")
-                auth_state = await realm_manager.ensure_session(db, realm)
+                auth_state = await realm_manager.session_for_run(db, realm, run=run)
             except NeedsLoginError as exc:
                 run.status = RunStatus.FAILED
                 run.error_message = f"Authenticated source needs login: {exc}"
@@ -2532,7 +2594,7 @@ class FirecrawlService:
             try:
                 if realm is None:
                     raise NeedsLoginError("Auth realm not found for source")
-                auth_state = await realm_manager.ensure_session(db, realm)
+                auth_state = await realm_manager.session_for_run(db, realm, run=run)
             except NeedsLoginError as exc:
                 run.status = RunStatus.FAILED
                 run.error_message = f"Authenticated source needs login: {exc}"
@@ -2911,33 +2973,7 @@ class FirecrawlService:
                         content_spec=content_spec, auth_state=auth_state,
                     )
                 except NeedsLoginError as exc:
-                    # Auth wall hit mid-run — session expired. Mark the realm
-                    # EXPIRED, notify, and PAUSE (keep the checkpoint) so a fresh
-                    # cookie + Resume continues from where it stopped.
-                    realm = None
-                    if source.auth_realm_id is not None:
-                        realm = await db.get(AuthRealm, source.auth_realm_id)
-                        await realm_manager.invalidate(
-                            db, realm, RealmStatus.EXPIRED, str(exc)
-                        )
-                    await notify(
-                        "Session expired",
-                        f"Realm '{realm.name if realm else '?'}' expired during "
-                        f"extraction of '{source.name}' — the run is PAUSED. "
-                        f"Upload a fresh cookie and hit Resume to continue.",
-                        realm=(realm.name if realm else None),
-                    )
-                    run = (
-                        await db.execute(
-                            select(ExtractionRun).where(ExtractionRun.id == run_pk)
-                        )
-                    ).scalar_one()
-                    run.status = RunStatus.PAUSED
-                    run.control = None
-                    source.status = SourceStatus.PENDING
-                    source.error_message = None
-                    await db.commit()
-                    return run
+                    return await self._handle_auth_wall(db, source, run_pk, exc)
             else:
                 # Submit in capped chunks (≤ MAX_BATCH_URLS) processed
                 # sequentially, so a huge doc set doesn't overwhelm Firecrawl

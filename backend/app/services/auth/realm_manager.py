@@ -1,12 +1,15 @@
 """Realm session lifecycle — ensure a usable auth state dict exists."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.auth_realm import AuthRealm, RealmStatus
+from app.models.extraction_run import ExtractionRun
+from app.models.job_run import JobRun
 from app.services.auth import login_scripts
+from app.services.auth.session import session_expires_at
 from app.services.browserless import BrowserlessError, browserless_client
 
 logger = logging.getLogger(__name__)
@@ -26,6 +29,60 @@ async def ensure_session(db: AsyncSession, realm: AuthRealm) -> dict:
         return realm.state_snapshot
     await invalidate(db, realm, RealmStatus.NEEDS_LOGIN, "No stored session; assisted login required")
     raise NeedsLoginError(f"Realm {realm.id} needs an assisted login")
+
+
+JIT_LOGIN_HORIZON = timedelta(hours=1)
+
+
+async def session_for_run(db: AsyncSession, realm: AuthRealm, *, run: ExtractionRun,
+                          horizon: timedelta = JIT_LOGIN_HORIZON) -> dict:
+    """Like ``ensure_session``, but a *job-triggered* run logs the realm in just in
+    time when its session is missing or expires within ``horizon``.
+
+    A scheduled run fires unattended, so a session that would lapse mid-run (or
+    already has) is renewed up front instead of pausing at the first auth wall.
+    Bounded on purpose: only runs with a ``job_run_id`` (manual/bulk/force runs
+    behave exactly as ``ensure_session``), only realms with stored credentials,
+    never a LOGIN_FAILED realm (retrying bad credentials on every firing risks
+    an IdP lockout — a human must fix them), and at most once per realm per
+    JobRun: a login stamped after the JobRun was created already serves every
+    sibling run of that firing."""
+    if run.job_run_id is not None:
+        if realm.status == RealmStatus.LOGIN_FAILED:
+            raise NeedsLoginError(
+                f"Realm {realm.id} scripted login failed earlier; fix its credentials")
+        if realm.username and realm.password and await _jit_login_due(
+                db, realm, run, horizon):
+            logger.info("Just-in-time login for realm %s (run %s)", realm.id, run.id)
+            await run_scripted_login(db, realm)
+    return await ensure_session(db, realm)
+
+
+async def _jit_login_due(db: AsyncSession, realm: AuthRealm, run: ExtractionRun,
+                         horizon: timedelta) -> bool:
+    expires = session_expires_at(realm)
+    stale = (
+        realm.status != RealmStatus.ACTIVE
+        or not realm.state_snapshot
+        or (expires is not None and expires <= datetime.now(timezone.utc) + horizon)
+    )
+    if not stale:
+        return False
+    job_run = await db.get(JobRun, run.job_run_id)
+    if job_run is None or job_run.created_at is None:
+        return True
+    return realm.last_login_at is None or realm.last_login_at < job_run.created_at
+
+
+def can_auto_relogin(realm: AuthRealm | None, run: ExtractionRun) -> bool:
+    """Whether a mid-run auth wall may re-login a job run once (vs. pausing)."""
+    return (
+        realm is not None
+        and run.job_run_id is not None
+        and not run.auto_relogin_used
+        and realm.status != RealmStatus.LOGIN_FAILED
+        and bool(realm.username and realm.password)
+    )
 
 
 async def run_scripted_login(db: AsyncSession, realm: AuthRealm) -> None:
