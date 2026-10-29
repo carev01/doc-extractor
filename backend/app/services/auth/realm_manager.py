@@ -102,7 +102,8 @@ async def try_auto_relogin(db: AsyncSession, realm: AuthRealm | None,
 
     True when the scripted login succeeded (the caller re-queues the run). False
     when not eligible (see ``can_auto_relogin``) or the login failed — the realm
-    is then LOGIN_FAILED and the caller pauses as before. ``auto_relogin_used`` is
+    is then LOGIN_FAILED (credentials rejected) or EXPIRED (Browserless
+    unavailable) and the caller pauses as before. ``auto_relogin_used`` is
     set before trying, so a failed attempt is not retried on resume either."""
     if not can_auto_relogin(realm, run):
         return False
@@ -118,12 +119,21 @@ async def try_auto_relogin(db: AsyncSession, realm: AuthRealm | None,
 
 
 async def run_scripted_login(db: AsyncSession, realm: AuthRealm) -> None:
-    """Run a headless scripted login; persist snapshot + ACTIVE, or LOGIN_FAILED."""
+    """Run a headless scripted login; persist snapshot + ACTIVE, or LOGIN_FAILED.
+
+    LOGIN_FAILED means *the credentials were rejected* (the login ran and did not
+    complete) and locks the realm out of every future job firing until a human
+    fixes them. An infrastructure failure (Browserless unreachable, 5xx,
+    timeout) says nothing about the credentials, so it only marks the realm
+    EXPIRED with the error — the next firing tries again — and still raises
+    NeedsLoginError for this run. A realm already LOGIN_FAILED keeps it."""
     code, context = login_scripts.build_login(realm)
     try:
         result = await browserless_client.run_login(code, context)
     except BrowserlessError as exc:
-        await invalidate(db, realm, RealmStatus.LOGIN_FAILED, str(exc))
+        status = (RealmStatus.LOGIN_FAILED if realm.status == RealmStatus.LOGIN_FAILED
+                  else RealmStatus.EXPIRED)
+        await invalidate(db, realm, status, f"Scripted login could not run: {exc}"[:4096])
         raise NeedsLoginError(f"Scripted login failed for realm {realm.id}") from exc
     if not result.get("ok"):
         await invalidate(db, realm, RealmStatus.LOGIN_FAILED,

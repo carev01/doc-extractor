@@ -165,3 +165,36 @@ async def test_all_children_paused_jobrun_reports_children_paused(factory):
         await reconcile_job_runs(db, NOW)
         await db.refresh(jr)
         assert jr.status == JobRunStatus.RUNNING
+
+
+@pytest.mark.parametrize("status,snapshot", [
+    (RealmStatus.NEEDS_LOGIN, None),                  # never logged in
+    (RealmStatus.NEEDS_LOGIN, {"cookies": []}),        # status still says so
+    (RealmStatus.ACTIVE, None),                        # no stored session at all
+])
+async def test_uncredentialed_realm_without_session_is_login_needed(factory, status, snapshot):
+    """No saved credentials and no usable session: ensure_session would raise
+    NeedsLoginError, so the run must not be enqueued only to FAIL."""
+    async with factory() as db:
+        r = await _realm(db, status=status, state_snapshot=snapshot)
+        job, s = await _setup(db, r)
+        jr = await fan_out_job(db, job, "scheduled", now=NOW)
+        assert jr.skipped == [{"source_id": str(s.id), "reason": "login_needed"}]
+        assert jr.sources_total == 0
+
+
+async def test_credentialed_needs_login_realm_is_enqueued(factory):
+    async with factory() as db:
+        r = await _realm(db, status=RealmStatus.NEEDS_LOGIN, username="u", password="p")
+        job, s = await _setup(db, r)
+        jr = await fan_out_job(db, job, "scheduled", now=NOW)
+        assert not jr.skipped and jr.sources_total == 1
+
+
+async def test_active_uncredentialed_realm_with_session_is_enqueued(factory):
+    async with factory() as db:
+        r = await _realm(db, status=RealmStatus.ACTIVE, state_snapshot={
+            "cookies": [{"name": "session_token", "expires": time.time() + 86400}]})
+        job, s = await _setup(db, r)
+        jr = await fan_out_job(db, job, "scheduled", now=NOW)
+        assert not jr.skipped and jr.sources_total == 1

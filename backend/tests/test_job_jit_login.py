@@ -436,3 +436,142 @@ async def test_cancel_during_raw_http_relogin_raises_cancel(factory, monkeypatch
             await firecrawl_mod._pause_for_expiry(db, src, realm, run.id)
         assert ei.value.action == "cancel"
         assert fake.calls == 1
+
+
+# --- Deferred minors: pause during re-login; cancel during a failed re-login --
+
+class ControlDuringLogin(FakeLogin):
+    """A scripted login during which the user clicks Pause/Cancel (committed by
+    the API from its own session while the login is in flight)."""
+
+    def __init__(self, factory, run_id, control, ok=True):
+        super().__init__(ok=ok)
+        self.factory, self.run_id, self.control = factory, run_id, control
+
+    async def __call__(self, db, realm):
+        async with self.factory() as other:
+            r = await other.get(ExtractionRun, self.run_id)
+            r.control = self.control
+            await other.commit()
+        await super().__call__(db, realm)
+
+
+async def test_pause_during_mid_run_relogin_pauses_instead_of_requeue(factory, monkeypatch):
+    async with factory() as db:
+        realm, src, jr = await _setup(db, expires_in=timedelta(hours=3))
+        run = await _run(db, src, job_run=jr)
+        await db.commit()
+        fake = ControlDuringLogin(factory, run.id, "pause")
+        monkeypatch.setattr(realm_manager, "run_scripted_login", fake)
+        out = await firecrawl_mod.firecrawl_service._handle_auth_wall(
+            db, src, run.id, NeedsLoginError("wall"))
+        assert fake.calls == 1
+        assert out.status == RunStatus.PAUSED
+    async with factory() as fresh:
+        row = await fresh.get(ExtractionRun, run.id)
+        assert row.status == RunStatus.PAUSED and row.control is None
+        assert (await fresh.get(AuthRealm, realm.id)).status == RealmStatus.ACTIVE
+
+
+async def test_pause_during_raw_http_relogin_raises_pause(factory, monkeypatch):
+    async with factory() as db:
+        realm, src, jr = await _setup(db, expires_in=timedelta(hours=3))
+        run = await _run(db, src, job_run=jr)
+        await db.commit()
+        fake = ControlDuringLogin(factory, run.id, "pause")
+        monkeypatch.setattr(realm_manager, "run_scripted_login", fake)
+        with pytest.raises(firecrawl_mod.RunControlSignal) as ei:
+            await firecrawl_mod._pause_for_expiry(db, src, realm, run.id)
+        assert ei.value.action == "pause"
+
+
+async def test_cancel_during_failed_mid_run_relogin_cancels(factory, monkeypatch):
+    from app.models import TocCheckpoint
+    async with factory() as db:
+        realm, src, jr = await _setup(db, expires_in=timedelta(hours=3))
+        run = await _run(db, src, job_run=jr)
+        db.add(TocCheckpoint(source_id=src.id))
+        await db.commit()
+        fake = ControlDuringLogin(factory, run.id, "cancel", ok=False)
+        monkeypatch.setattr(realm_manager, "run_scripted_login", fake)
+        out = await firecrawl_mod.firecrawl_service._handle_auth_wall(
+            db, src, run.id, NeedsLoginError("wall"))
+        assert fake.calls == 1
+        assert out.status == RunStatus.CANCELLED and out.completed_at is not None
+    async with factory() as fresh:
+        row = await fresh.get(ExtractionRun, run.id)
+        assert row.status == RunStatus.CANCELLED and row.control is None
+        assert (await fresh.get(AuthRealm, realm.id)).status == RealmStatus.LOGIN_FAILED
+        from sqlalchemy import select as _sel
+        assert (await fresh.execute(
+            _sel(TocCheckpoint).where(TocCheckpoint.source_id == src.id))).first() is None
+
+
+async def test_cancel_during_failed_raw_http_relogin_raises_cancel(factory, monkeypatch):
+    async with factory() as db:
+        realm, src, jr = await _setup(db, expires_in=timedelta(hours=3))
+        run = await _run(db, src, job_run=jr)
+        await db.commit()
+        fake = ControlDuringLogin(factory, run.id, "cancel", ok=False)
+        monkeypatch.setattr(realm_manager, "run_scripted_login", fake)
+        with pytest.raises(firecrawl_mod.RunControlSignal) as ei:
+            await firecrawl_mod._pause_for_expiry(db, src, realm, run.id)
+        assert ei.value.action == "cancel"
+        await db.refresh(realm)
+        assert realm.status == RealmStatus.LOGIN_FAILED
+
+
+@pytest.mark.parametrize("control,expected", [
+    (None, "requeue"), ("cancel", "cancel"), ("pause", "pause"),
+])
+async def test_relogin_outcome_rereads_control(factory, control, expected):
+    """The extract_source handler re-checks a 'requeue' with this after the
+    re-login's commit: a Pause/Cancel that landed since still wins."""
+    async with factory() as db:
+        realm, src, jr = await _setup(db)
+        run = await _run(db, src, job_run=jr)
+        await db.commit()
+        async with factory() as other:
+            r = await other.get(ExtractionRun, run.id)
+            r.control = control
+            await other.commit()
+        assert await firecrawl_mod._relogin_outcome(db, run) == expected
+
+
+# --- B7: the pause notification names the right fix --------------------------
+
+@pytest.fixture
+def notes(monkeypatch):
+    sent: list[str] = []
+
+    async def _capture(title, body, **kw):
+        sent.append(body)
+    monkeypatch.setattr(firecrawl_mod, "notify", _capture)
+    return sent
+
+
+async def test_pause_after_rejected_relogin_says_fix_credentials(factory, monkeypatch, notes):
+    monkeypatch.setattr(realm_manager, "run_scripted_login", FakeLogin(ok=False))
+    async with factory() as db:
+        realm, src, jr = await _setup(db, expires_in=timedelta(hours=3))
+        run = await _run(db, src, job_run=jr)
+        await db.commit()
+        await firecrawl_mod.firecrawl_service._handle_auth_wall(
+            db, src, run.id, NeedsLoginError("wall"))
+        run2 = await _run(db, src, job_run=None)
+        await db.commit()
+        with pytest.raises(firecrawl_mod.RunControlSignal):
+            await firecrawl_mod._pause_for_expiry(db, src, realm, run2.id)
+    assert len(notes) == 2
+    for body in notes:
+        assert "credentials" in body and "fresh cookie" not in body
+
+
+async def test_pause_of_cookie_realm_says_upload_cookie(factory, fake_login, notes):
+    async with factory() as db:
+        realm, src, _ = await _setup(db, expires_in=timedelta(hours=3), creds=False)
+        run = await _run(db, src, job_run=None)
+        await db.commit()
+        await firecrawl_mod.firecrawl_service._handle_auth_wall(
+            db, src, run.id, NeedsLoginError("wall"))
+    assert len(notes) == 1 and "fresh cookie" in notes[0]
