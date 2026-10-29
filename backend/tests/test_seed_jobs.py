@@ -112,3 +112,26 @@ async def test_major_competitors_deleted_only_when_unused(factory):
         res = await seed(db)
         await db.commit()
         assert res["deleted_major_competitors"] is False
+
+
+async def test_run_dry_run_persists_nothing_and_apply_commits(factory, capsys):
+    from app.ops.seed_jobs import run
+
+    async def counts():
+        async with factory() as db:
+            return tuple([
+                (await db.execute(select(func.count()).select_from(m))).scalar_one()
+                for m in (Tier, Job)
+            ])
+
+    res = await run(TEST_DATABASE_URL, apply=False)
+    # The dry run did the real writes (it reports them)...
+    assert res["tiers_created"] == ["Tier 1", "Tier 2", "Tier 3"]
+    assert res["jobs_created"] == ["Tier 1", "Tier 2", "Tier 3"]
+    # ...and rolled them back.
+    assert await counts() == (0, 0)
+    assert "ROLLED BACK" in capsys.readouterr().out
+
+    await run(TEST_DATABASE_URL, apply=True)
+    assert await counts() == (3, 3)
+    assert "COMMITTED" in capsys.readouterr().out

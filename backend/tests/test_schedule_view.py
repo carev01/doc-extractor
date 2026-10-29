@@ -1,5 +1,6 @@
 """Schedule view: per-product last-ok / latest / next aggregation."""
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -278,16 +279,33 @@ async def test_schedule_never_fetches_run_logs_or_large_json(env):
         _, _, (a,) = await _product(s, 1)
         s.add_all([_run(a, 2, log_text="x" * 1000), _run(a, 1, blocked=[{"url": "u"}, {"url": "v"}])])
         await s.commit()
-    statements.clear()
-    p = (await _get(c))["P"]
-    assert p["latest"]["blocked"] == 2 and p["latest"]["outcome"] == "warn"
-    run_sql = [st for st in statements if "extraction_runs" in st]
-    assert run_sql
-    for st in run_sql:
-        assert "log_text" not in st
-        assert "escalation_pending" not in st
-        assert "extraction_runs.blocked_pending," not in st
+    # What each statement actually returned (cursor.description), not how its
+    # SQL happens to be spelled: robust to aliasing, qualification and order.
+    fetched: list[tuple[str, list[str]]] = []
 
+    def capture(conn, cursor, statement, params, context, executemany):
+        if cursor.description and "extraction_runs" in statement:
+            fetched.append((statement, [d[0] for d in cursor.description]))
+
+    engine = f.kw["bind"].sync_engine
+    event.listen(engine, "after_cursor_execute", capture)
+    try:
+        p = (await _get(c))["P"]
+    finally:
+        event.remove(engine, "after_cursor_execute", capture)
+    assert p["latest"]["blocked"] == 2 and p["latest"]["outcome"] == "warn"
+    assert fetched
+    for st, cols in fetched:
+        for big in ("log_text", "escalation_pending", "blocked_pending"):
+            assert not [c_ for c_ in cols if big in c_], f"{big} fetched by: {st}"
+        # An aliased fetch hides from the column names, so also check the SQL:
+        # the big columns may appear only as a jsonb_typeof/jsonb_array_length
+        # argument (the blocked count), never on their own.
+        bare = re.sub(r"jsonb_(?:typeof|array_length)\(extraction_runs\.blocked_pending\)", "", st)
+        for big in ("log_text", "escalation_pending", "blocked_pending"):
+            assert big not in bare, f"{big} referenced by: {st}"
+    # Sanity: the probe does see a column when one is fetched.
+    assert any("blocked" in cols for _, cols in fetched)
 
 async def test_jobs_are_objects_marking_disabled(env):
     c, f, _ = env

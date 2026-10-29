@@ -136,12 +136,15 @@ async def test_normalize_partial_product_keeps_sources(factory):
 
 async def test_product_with_no_sources_is_never_a_target(factory):
     async with factory() as db:
-        v, vp = await _vendor(db, n_products=1, n_sources=1)
+        v, vp = await _vendor(db, n_products=2, n_sources=1)
         empty = Product(vendor_id=v.id, name="Empty")
         db.add(empty)
         await db.flush()
         t = await normalize_targets(db, [vp[0][1][0].id])
-        assert empty.id not in t.product_ids
+        # The fully-picked product lifts to a product target; the empty one never
+        # appears (and does not stop the lift).
+        assert t.product_ids == [vp[0][0].id]
+        assert t.vendor_ids == [] and t.source_ids == []
         assert empty.id not in t.product_ids
         assert (await normalize_targets(db, [])).product_ids == []
 

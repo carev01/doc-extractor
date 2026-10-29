@@ -160,3 +160,50 @@ async def test_reconcile_marks_partial_on_mixed_outcome(sessions):
         jr = (await db.execute(select(JobRun))).scalar_one()
         assert jr.status == JobRunStatus.PARTIAL
         assert jr.sources_done == 1 and jr.sources_failed == 1
+
+
+@pytest.mark.asyncio
+async def test_monthly_nth_tier_job_end_to_end(sessions):
+    """An enabled tier job on "first Saturday, every 2 months from November":
+    due → fans out over exactly the tier's vendors' sources → next_run_at moves
+    to the first Saturday of the next month in its cycle (January, not December)."""
+    from app.models import Tier
+    from app.services.cron import job_spec, spec_to_cron
+    fired = datetime(2026, 11, 7, 2, 0, tzinfo=timezone.utc)   # Sat 7 Nov 2026
+    now = fired + timedelta(minutes=3)
+    async with sessions() as db:
+        tier = Tier(name="Tier 2", sort_order=2)
+        db.add(tier)
+        await db.flush()
+        in_tier = [await _source(db), await _source(db)]
+        outside = await _source(db)
+        for sid in in_tier:
+            s = await db.get(DocumentationSource, sid)
+            v = (await db.execute(
+                select(Vendor).join(Product, Product.vendor_id == Vendor.id)
+                .where(Product.id == s.product_id))).scalar_one()
+            v.tier_id = tier.id
+        job = Job(name="Tier 2", enabled=True, schedule_kind="monthly_nth", nth="first",
+                  weekday=6, interval_months=2, start_month=11, time_of_day="02:00",
+                  timezone="UTC", tier_id=tier.id, next_run_at=fired)
+        job.cron = spec_to_cron(job_spec(job))
+        db.add(job)
+        await db.commit()
+        assert job.cron == "0 2 * 1,3,5,7,9,11 6#1"
+    async with sessions() as db:
+        result = await tick(db, now=now)
+        assert result["due"] == 1 and result["enqueued"] == 1
+    async with sessions() as db:
+        runs = (await db.execute(select(ExtractionRun))).scalars().all()
+        assert sorted(r.source_id for r in runs) == sorted(in_tier)
+        assert outside not in {r.source_id for r in runs}
+        jr = (await db.execute(select(JobRun))).scalar_one()
+        assert jr.sources_total == 2 and jr.trigger == "scheduled" and not jr.skipped
+        assert all(r.job_run_id == jr.id for r in runs)
+        job = (await db.execute(select(Job))).scalar_one()
+        assert job.last_run_at == now
+        # 1 Jan 2027 is a Friday → the first Saturday is 2 Jan.
+        assert job.next_run_at == datetime(2027, 1, 2, 2, 0, tzinfo=timezone.utc)
+    # Not due again until then.
+    async with sessions() as db:
+        assert (await tick(db, now=now + timedelta(days=30)))["due"] == 0
