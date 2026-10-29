@@ -252,3 +252,133 @@ async def test_mid_run_relogin_failure_pauses_and_keeps_login_failed(factory, mo
         assert out.status == RunStatus.PAUSED
         await db.refresh(realm)
         assert realm.status == RealmStatus.LOGIN_FAILED
+
+
+# --- Fix round 1 -----------------------------------------------------------
+
+async def test_guard_blocks_second_login_on_expired_realm(factory, fake_login):
+    """Sibling A logged in this firing, then walled → realm EXPIRED. Sibling B must
+    not log in again (ensure_session's own fallback would) — it fails instead."""
+    async with factory() as db:
+        realm, src, jr = await _setup(db, status=RealmStatus.EXPIRED,
+                                      expires_in=timedelta(minutes=5))
+        realm.last_login_at = jr.created_at + timedelta(minutes=1)
+        await db.flush()
+        run = await _run(db, src, job_run=jr)
+        with pytest.raises(NeedsLoginError):
+            await realm_manager.session_for_run(db, realm, run=run)
+        assert fake_login.calls == 0
+
+
+async def test_guard_returns_usable_snapshot_when_already_logged_in(factory, fake_login):
+    async with factory() as db:
+        realm, src, jr = await _setup(db, expires_in=timedelta(minutes=5))
+        realm.last_login_at = jr.created_at + timedelta(minutes=1)
+        await db.flush()
+        run = await _run(db, src, job_run=jr)
+        state = await realm_manager.session_for_run(db, realm, run=run)
+        assert fake_login.calls == 0
+        assert state == realm.state_snapshot
+
+
+async def test_raw_http_expiry_relogs_job_run_once_then_pauses(factory, fake_login):
+    async with factory() as db:
+        realm, src, jr = await _setup(db, expires_in=timedelta(hours=3))
+        run = await _run(db, src, job_run=jr)
+        run.claimed_by = "worker-1"
+        await db.commit()
+
+        with pytest.raises(firecrawl_mod.RunControlSignal) as ei:
+            await firecrawl_mod._pause_for_expiry(db, src, realm, run.id)
+        assert ei.value.action == "requeue"
+        assert fake_login.calls == 1
+        await db.refresh(run)
+        assert run.auto_relogin_used is True
+        await db.refresh(realm)
+        assert realm.status == RealmStatus.ACTIVE
+
+        with pytest.raises(firecrawl_mod.RunControlSignal) as ei:
+            await firecrawl_mod._pause_for_expiry(db, src, realm, run.id)
+        assert ei.value.action == "pause"
+        assert fake_login.calls == 1
+        await db.refresh(realm)
+        assert realm.status == RealmStatus.EXPIRED
+
+
+async def test_raw_http_expiry_manual_run_pauses(factory, fake_login):
+    async with factory() as db:
+        realm, src, _ = await _setup(db, expires_in=timedelta(hours=3))
+        run = await _run(db, src, job_run=None)
+        await db.commit()
+        with pytest.raises(firecrawl_mod.RunControlSignal) as ei:
+            await firecrawl_mod._pause_for_expiry(db, src, realm, run.id)
+        assert ei.value.action == "pause"
+        assert fake_login.calls == 0
+
+
+async def test_raw_http_relogin_failure_pauses_and_keeps_login_failed(factory, monkeypatch):
+    fake = FakeLogin(ok=False)
+    monkeypatch.setattr(realm_manager, "run_scripted_login", fake)
+    async with factory() as db:
+        realm, src, jr = await _setup(db, expires_in=timedelta(hours=3))
+        run = await _run(db, src, job_run=jr)
+        await db.commit()
+        with pytest.raises(firecrawl_mod.RunControlSignal) as ei:
+            await firecrawl_mod._pause_for_expiry(db, src, realm, run.id)
+        assert ei.value.action == "pause"
+        assert fake.calls == 1
+        await db.refresh(realm)
+        assert realm.status == RealmStatus.LOGIN_FAILED
+
+
+async def test_requeue_signal_requeues_run_like_resume():
+    """extract_source's RunControlSignal handler maps 'requeue' to PENDING."""
+    from types import SimpleNamespace
+    run = SimpleNamespace(status=RunStatus.RUNNING, control="x", claimed_by="w",
+                          claimed_at=1, heartbeat_at=1, error_message="e",
+                          completed_at=None)
+    firecrawl_mod._requeue_like_resume(run)
+    assert run.status == RunStatus.PENDING
+    assert run.control is None and run.claimed_by is None
+    assert run.claimed_at is None and run.heartbeat_at is None
+    assert run.error_message is None
+
+
+@pytest_asyncio.fixture
+async def client(factory):
+    from httpx import ASGITransport, AsyncClient
+    from app.core.database import get_db
+    from app.main import app
+
+    async def override_get_db():
+        async with factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        yield c
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("username", "new-user"), ("password", "new-secret"), ("totp_secret", "JBSWY3DPEHPK3PXP"),
+])
+async def test_credential_change_clears_login_failed(factory, client, field, value):
+    async with factory() as db:
+        realm, _, _ = await _setup(db, status=RealmStatus.LOGIN_FAILED)
+        await db.commit()
+        rid = realm.id
+    resp = await client.patch(f"/api/auth-realms/{rid}", json={field: value})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "needs_login"
+
+
+async def test_non_credential_edit_keeps_login_failed(factory, client):
+    async with factory() as db:
+        realm, _, _ = await _setup(db, status=RealmStatus.LOGIN_FAILED)
+        await db.commit()
+        rid = realm.id
+    resp = await client.patch(f"/api/auth-realms/{rid}",
+                              json={"name": "renamed", "password": "secret"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "login_failed"

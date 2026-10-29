@@ -51,27 +51,38 @@ async def session_for_run(db: AsyncSession, realm: AuthRealm, *, run: Extraction
         if realm.status == RealmStatus.LOGIN_FAILED:
             raise NeedsLoginError(
                 f"Realm {realm.id} scripted login failed earlier; fix its credentials")
-        if realm.username and realm.password and await _jit_login_due(
-                db, realm, run, horizon):
+        if realm.username and realm.password and _session_stale(realm, horizon):
+            if await _logged_in_this_firing(db, realm, run):
+                # Already spent this firing's login. Never defer to
+                # ensure_session here: it logs in again for any non-ACTIVE
+                # realm with credentials, which is the second login we refuse.
+                if realm.status == RealmStatus.ACTIVE and realm.state_snapshot:
+                    return realm.state_snapshot
+                raise NeedsLoginError(
+                    f"Realm {realm.id} already logged in once for this job firing")
             logger.info("Just-in-time login for realm %s (run %s)", realm.id, run.id)
             await run_scripted_login(db, realm)
+            return realm.state_snapshot
     return await ensure_session(db, realm)
 
 
-async def _jit_login_due(db: AsyncSession, realm: AuthRealm, run: ExtractionRun,
-                         horizon: timedelta) -> bool:
+def _session_stale(realm: AuthRealm, horizon: timedelta) -> bool:
     expires = session_expires_at(realm)
-    stale = (
+    return (
         realm.status != RealmStatus.ACTIVE
         or not realm.state_snapshot
         or (expires is not None and expires <= datetime.now(timezone.utc) + horizon)
     )
-    if not stale:
+
+
+async def _logged_in_this_firing(db: AsyncSession, realm: AuthRealm,
+                                 run: ExtractionRun) -> bool:
+    if realm.last_login_at is None:
         return False
     job_run = await db.get(JobRun, run.job_run_id)
     if job_run is None or job_run.created_at is None:
-        return True
-    return realm.last_login_at is None or realm.last_login_at < job_run.created_at
+        return False
+    return realm.last_login_at >= job_run.created_at
 
 
 def can_auto_relogin(realm: AuthRealm | None, run: ExtractionRun) -> bool:
@@ -83,6 +94,27 @@ def can_auto_relogin(realm: AuthRealm | None, run: ExtractionRun) -> bool:
         and realm.status != RealmStatus.LOGIN_FAILED
         and bool(realm.username and realm.password)
     )
+
+
+async def try_auto_relogin(db: AsyncSession, realm: AuthRealm | None,
+                           run: ExtractionRun) -> bool:
+    """Mid-run session expiry: re-login a job run's realm once.
+
+    True when the scripted login succeeded (the caller re-queues the run). False
+    when not eligible (see ``can_auto_relogin``) or the login failed — the realm
+    is then LOGIN_FAILED and the caller pauses as before. ``auto_relogin_used`` is
+    set before trying, so a failed attempt is not retried on resume either."""
+    if not can_auto_relogin(realm, run):
+        return False
+    run.auto_relogin_used = True
+    try:
+        await run_scripted_login(db, realm)
+    except Exception as exc:
+        logger.warning("Auto re-login for realm %s failed on run %s: %s",
+                       realm.id, run.id, exc)
+        return False
+    logger.info("Session expired mid-run on %s: realm %s re-logged in", run.id, realm.id)
+    return True
 
 
 async def run_scripted_login(db: AsyncSession, realm: AuthRealm) -> None:

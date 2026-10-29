@@ -183,8 +183,10 @@ class FirecrawlUnavailableError(Exception):
 class RunControlSignal(Exception):
     """Raised inside extract_source when a cooperative control signal is seen.
 
-    ``action`` is "cancel" or "pause". Caught by extract_source to stop cleanly
-    (cancel discards the resume checkpoint; pause keeps it) — not a failure.
+    ``action`` is "cancel", "pause" or "requeue". Caught by extract_source to stop
+    cleanly (cancel discards the resume checkpoint; pause keeps it; requeue keeps
+    it and re-queues the run as PENDING, like /resume — raised after an automatic
+    mid-run re-login of a job run) — not a failure.
     """
 
     def __init__(self, action: str) -> None:
@@ -284,15 +286,37 @@ def _is_auth_expiry(realm) -> bool:
 _RAW_HTTP_AUTH_FAIL_STREAK = 15
 
 
-async def _pause_for_expiry(db, src, realm) -> None:
-    """Mark the realm EXPIRED, notify, and raise RunControlSignal('pause').
+def _requeue_like_resume(run) -> None:
+    """Re-queue a run from its checkpoint — the same state change as
+    ``POST /api/extraction/runs/{id}/resume``; the worker re-claims it."""
+    run.status = RunStatus.PENDING
+    run.control = None
+    run.claimed_by = None
+    run.claimed_at = None
+    run.heartbeat_at = None
+    run.error_message = None
+
+
+async def _pause_for_expiry(db, src, realm, run_id) -> None:
+    """Session died mid raw_http scrape: re-login a job run once, else pause.
+
+    A job-triggered run whose realm has stored credentials gets one scripted
+    re-login (``realm_manager.try_auto_relogin``); on success it commits and
+    raises RunControlSignal('requeue') so extract_source re-queues the run from
+    its checkpoint. Otherwise mark the realm EXPIRED (a failed re-login keeps
+    LOGIN_FAILED), notify, and raise RunControlSignal('pause').
 
     The checkpoint is kept (and only successfully-scraped pages were recorded in
     it), so a fresh cookie + Resume retries exactly the pages that were missed.
     """
-    await realm_manager.invalidate(
-        db, realm, RealmStatus.EXPIRED, "Session expired during extraction"
-    )
+    run = await db.get(ExtractionRun, run_id)
+    if run is not None and await realm_manager.try_auto_relogin(db, realm, run):
+        await db.commit()
+        raise RunControlSignal("requeue")
+    if realm.status != RealmStatus.LOGIN_FAILED:
+        await realm_manager.invalidate(
+            db, realm, RealmStatus.EXPIRED, "Session expired during extraction"
+        )
     await notify(
         "Extraction paused",
         f"Realm '{realm.name}' — extraction of '{src.name}' paused: the session "
@@ -1811,7 +1835,7 @@ class FirecrawlService:
                     "raw_http: %d consecutive failures on authenticated source %s "
                     "— pausing for re-auth", consecutive_failures, source_id,
                 )
-                await _pause_for_expiry(db, src, realm)
+                await _pause_for_expiry(db, src, realm, run_id)
 
         # Abort a run that mostly failed — a structural change or new bot-gating,
         # not a healthy partial. The checkpoint is kept so a re-trigger retries
@@ -1821,7 +1845,7 @@ class FirecrawlService:
         # session (pause + notify), otherwise fail loudly.
         if _raw_failure_exceeded(attempted, failed):
             if _is_auth_expiry(realm):
-                await _pause_for_expiry(db, src, realm)
+                await _pause_for_expiry(db, src, realm, run_id)
             raise RawContentScrapeError(
                 f"raw_http content scrape failed {failed}/{attempted} pages "
                 f"(> {settings.raw_http_max_failure_rate:.0%}) for source "
@@ -1989,30 +2013,12 @@ class FirecrawlService:
         if source.auth_realm_id is not None:
             realm = await db.get(AuthRealm, source.auth_realm_id)
 
-        if realm_manager.can_auto_relogin(realm, run):
-            run.auto_relogin_used = True
-            try:
-                await realm_manager.run_scripted_login(db, realm)
-            except Exception as login_exc:  # fall through to the PAUSE path
-                logger.warning(
-                    "Auto re-login for realm %s failed on run %s: %s",
-                    realm.id, run_pk, login_exc,
-                )
-            else:
-                logger.info(
-                    "Auth wall on run %s: re-logged realm %s in, re-queuing run",
-                    run_pk, realm.id,
-                )
-                run.status = RunStatus.PENDING
-                run.control = None
-                run.claimed_by = None
-                run.claimed_at = None
-                run.heartbeat_at = None
-                run.error_message = None
-                source.status = SourceStatus.PENDING
-                source.error_message = None
-                await db.commit()
-                return run
+        if await realm_manager.try_auto_relogin(db, realm, run):
+            _requeue_like_resume(run)
+            source.status = SourceStatus.PENDING
+            source.error_message = None
+            await db.commit()
+            return run
 
         if realm is not None and realm.status != RealmStatus.LOGIN_FAILED:
             # A failed re-login has already marked the realm LOGIN_FAILED; keep
@@ -3161,7 +3167,12 @@ class FirecrawlService:
         except RunControlSignal as sig:
             now = datetime.now(timezone.utc)
             run.control = None  # consume the signal
-            if sig.action == "pause":
+            if sig.action == "requeue":
+                # Session re-logged in mid-run (job run): continue from the
+                # checkpoint on the next claim, exactly like /resume.
+                logger.info("Run %s re-queued after automatic re-login", run.id)
+                _requeue_like_resume(run)
+            elif sig.action == "pause":
                 # Keep the resume checkpoint so the next claim continues.
                 logger.info("Run %s paused at user request", run.id)
                 run.status = RunStatus.PAUSED
