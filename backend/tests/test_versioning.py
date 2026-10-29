@@ -75,3 +75,29 @@ def test_detect_version_token_builds_template():
 
 def test_detect_version_token_none_when_absent():
     assert detect_version_token("https://x/manuals/guide.htm", "20.1") is None
+
+
+# ── a template that carries the version more than once ───────────────────────
+# Atempo's GitBook publishes each language as a site variant whose path repeats
+# the version: /lina-7.4/lina-7.4-en/… Anchoring only the first placeholder left
+# "lina-7.4-en" literal in every key, so a bump to 7.5 would re-key the whole
+# guide (retire + re-add every article — the CommCell duplication class).
+ATEMPO = "https://documentation.atempo.com/lina-{version}/lina-{version}-en"
+
+
+def test_derive_topic_key_replaces_every_template_placeholder():
+    url = "https://documentation.atempo.com/lina-7.4/lina-7.4-en/administration-guide/about-lina"
+    assert derive_topic_key(url, ATEMPO, "7.4") == \
+        "https://documentation.atempo.com/lina-{version}/lina-{version}-en/administration-guide/about-lina"
+
+
+def test_multi_placeholder_key_is_stable_across_versions():
+    u74 = "https://documentation.atempo.com/lina-7.4/lina-7.4-en/release-notes"
+    u75 = "https://documentation.atempo.com/lina-7.5/lina-7.5-en/release-notes"
+    assert derive_topic_key(u74, ATEMPO, "7.4") == derive_topic_key(u75, ATEMPO, "7.5")
+
+
+def test_multi_placeholder_leaves_the_version_in_a_slug_alone():
+    url = "https://documentation.atempo.com/lina-7.4/lina-7.4-en/whats-new-in-7.4"
+    assert derive_topic_key(url, ATEMPO, "7.4") == \
+        "https://documentation.atempo.com/lina-{version}/lina-{version}-en/whats-new-in-7.4"

@@ -127,6 +127,31 @@ def like_pattern(topic_key: str) -> str:
     return _PLACEHOLDER_RE.sub("%", esc)
 
 
+def _anchor_all_placeholders(url: str, url_template: str, version: str) -> str | None:
+    """Template-anchor every ``{version}`` in *url_template* against *url*.
+
+    Returns the key with each placeholder position swapped back to
+    ``{version}`` (the rest of *url* — the article path past the template —
+    unchanged), or None when the template's literal text doesn't line up with
+    *url* at every step. Only meaningful for templates with more than one
+    placeholder; a single-placeholder template returns None so the existing
+    prefix anchor handles it exactly as before.
+    """
+    parts = url_template.split(VERSION_PLACEHOLDER)
+    if len(parts) < 3:
+        return None
+    pos, out = 0, []
+    for literal in parts[:-1]:
+        if url[pos:pos + len(literal)] != literal:
+            return None
+        pos += len(literal)
+        if url[pos:pos + len(version)] != version:
+            return None
+        out.append(literal + VERSION_PLACEHOLDER)
+        pos += len(version)
+    return "".join(out) + url[pos:]
+
+
 def derive_topic_key(url: str | None, url_template: str | None, version: str | None) -> str | None:
     """Return the version-independent key for *url*.
 
@@ -156,10 +181,22 @@ def derive_topic_key(url: str | None, url_template: str | None, version: str | N
     # at the template's placeholder offset.
     anchored = False
     if url_template and VERSION_PLACEHOLDER in url_template:
-        prefix = url_template.split(VERSION_PLACEHOLDER, 1)[0]
-        if url.startswith(prefix) and url[len(prefix):len(prefix) + len(version)] == version:
-            key = prefix + VERSION_PLACEHOLDER + url[len(prefix) + len(version):]
-            anchored = True
+        # Every placeholder, walked positionally: a template may carry the
+        # version more than once (Atempo's GitBook language variants live at
+        # /lina-7.4/lina-7.4-en/…), and anchoring only the first left the second
+        # literal in every key, so a bump would re-key the whole source. The
+        # walk compares the template's literal text between placeholders, so a
+        # version inside an article slug past the template is never touched; a
+        # literal it can't match (e.g. one holding {rev}) falls back to the
+        # single-anchor path below.
+        walked = _anchor_all_placeholders(url, url_template, version)
+        if walked is not None:
+            key, anchored = walked, True
+        else:
+            prefix = url_template.split(VERSION_PLACEHOLDER, 1)[0]
+            if url.startswith(prefix) and url[len(prefix):len(prefix) + len(version)] == version:
+                key = prefix + VERSION_PLACEHOLDER + url[len(prefix) + len(version):]
+                anchored = True
     # Fallback: templatize by the version substring even without a (matching)
     # template, so the key stays consistent when url_template is absent or the
     # version sits at an unexpected offset. Only when the version actually occurs.
