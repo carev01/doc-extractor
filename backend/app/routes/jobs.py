@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+from fastapi.encoders import jsonable_encoder
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +29,7 @@ from app.services.cron import (
     ScheduleSpec, compute_next_run, job_spec, next_runs, spec_to_cron, validate_spec,
 )
 from app.services.job_coverage import normalize_targets, resolve_sources
+from app.services.schedule_view import build_schedule
 from app.services.scheduling import fan_out_job, job_run_children_summary
 
 
@@ -237,6 +239,12 @@ async def preview_schedule(body: SchedulePreview):
     )
     _apply_schedule(job)
     return {"next_runs": next_runs(job_spec(job), datetime.now(timezone.utc), 3)}
+
+
+@router.get("/schedule")
+async def schedule_view(db: AsyncSession = Depends(get_db)):
+    """One row per product: last successful refresh and next scheduled one."""
+    return jsonable_encoder(await build_schedule(db))
 
 
 @router.get("/catalog", response_model=list[CatalogVendor])
