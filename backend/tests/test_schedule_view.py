@@ -204,3 +204,35 @@ async def test_query_count_is_constant(env):
     await seed(27, "b")
     big = await count()
     assert small == big
+
+
+async def test_failed_run_carries_reason_truncated(env):
+    c, f, _ = env
+    async with f() as s:
+        _, _, (a,) = await _product(s, 1)
+        s.add(_run(a, 1, status=RunStatus.FAILED, error_message="boom " * 200)); await s.commit()
+    latest = (await _get(c))["P"]["latest"]
+    assert latest["outcome"] == "failed"
+    assert latest["reason"].startswith("boom") and len(latest["reason"]) <= 300
+
+
+async def test_blocked_count_on_latest(env):
+    c, f, _ = env
+    async with f() as s:
+        _, _, (a,) = await _product(s, 1)
+        s.add(_run(a, 1, blocked=[{"url": "x"}, {"url": "y"}, {"url": "z"}])); await s.commit()
+    p = (await _get(c))["P"]
+    assert p["latest"]["outcome"] == "warn" and p["latest"]["blocked"] == 3
+    assert p["sources"][0]["latest"]["blocked"] == 3
+
+
+async def test_blocked_zero_for_ok_and_skip(env):
+    c, f, _ = env
+    async with f() as s:
+        _, _, (a, b) = await _product(s, 2)
+        j = await _job(s, "N", [{"source_id": b.id}])
+        s.add(_run(a, 1))
+        s.add(JobRun(job_id=j.id, created_at=NOW, skipped=[{"source_id": str(b.id), "reason": "active_run"}]))
+        await s.commit()
+    srcs = {x["source_name"]: x["latest"] for x in (await _get(c))["P"]["sources"]}
+    assert srcs["S0"]["blocked"] == 0 and srcs["S1"]["blocked"] == 0

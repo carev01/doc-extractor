@@ -43,7 +43,8 @@ def _run_event(run: ExtractionRun, job_name: str | None) -> dict:
         "at": run.completed_at or run.started_at, "outcome": outcome,
         "trigger": run.trigger, "job_name": job_name,
         "updated": (run.articles_extracted or 0) + (run.articles_updated or 0),
-        "reason": None,
+        "reason": (run.error_message or "")[:300] or None if run.status == RunStatus.FAILED else None,
+        "blocked": len(run.blocked_pending) if _has_blocked(run) else 0,
     }
 
 
@@ -95,7 +96,7 @@ async def build_schedule(db: AsyncSession) -> dict:
         for r in (await db.execute(_SKIPS_SQL, {"ids": sids})).all():
             skips[r.source_id] = {
                 "at": r.at, "outcome": "skipped", "trigger": None,
-                "job_name": r.job_name, "updated": 0, "reason": r.reason,
+                "job_name": r.job_name, "updated": 0, "reason": r.reason, "blocked": 0,
             }
 
     by_product: dict[UUID, list] = {}
