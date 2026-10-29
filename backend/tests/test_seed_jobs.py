@@ -38,24 +38,33 @@ async def factory():
 
 
 async def test_seed_creates_three_disabled_staggered_jobs(factory):
+    now = datetime(2026, 10, 29, tzinfo=timezone.utc)  # next month = 11
     async with factory() as db:
-        await seed(db)
+        await seed(db, now=now)
         await db.commit()
         tiers = {t.name: t for t in (await db.execute(select(Tier))).scalars()}
         assert {n: t.sort_order for n, t in tiers.items()} == {"Tier 1": 1, "Tier 2": 2, "Tier 3": 3}
         jobs = {j.name: j for j in (await db.execute(select(Job))).scalars()}
         assert set(jobs) == {"Tier 1", "Tier 2", "Tier 3"}
-        expect = {"Tier 1": ("first", 0, 1), "Tier 2": ("first", 6, 2), "Tier 3": ("last", 6, 3)}
-        now = datetime.now(timezone.utc)
-        next_month = now.month % 12 + 1
-        for name, (nth, wd, _) in expect.items():
+        expect = {  # nth, weekday, interval_months, cron
+            "Tier 1": ("first", 0, 1, "0 2 * * 0#1"),
+            "Tier 2": ("first", 6, 2, "0 2 * 1,3,5,7,9,11 6#1"),
+            "Tier 3": ("last", 6, 3, "0 2 * 2,5,8,11 L6"),
+        }
+        for name, (nth, wd, interval, cron) in expect.items():
             j = jobs[name]
-            assert (j.schedule_kind, j.interval_months, j.nth, j.weekday) == ("monthly_nth", 1, nth, wd)
+            assert (j.schedule_kind, j.interval_months, j.nth, j.weekday) == ("monthly_nth", interval, nth, wd)
             assert (j.time_of_day, j.timezone, j.enabled) == ("02:00", "UTC", False)
-            assert j.start_month == next_month
+            assert j.start_month == 11
             assert j.tier_id == tiers[name].id
             assert j.next_run_at is None
-            assert j.cron == spec_to_cron(job_spec(j))
+            assert j.cron == cron == spec_to_cron(job_spec(j))
+
+
+async def test_seed_start_month_wraps_december(factory):
+    async with factory() as db:
+        await seed(db, now=datetime(2026, 12, 15, tzinfo=timezone.utc))
+        assert {j.start_month for j in (await db.execute(select(Job))).scalars()} == {1}
 
 
 async def test_seed_is_idempotent(factory):

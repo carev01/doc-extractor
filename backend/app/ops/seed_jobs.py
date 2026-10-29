@@ -1,7 +1,8 @@
 """One-off: create Tier 1/2/3 and the three staggered, disabled tier jobs.
 
-Jobs are monthly, 02:00 UTC, on the 1st Sunday / 1st Saturday / last Saturday so
-the tiers never fire together. They are created disabled (``next_run_at`` stays
+Jobs run at 02:00 UTC: Tier 1 monthly on the 1st Sunday, Tier 2 every 2 months on
+the 1st Saturday, Tier 3 quarterly on the last Saturday, so the tiers rarely fire
+together. They are created disabled (``next_run_at`` stays
 NULL, so nothing fires); ``cron`` is still derived so the schedule is ready when
 the owner enables them. Idempotent; a legacy ``Major competitors`` job is removed
 only when it has no targets and no runs.
@@ -17,20 +18,20 @@ from app.models.job_target import JobTarget
 from app.models.tier import Tier
 from app.services.cron import job_spec, spec_to_cron, validate_spec
 
-# name -> (sort_order, nth, weekday 0=Sunday)
+# name -> (sort_order, nth, weekday 0=Sunday, interval_months)
 TIERS = {
-    "Tier 1": (1, "first", 0),
-    "Tier 2": (2, "first", 6),
-    "Tier 3": (3, "last", 6),
+    "Tier 1": (1, "first", 0, 1),
+    "Tier 2": (2, "first", 6, 2),
+    "Tier 3": (3, "last", 6, 3),
 }
 
 
-async def seed(db: AsyncSession) -> dict:
+async def seed(db: AsyncSession, now: datetime | None = None) -> dict:
     """Create missing tiers/jobs in the caller's transaction; never commits."""
-    next_month = datetime.now(timezone.utc).month % 12 + 1
+    next_month = (now or datetime.now(timezone.utc)).month % 12 + 1
     result = {"tiers_created": [], "jobs_created": [], "deleted_major_competitors": False}
 
-    for name, (order, nth, weekday) in TIERS.items():
+    for name, (order, nth, weekday, interval) in TIERS.items():
         tier = (await db.execute(select(Tier).where(Tier.name == name))).scalar_one_or_none()
         if tier is None:
             tier = Tier(name=name, sort_order=order)
@@ -42,7 +43,7 @@ async def seed(db: AsyncSession) -> dict:
         if job is None:
             job = Job(
                 name=name, enabled=False, tier_id=tier.id, schedule_kind="monthly_nth",
-                interval_months=1, start_month=next_month, nth=nth, weekday=weekday,
+                interval_months=interval, start_month=next_month, nth=nth, weekday=weekday,
                 time_of_day="02:00", timezone="UTC", next_run_at=None,
             )
             validate_spec(job_spec(job))
