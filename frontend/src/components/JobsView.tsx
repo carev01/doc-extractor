@@ -15,6 +15,7 @@ import {
   getEnrichmentStats,
 } from "../api/client";
 import JobsManager from "./JobsManager";
+import ScheduleView from "./ScheduleView";
 import TierManager from "./TierManager";
 import { apiError } from "../api/errors";
 
@@ -115,8 +116,8 @@ function EnrichProgress({ stat }: { stat: EnrichStat | undefined }) {
 
 export default function JobsView() {
   const [tab, setTab] = useState<
-    "active" | "recent" | "jobruns" | "exports" | "manage"
-  >("active");
+    "schedule" | "active" | "recent" | "jobruns" | "exports" | "manage"
+  >("schedule");
   const [runs, setRuns] = useState<ExtractionRun[]>([]);
   const [exportJobs, setExportJobs] = useState<ExportJobItem[]>([]);
   const [jobRuns, setJobRuns] = useState<JobRunItem[]>([]);
@@ -220,6 +221,9 @@ export default function JobsView() {
     <div className="jobs-view">
       <h2>Jobs</h2>
       <nav className="source-tabs" style={{ marginBottom: "1rem" }}>
+        <button className={tab === "schedule" ? "active" : ""} onClick={() => setTab("schedule")}>
+          Schedule
+        </button>
         <button className={tab === "active" ? "active" : ""} onClick={() => setTab("active")}>
           Active <span className="tab-count">{active.length}</span>
         </button>
@@ -237,6 +241,8 @@ export default function JobsView() {
         </button>
       </nav>
       {error && <div className="error">{error}</div>}
+
+      {tab === "schedule" && <ScheduleView />}
 
       {tab === "manage" && (
         <>

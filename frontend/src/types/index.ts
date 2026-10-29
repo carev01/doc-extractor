@@ -846,3 +846,40 @@ export interface BulkExtractResult {
   queued: { source_id: string; run_id: string }[];
   skipped: { source_id: string; reason: BulkExtractSkipReason }[];
 }
+
+export interface ScheduleLatest {
+  at: string;
+  outcome: "ok" | "warn" | "failed" | "skipped";
+  trigger: string | null;
+  job_name: string | null;
+  updated: number;
+  reason: string | null;
+  blocked: number;
+}
+
+export interface ScheduleSource {
+  source_id: string;
+  source_name: string;
+  last_ok_at: string | null;
+  latest: ScheduleLatest | null;
+  next_at: string | null;
+  jobs: string[];
+}
+
+export interface ScheduleProduct {
+  product_id: string;
+  product_name: string;
+  vendor_name: string;
+  tier_name: string | null;
+  jobs: string[];
+  source_count: number;
+  last_ok_at: string | null;
+  latest: ScheduleLatest | null;
+  next_at: string | null;
+  scheduled_sources: number;
+  sources: ScheduleSource[];
+}
+
+export interface ScheduleResponse {
+  products: ScheduleProduct[];
+}

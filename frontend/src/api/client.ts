@@ -28,6 +28,7 @@ import type {
   CatalogVendor,
   JobList,
   JobRunItem,
+  ScheduleResponse,
   ExtractionTrigger,
   ExportRequest,
   ExportJobCreated,
@@ -405,6 +406,12 @@ export async function getProfiles(): Promise<ProfileOption[]> {
 
 export async function listJobs(): Promise<JobList> {
   const res = await api.get("/jobs");
+  return res.data;
+}
+
+/** Per-product last/next refresh (Schedule tab). */
+export async function getSchedule(): Promise<ScheduleResponse> {
+  const res = await api.get("/jobs/schedule");
   return res.data;
 }
 
