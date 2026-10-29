@@ -90,7 +90,6 @@ async def dashboard_sources(
     stale_cutoff = now - timedelta(days=stale_days)
 
     for src, vendor_name, product_name in rows:
-        job_id = job_name = next_run_at = None  # coverage-based lookup lands with the jobs API (T6)
         total += 1
         last = src.last_extracted_at
         age = int((now - last).total_seconds()) if last else None
@@ -115,8 +114,6 @@ async def dashboard_sources(
             last_run_new=run.articles_extracted if run else None,
             last_run_updated=run.articles_updated if run else None,
             last_run_unchanged=run.articles_unchanged if run else None,
-            job_id=job_id, job_name=job_name,
-            next_run_at=next_run_at.isoformat() if next_run_at else None,
         ))
 
     return DashboardResponse(
@@ -273,7 +270,6 @@ async def dashboard_overview(
     stale_cutoff = now - timedelta(days=stale_days)
 
     for src, vendor, product in rows:
-        job_id = job_name = next_run_at = None  # coverage-based lookup lands with the jobs API (T6)
         total += 1
         last = src.last_extracted_at
         age = int((now - last).total_seconds()) if last else None
@@ -323,8 +319,6 @@ async def dashboard_overview(
             article_count=counts.get(src.id, 0), last_run=last_run,
             enrichment=OverviewEnrichment(described=d, pending=p),
             escalation=escalation, blocked=blocked, active_run=src.id in active,
-            job_id=job_id, job_name=job_name,
-            next_run_at=next_run_at.isoformat() if next_run_at else None,
         ))
 
     return DashboardOverviewResponse(

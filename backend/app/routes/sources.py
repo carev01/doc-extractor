@@ -179,8 +179,7 @@ async def list_pickable_sources(
     db: AsyncSession = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    """All sources with vendor/product labels and their current job (if any),
-    for the job view's source picker."""
+    """All sources with vendor/product labels."""
     visible = principal.visible_vendor_ids()
     if visible is not None and not visible:
         return PickableSourceList(sources=[])
@@ -203,7 +202,7 @@ async def list_pickable_sources(
     return PickableSourceList(sources=[
         PickableSource(
             id=r.id, name=r.name, vendor_name=r.vendor_name,
-            product_name=r.product_name, job_id=None, job_name=None,
+            product_name=r.product_name,
         )
         for r in rows
     ])

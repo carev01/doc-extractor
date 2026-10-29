@@ -31,7 +31,6 @@ class SourceResponse(BaseModel):
 
     id: uuid.UUID
     product_id: uuid.UUID
-    job_id: uuid.UUID | None = None  # sources no longer carry a job; coverage lookup lands in T6
     auth_realm_id: uuid.UUID | None
     source_type: str
     name: str
@@ -55,8 +54,6 @@ class PickableSource(BaseModel):
     name: str
     vendor_name: str
     product_name: str
-    job_id: uuid.UUID | None
-    job_name: str | None
 
 
 class PickableSourceList(BaseModel):

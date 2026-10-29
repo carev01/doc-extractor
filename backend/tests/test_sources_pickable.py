@@ -58,5 +58,4 @@ async def test_pickable_lists_sources_with_labels(client):
     rows = {r["name"]: r for r in body["sources"]}
     assert rows["Guide"]["vendor_name"] == "Acme"
     assert rows["Guide"]["product_name"] == "Cloud"
-    assert rows["API"]["job_id"] is None
-    assert rows["API"]["job_name"] is None
+    assert "job_id" not in rows["API"] and "job_name" not in rows["API"]
