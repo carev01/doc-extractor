@@ -73,7 +73,6 @@ export type SourceStatus = "pending" | "extracting" | "completed" | "failed";
 export interface DocumentationSource {
   id: string;
   product_id: string;
-  job_id: string | null;
   auth_realm_id?: string | null;
   name: string;
   base_url: string;
@@ -219,27 +218,72 @@ export interface ExportJobItem {
   completed_at: string | null;
 }
 
-export interface JobSourceRef {
-  id: string;
-  name: string;
-  product_name: string;
-  vendor_name: string;
+export type ScheduleKind = "daily" | "weekly" | "monthly_day" | "monthly_nth";
+
+/** Friendly schedule fields — the source of truth; the backend derives ``cron``. */
+export interface JobSchedule {
+  schedule_kind: ScheduleKind | null;
+  time_of_day: string | null;
+  timezone: string;
+  /** 0–6, 0 = Sunday (weekly, monthly_nth). */
+  weekday: number | null;
+  /** 1, 2, 3, 4, 6 or 12 (monthly kinds). */
+  interval_months: number | null;
+  /** 1–12 (monthly kinds). */
+  start_month: number | null;
+  /** 1–28 (monthly_day). */
+  day_of_month: number | null;
+  nth: "first" | "last" | null;
 }
 
-export interface Job {
+export interface JobTargets {
+  vendor_ids: string[];
+  product_ids: string[];
+  source_ids: string[];
+}
+
+export interface JobCoverage {
+  sources: number;
+  products: number;
+  /** Sources another job also covers. */
+  overlap_sources: number;
+  /** Sources behind an auth realm. */
+  login_sources: number;
+}
+
+export interface Job extends JobSchedule {
   id: string;
   name: string;
   enabled: boolean;
-  frequency: Frequency | null;
-  time_of_day: string | null;
-  day_of_week: number | null;
-  day_of_month: number | null;
+  tier_id: string | null;
   cron: string | null;
-  timezone: string;
   next_run_at: string | null;
   last_run_at: string | null;
-  source_count: number;
-  sources: JobSourceRef[];
+  targets: JobTargets;
+  coverage: JobCoverage;
+  /** Next three firings (empty when disabled or unscheduled). */
+  next_runs: string[];
+}
+
+/** The job editor's source catalog: vendors → products → sources. */
+export interface CatalogSource {
+  source_id: string;
+  source_name: string;
+  /** Auth realm name, when the source sits behind a login. */
+  auth_realm: string | null;
+}
+
+export interface CatalogProduct {
+  product_id: string;
+  product_name: string;
+  sources: CatalogSource[];
+}
+
+export interface CatalogVendor {
+  vendor_id: string;
+  vendor_name: string;
+  tier_id: string | null;
+  products: CatalogProduct[];
 }
 
 export interface JobList {
@@ -259,6 +303,10 @@ export interface JobRunItem {
   created_at: string | null;
   started_at: string | null;
   completed_at: string | null;
+  /** Children paused waiting for a login/resume (not finished). */
+  children_paused: number;
+  /** Sources the firing did not enqueue, with the reason. */
+  skipped: { source_id: string; reason: string }[];
 }
 
 export interface ExtractionTrigger {
@@ -386,8 +434,6 @@ export interface ArticleVersionDetail extends ArticleVersion {
 
 export type ChangeStatus = "new" | "updated" | "unchanged";
 
-export type Frequency = "hourly" | "daily" | "weekly" | "monthly";
-
 export interface BrowseTOCEntry {
   id: string;
   title: string;
@@ -428,8 +474,6 @@ export interface PickableSource {
   name: string;
   vendor_name: string;
   product_name: string;
-  job_id: string | null;
-  job_name: string | null;
 }
 
 // ── Consolidated dashboard overview (/dashboard/overview) ──
@@ -474,9 +518,6 @@ export interface OverviewSourceRow {
   escalation: OverviewEscalation;
   blocked: OverviewBlocked;
   active_run: boolean;
-  job_id: string | null;
-  job_name: string | null;
-  next_run_at: string | null;
 }
 
 export interface OverviewAggregate {

@@ -23,8 +23,9 @@ import type {
   TOCResponse,
   ExtractionRun,
   RunLogs,
-  Frequency,
   Job,
+  JobSchedule,
+  CatalogVendor,
   JobList,
   JobRunItem,
   ExtractionTrigger,
@@ -39,7 +40,6 @@ import type {
   ChangelogResponse,
   BrowseResponse,
   ProfileOption,
-  PickableSource,
   DashboardOverview,
   EnrichmentSummary,
   SourceImportResult,
@@ -408,31 +408,19 @@ export async function listJobs(): Promise<JobList> {
   return res.data;
 }
 
-export async function createJob(data: {
-  name: string;
+/** Schedule + identity fields a job create/update may carry. */
+export type JobWrite = Partial<JobSchedule> & {
+  name?: string;
   enabled?: boolean;
-  frequency?: Frequency | null;
-  time_of_day?: string;
-  day_of_week?: number | null;
-  day_of_month?: number | null;
-  timezone?: string;
-}): Promise<Job> {
+  tier_id?: string | null;
+};
+
+export async function createJob(data: JobWrite & { name: string }): Promise<Job> {
   const res = await api.post("/jobs", data);
   return res.data;
 }
 
-export async function updateJob(
-  id: string,
-  data: {
-    name?: string;
-    enabled?: boolean;
-    frequency?: Frequency | null;
-    time_of_day?: string;
-    day_of_week?: number | null;
-    day_of_month?: number | null;
-    timezone?: string;
-  }
-): Promise<Job> {
+export async function updateJob(id: string, data: JobWrite): Promise<Job> {
   const res = await api.patch(`/jobs/${id}`, data);
   return res.data;
 }
@@ -441,14 +429,25 @@ export async function deleteJob(id: string): Promise<void> {
   await api.delete(`/jobs/${id}`);
 }
 
-export async function assignSourceToJob(jobId: string, sourceId: string): Promise<Job> {
-  const res = await api.put(`/jobs/${jobId}/sources/${sourceId}`);
+/** Replace a job's explicit picks with these sources; the backend folds fully
+ * ticked products/vendors into dynamic product/vendor targets. */
+export async function setJobCoverage(id: string, sourceIds: string[]): Promise<Job> {
+  const res = await api.put(`/jobs/${id}/coverage`, { source_ids: sourceIds });
   return res.data;
 }
 
-export async function unassignSourceFromJob(jobId: string, sourceId: string): Promise<Job> {
-  const res = await api.delete(`/jobs/${jobId}/sources/${sourceId}`);
+/** Vendors → products → sources, for the coverage picker. */
+export async function getJobCatalog(): Promise<CatalogVendor[]> {
+  const res = await api.get("/jobs/catalog");
   return res.data;
+}
+
+/** Next three fire times of an unsaved schedule (422 with a message if invalid). */
+export async function previewJobSchedule(
+  spec: Omit<JobSchedule, "schedule_kind"> & { kind: JobSchedule["schedule_kind"] }
+): Promise<string[]> {
+  const res = await api.post("/jobs/schedule/preview", spec);
+  return res.data.next_runs;
 }
 
 export async function runJob(id: string): Promise<JobRunItem> {
@@ -614,19 +613,6 @@ export async function getVersionDiff(
 
 export async function browseSource(sourceId: string): Promise<BrowseResponse> {
   const res = await api.get(`/sources/${sourceId}/browse`);
-  return res.data;
-}
-
-export async function listPickableSources(): Promise<PickableSource[]> {
-  const res = await api.get<{ sources: PickableSource[] }>("/sources/pickable");
-  return res.data.sources;
-}
-
-export async function assignSourcesToJob(
-  jobId: string,
-  sourceIds: string[],
-): Promise<Job> {
-  const res = await api.put<Job>(`/jobs/${jobId}/sources`, { source_ids: sourceIds });
   return res.data;
 }
 

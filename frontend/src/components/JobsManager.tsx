@@ -1,18 +1,18 @@
-import { useState, useEffect, useCallback } from "react";
-import type { Job, JobRunItem, Frequency } from "../types";
-import {
-  listJobs,
-  createJob,
-  updateJob,
-  deleteJob,
-  runJob,
-  listJobRuns,
-  unassignSourceFromJob,
-} from "../api/client";
-import SourcePicker from "./SourcePicker";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import type { CatalogVendor, Job, JobRunItem, Tier } from "../types";
+import { listJobs, deleteJob, runJob, listJobRuns, listTiers, getJobCatalog } from "../api/client";
 import { apiError } from "../api/errors";
-
-const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+import JobEditor from "./JobEditor";
+import {
+  type CatalogIndex,
+  coverageLine,
+  fmtInTz,
+  indexCatalog,
+  overlapWith,
+  resolveJob,
+  resolveTargets,
+  scheduleSummary,
+} from "./jobHelpers";
 
 const RUN_STATUS_COLORS: Record<string, string> = {
   pending: "#6f8087",
@@ -23,152 +23,137 @@ const RUN_STATUS_COLORS: Record<string, string> = {
   cancelled: "#6f8087",
 };
 
-function scheduleSummary(job: Job): string {
-  if (!job.enabled || !job.frequency) return "Manual only";
-  const at = job.time_of_day ?? "02:00";
-  switch (job.frequency) {
-    case "hourly":
-      return `Hourly at :${at.split(":")[1]}`;
-    case "daily":
-      return `Daily at ${at}`;
-    case "weekly":
-      return `Weekly on ${DAYS[job.day_of_week ?? 0]} at ${at}`;
-    case "monthly":
-      return `Monthly on day ${job.day_of_month ?? 1} at ${at}`;
-    default:
-      return job.frequency;
-  }
-}
+const SKIP_REASON: Record<string, string> = {
+  active_run: "already queued or running",
+  paused_run: "paused run waiting",
+  login_needed: "login needed",
+  login_failed: "login failed",
+};
 
+/** Jobs list; "New job" / "Edit" open the job editor dialog. */
 export default function JobsManager() {
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [newName, setNewName] = useState("");
+  const [tiers, setTiers] = useState<Tier[]>([]);
+  // null until loaded: the editor resolves a job's picks from it, so it must
+  // not open on an empty catalog (saving would then wipe the job's coverage).
+  const [catalog, setCatalog] = useState<CatalogVendor[] | null>(null);
+  // undefined = closed, null = creating, Job = editing.
+  const [editing, setEditing] = useState<Job | null | undefined>(undefined);
   const [error, setError] = useState("");
 
   const refresh = useCallback(async () => {
     try {
-      const data = await listJobs();
-      setJobs(data.jobs);
-    } catch {
-      setError("Failed to load jobs");
+      setJobs((await listJobs()).jobs);
+    } catch (e) {
+      setError(apiError(e, "Failed to load jobs"));
     }
+  }, []);
+
+  // Tiers and the catalog change elsewhere (Tier manager, vendor list), so
+  // they are re-read each time the editor opens.
+  const loadContext = useCallback(() => {
+    listTiers()
+      .then(setTiers)
+      .catch((e) => setError(apiError(e, "Failed to load tiers")));
+    getJobCatalog()
+      .then(setCatalog)
+      .catch((e) => setError(apiError(e, "Failed to load sources")));
   }, []);
 
   useEffect(() => {
     listJobs()
       .then((data) => setJobs(data.jobs))
-      .catch(() => setError("Failed to load jobs"));
-  }, []);
+      .catch((e) => setError(apiError(e, "Failed to load jobs")));
+    loadContext();
+  }, [loadContext]);
 
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newName.trim()) return;
+  const idx = useMemo(() => (catalog ? indexCatalog(catalog) : null), [catalog]);
+
+  const open = (job: Job | null) => {
     setError("");
-    try {
-      await createJob({ name: newName.trim() });
-      setNewName("");
-      await refresh();
-    } catch (e) {
-      setError(apiError(e, "Failed to create job"));
-    }
+    loadContext();
+    setEditing(job);
   };
 
   return (
     <div className="jobs-manager">
       {error && <div className="error">{error}</div>}
 
-      <form onSubmit={handleCreate} className="add-form">
-        <input
-          type="text"
-          placeholder="New job name (e.g. 'Nightly backups')"
-          value={newName}
-          onChange={(e) => setNewName(e.target.value)}
-          required
-        />
-        <button type="submit" className="btn-primary">Create job</button>
-      </form>
+      <div className="add-form">
+        <button type="button" className="btn-primary" onClick={() => open(null)}>
+          New job
+        </button>
+        {editing !== undefined && !catalog && <span className="sub">Loading sources…</span>}
+      </div>
 
       <ul className="item-list">
         {jobs.map((job) => (
-          <JobCard key={job.id} job={job} onChanged={refresh} onError={setError} />
+          <JobCard
+            key={job.id}
+            job={job}
+            jobs={jobs}
+            tiers={tiers}
+            idx={idx}
+            onEdit={() => open(job)}
+            onChanged={refresh}
+            onError={setError}
+          />
         ))}
-        {jobs.length === 0 && (
-          <li className="empty">No jobs yet. Create one above, then assign sources to it.</li>
-        )}
+        {jobs.length === 0 && <li className="empty">No jobs yet. Create one above.</li>}
       </ul>
+
+      {editing !== undefined && catalog && (
+        <JobEditor
+          key={editing?.id ?? "new"}
+          job={editing}
+          jobs={jobs}
+          tiers={tiers}
+          catalog={catalog}
+          onClose={() => setEditing(undefined)}
+          onSaved={refresh}
+        />
+      )}
     </div>
   );
 }
 
 function JobCard({
   job,
+  jobs,
+  tiers,
+  idx,
+  onEdit,
   onChanged,
   onError,
 }: {
   job: Job;
+  jobs: Job[];
+  tiers: Tier[];
+  /** Null until the catalog has loaded (overlap names need it). */
+  idx: CatalogIndex | null;
+  onEdit: () => void;
   onChanged: () => void;
   onError: (msg: string) => void;
 }) {
-  // Local draft of the schedule fields so edits don't fire a request per keystroke.
-  const [enabled, setEnabled] = useState(job.enabled);
-  const [frequency, setFrequency] = useState<Frequency>(job.frequency ?? "daily");
-  const [timeOfDay, setTimeOfDay] = useState(job.time_of_day ?? "02:00");
-  const [dayOfWeek, setDayOfWeek] = useState(job.day_of_week ?? 0);
-  const [dayOfMonth, setDayOfMonth] = useState(job.day_of_month ?? 1);
-  const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [showRuns, setShowRuns] = useState(false);
   const [runs, setRuns] = useState<JobRunItem[]>([]);
   const [msg, setMsg] = useState("");
-  const [showPicker, setShowPicker] = useState(false);
 
-  const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-
-  const dirty =
-    enabled !== job.enabled ||
-    frequency !== (job.frequency ?? "daily") ||
-    timeOfDay !== (job.time_of_day ?? "02:00") ||
-    dayOfWeek !== (job.day_of_week ?? 0) ||
-    dayOfMonth !== (job.day_of_month ?? 1);
-
-  const saveSchedule = async () => {
-    setSaving(true);
-    onError("");
-    try {
-      await updateJob(job.id, {
-        enabled,
-        frequency,
-        time_of_day: timeOfDay,
-        day_of_week: dayOfWeek,
-        day_of_month: dayOfMonth,
-        timezone: browserTz,
-      });
-      onChanged();
-    } catch (e) {
-      onError(apiError(e, "Failed to save schedule"));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const rename = async () => {
-    const next = prompt("Rename job", job.name);
-    if (next === null || !next.trim() || next.trim() === job.name) return;
-    try {
-      await updateJob(job.id, { name: next.trim() });
-      onChanged();
-    } catch {
-      onError("Failed to rename job");
-    }
-  };
+  const tier = tiers.find((t) => t.id === job.tier_id);
+  const overlapNames = useMemo(() => {
+    if (!idx || job.coverage.overlap_sources === 0) return [];
+    const mine = resolveJob(job.tier_id, resolveTargets(job.targets, idx), idx);
+    return overlapWith(mine, job.id, jobs, idx).names;
+  }, [idx, job, jobs]);
 
   const remove = async () => {
-    if (!confirm(`Delete job "${job.name}"? Its sources will be un-assigned (not deleted).`)) return;
+    if (!confirm(`Delete job "${job.name}"? Its sources are not affected.`)) return;
     try {
       await deleteJob(job.id);
       onChanged();
-    } catch {
-      onError("Failed to delete job");
+    } catch (e) {
+      onError(apiError(e, "Failed to delete job"));
     }
   };
 
@@ -178,10 +163,12 @@ function JobCard({
     onError("");
     try {
       const jr = await runJob(job.id);
+      const skipped = jr.skipped.length;
+      const reasons = [...new Set(jr.skipped.map((s) => SKIP_REASON[s.reason] ?? s.reason))];
       setMsg(
-        jr.sources_total > 0
-          ? `Queued ${jr.sources_total} source${jr.sources_total === 1 ? "" : "s"}.`
-          : "Nothing to run (all sources already active)."
+        `Queued ${jr.sources_total} source(s)` +
+          (skipped ? `; skipped ${skipped} (${reasons.join(", ")})` : "") +
+          ".",
       );
       onChanged();
     } catch (e) {
@@ -203,89 +190,25 @@ function JobCard({
     }
   };
 
-  const unassign = async (sourceId: string) => {
-    try {
-      await unassignSourceFromJob(job.id, sourceId);
-      onChanged();
-    } catch {
-      onError("Failed to un-assign source");
-    }
-  };
-
   return (
     <li className="non-clickable job-card">
       <div className="item-info">
         <div className="item-meta">
           <strong>{job.name}</strong>
-          <span className="status-badge" style={{ backgroundColor: enabled ? "#5a7fa3" : "#6f8087" }}>
-            {scheduleSummary(job)}
+          <span className="status-badge" style={{ backgroundColor: job.enabled ? "#58c08a" : "#6f8087" }}>
+            {job.enabled ? "enabled" : "disabled"}
           </span>
-          {job.enabled && job.next_run_at && (
-            <span className="sub">Next: {new Date(job.next_run_at).toLocaleString()}</span>
-          )}
-          <span className="sub">{job.source_count} source{job.source_count === 1 ? "" : "s"}</span>
+          {tier && <span className="sub">Tier: {tier.name}</span>}
         </div>
-
-        {/* Schedule editor */}
-        <div className="job-schedule">
-          <label className="sub" style={{ display: "flex", alignItems: "center", gap: "0.4em" }}>
-            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-            Run on a schedule
-          </label>
-          {enabled && (
-            <div className="schedule-fields">
-              <select value={frequency} onChange={(e) => setFrequency(e.target.value as Frequency)}>
-                <option value="hourly">Hourly</option>
-                <option value="daily">Daily</option>
-                <option value="weekly">Weekly</option>
-                <option value="monthly">Monthly</option>
-              </select>
-              {frequency === "weekly" && (
-                <select value={dayOfWeek} onChange={(e) => setDayOfWeek(Number(e.target.value))}>
-                  {DAYS.map((d, i) => <option key={i} value={i}>{d}</option>)}
-                </select>
-              )}
-              {frequency === "monthly" && (
-                <select value={dayOfMonth} onChange={(e) => setDayOfMonth(Number(e.target.value))}>
-                  {Array.from({ length: 28 }, (_, i) => i + 1).map((d) => (
-                    <option key={d} value={d}>{d}</option>
-                  ))}
-                </select>
-              )}
-              {frequency !== "hourly" && (
-                <input type="time" value={timeOfDay} onChange={(e) => setTimeOfDay(e.target.value)} />
-              )}
-              {frequency === "hourly" && (
-                <span className="hint">at minute {timeOfDay.split(":")[1]}</span>
-              )}
-              <span className="schedule-tz">{browserTz}</span>
-            </div>
-          )}
-          {dirty && (
-            <button className="btn-primary-sm" disabled={saving} onClick={saveSchedule}>
-              {saving ? "Saving…" : "Save schedule"}
-            </button>
-          )}
-        </div>
-
-        {/* Assigned sources */}
-        {job.sources.length > 0 && (
-          <ul className="job-sources">
-            {job.sources.map((s) => (
-              <li key={s.id}>
-                <span className="sub">{[s.vendor_name, s.product_name, s.name].join(" › ")}</span>
-                <button className="link-btn" title="Un-assign" onClick={() => unassign(s.id)}>×</button>
-              </li>
-            ))}
-          </ul>
+        <span className="sub">{scheduleSummary(job)}</span>
+        {job.next_runs.length > 0 && (
+          <span className="sub">
+            Next: {job.next_runs.map((r) => fmtInTz(r, job.timezone)).join(" · ")}
+          </span>
         )}
-        {job.sources.length === 0 && (
-          <span className="sub">No sources assigned — assign them from a product's source list.</span>
-        )}
-
+        <span className="sub">{coverageLine(job.coverage, overlapNames)}</span>
         {msg && <span className="sub run-done">{msg}</span>}
 
-        {/* Recent runs */}
         <div className="run-history">
           <button type="button" className="link-btn" onClick={toggleRuns}>
             {showRuns ? "▾" : "▸"} Recent runs
@@ -301,6 +224,8 @@ function JobCard({
                   <span className="sub">
                     {r.trigger} · {r.sources_done}/{r.sources_total} done
                     {r.sources_failed > 0 ? `, ${r.sources_failed} failed` : ""}
+                    {r.children_paused > 0 ? `, ${r.children_paused} paused` : ""}
+                    {r.skipped.length > 0 ? `, ${r.skipped.length} skipped` : ""}
                     {" · "}
                     {r.created_at ? new Date(r.created_at).toLocaleString() : "—"}
                   </span>
@@ -312,22 +237,16 @@ function JobCard({
       </div>
 
       <div className="item-actions">
-        <button className="btn-primary-sm" disabled={busy || job.source_count === 0} onClick={run}>
+        <button className="btn-primary-sm" disabled={busy || job.coverage.sources === 0} onClick={run}>
           {busy ? "Running…" : "Run now"}
         </button>
-        <button className="btn-secondary-sm" onClick={() => setShowPicker(true)}>
-          Add sources
+        <button className="btn-secondary-sm" onClick={onEdit}>
+          Edit
         </button>
-        <button className="btn-secondary-sm" title="Rename" onClick={rename}>✎</button>
-        <button className="btn-danger-sm" title="Delete" onClick={remove}>×</button>
+        <button className="btn-danger-sm" title="Delete" onClick={remove}>
+          ×
+        </button>
       </div>
-      {showPicker && (
-        <SourcePicker
-          jobId={job.id}
-          onClose={() => setShowPicker(false)}
-          onAssigned={onChanged}
-        />
-      )}
     </li>
   );
 }
