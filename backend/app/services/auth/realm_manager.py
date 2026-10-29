@@ -53,7 +53,8 @@ async def session_for_run(db: AsyncSession, realm: AuthRealm, *, run: Extraction
                 f"Realm {realm.id} scripted login failed earlier; fix its credentials")
         if realm.username and realm.password and _session_stale(realm, horizon):
             if await _logged_in_this_firing(db, realm, run):
-                # Already spent this firing's login. Never defer to
+                # Already spent this firing's login (or its attempt — a
+                # Browserless outage leaves the realm EXPIRED). Never defer to
                 # ensure_session here: it logs in again for any non-ACTIVE
                 # realm with credentials, which is the second login we refuse.
                 if realm.status == RealmStatus.ACTIVE and realm.state_snapshot:
@@ -77,12 +78,16 @@ def _session_stale(realm: AuthRealm, horizon: timedelta) -> bool:
 
 async def _logged_in_this_firing(db: AsyncSession, realm: AuthRealm,
                                  run: ExtractionRun) -> bool:
-    if realm.last_login_at is None:
+    """Whether this JobRun already spent the realm's login: a login *attempt*
+    (``last_login_attempt_at``, stamped whatever the outcome) or a success
+    (``last_login_at``) after the JobRun was created."""
+    stamps = [t for t in (realm.last_login_attempt_at, realm.last_login_at) if t is not None]
+    if not stamps:
         return False
     job_run = await db.get(JobRun, run.job_run_id)
     if job_run is None or job_run.created_at is None:
         return False
-    return realm.last_login_at >= job_run.created_at
+    return max(stamps) >= job_run.created_at
 
 
 def can_auto_relogin(realm: AuthRealm | None, run: ExtractionRun) -> bool:
@@ -128,6 +133,9 @@ async def run_scripted_login(db: AsyncSession, realm: AuthRealm) -> None:
     EXPIRED with the error — the next firing tries again — and still raises
     NeedsLoginError for this run. A realm already LOGIN_FAILED keeps it."""
     code, context = login_scripts.build_login(realm)
+    # Record the attempt before making it: committed with whatever outcome
+    # follows, it is what stops sibling runs of one firing logging in again.
+    realm.last_login_attempt_at = datetime.now(timezone.utc)
     try:
         result = await browserless_client.run_login(code, context)
     except BrowserlessError as exc:

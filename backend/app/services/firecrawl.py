@@ -351,8 +351,11 @@ async def _pause_for_expiry(db, src, realm, run_id) -> None:
         await realm_manager.invalidate(
             db, realm, RealmStatus.EXPIRED, "Session expired during extraction"
         )
-    if run is not None and await _relogin_outcome(db, run) == "cancel":
-        await db.commit()
+    cancelled = run is not None and await _relogin_outcome(db, run) == "cancel"
+    # Commit before notifying: it releases the run-row lock _relogin_outcome
+    # took, so a slow notify target never blocks the API's Pause/Cancel writes.
+    await db.commit()
+    if cancelled:
         raise RunControlSignal("cancel")
     await notify(
         "Extraction paused",
@@ -361,7 +364,6 @@ async def _pause_for_expiry(db, src, realm, run_id) -> None:
         f"{_resume_hint(realm)}",
         realm=realm.name,
     )
-    await db.commit()
     raise RunControlSignal("pause")
 
 
@@ -2090,6 +2092,11 @@ class FirecrawlService:
             await _cancel()
             await db.commit()
             return run
+        run.status = RunStatus.PAUSED
+        run.control = None
+        # Commit (releasing the run-row lock) before notifying, so a slow
+        # notify target never blocks the API's Pause/Cancel writes.
+        await db.commit()
         await notify(
             "Session expired",
             f"Realm '{realm.name if realm else '?'}' expired during "
@@ -2097,9 +2104,6 @@ class FirecrawlService:
             f"{_resume_hint(realm)}",
             realm=(realm.name if realm else None),
         )
-        run.status = RunStatus.PAUSED
-        run.control = None
-        await db.commit()
         return run
 
     async def _apply_rebuilt_toc(

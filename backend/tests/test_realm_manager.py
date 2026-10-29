@@ -98,8 +98,14 @@ async def test_run_scripted_login_stores_snapshot(factory, monkeypatch):
         assert realm.state_snapshot["cookies"][0]["name"] == "sid"
 
 
-@pytest.mark.parametrize("prior", [RealmStatus.ACTIVE, RealmStatus.NEEDS_LOGIN, RealmStatus.EXPIRED])
-async def test_browserless_outage_does_not_lock_realm_out(factory, monkeypatch, prior):
+@pytest.mark.parametrize("prior,expected", [
+    (RealmStatus.ACTIVE, RealmStatus.EXPIRED),
+    (RealmStatus.NEEDS_LOGIN, RealmStatus.EXPIRED),
+    (RealmStatus.EXPIRED, RealmStatus.EXPIRED),
+    # An outage says nothing new about the credentials: an earlier rejection stands.
+    (RealmStatus.LOGIN_FAILED, RealmStatus.LOGIN_FAILED),
+])
+async def test_browserless_outage_does_not_lock_realm_out(factory, monkeypatch, prior, expected):
     """Browserless unreachable/5xx/timeout says nothing about the credentials:
     the realm must not become LOGIN_FAILED (that blocks every future firing).
     It is marked EXPIRED with the error, and this run still gets NeedsLoginError."""
@@ -113,8 +119,9 @@ async def test_browserless_outage_does_not_lock_realm_out(factory, monkeypatch, 
         with pytest.raises(realm_manager.NeedsLoginError):
             await realm_manager.run_scripted_login(s, realm)
         await s.commit()
-        assert realm.status == RealmStatus.EXPIRED
+        assert realm.status == expected
         assert "browserless 503" in realm.error_message
+        assert realm.last_login_attempt_at is not None and realm.last_login_at is None
 
 
 async def test_rejected_login_still_sets_login_failed(factory, monkeypatch):

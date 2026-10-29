@@ -45,6 +45,12 @@ class AuthRealm(Base):
         SAEnum(RealmStatus), default=RealmStatus.NEEDS_LOGIN, nullable=False
     )
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Stamped when a scripted login is *attempted* (whatever its outcome); the
+    # once-per-JobRun login guard keys on it, so a Browserless outage (which
+    # leaves the realm EXPIRED, not LOGIN_FAILED) is not retried by every
+    # sibling run of the same firing. ``last_login_at`` stays success-only.
+    last_login_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(4096), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
