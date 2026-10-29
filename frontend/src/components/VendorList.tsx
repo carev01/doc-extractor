@@ -158,7 +158,20 @@ export default function VendorList({ onSelect, selectedId, access }: Props) {
             Clear
           </button>
           {tierMenu && (
-            <ul className="item-list" style={{ position: "absolute", top: "100%", zIndex: 10 }}>
+            <ul
+              className="item-list"
+              style={{
+                position: "absolute",
+                top: "100%",
+                zIndex: 10,
+                minWidth: "12rem",
+                padding: "8px 8px 0",
+                background: "var(--ink-0)",
+                border: "1px solid var(--line)",
+                borderRadius: "var(--radius-sm)",
+                boxShadow: "0 8px 24px -8px rgba(0, 0, 0, 0.6)",
+              }}
+            >
               {tiers.map((t) => (
                 <li key={t.id} onClick={() => applyTier(t.id)}>{t.name}</li>
               ))}

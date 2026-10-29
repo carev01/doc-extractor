@@ -28,6 +28,7 @@ const STATUS_COLORS: Record<string, string> = {
   cancelled: "#6f8087",
   paused: "#5a7fa3",
   warning: "#c8923d",
+  "needs attention": "#c8923d",
 };
 
 function statusBadge(status: string) {
@@ -328,10 +329,17 @@ export default function JobsView() {
                   <strong>{jr.job_name ?? "(deleted job)"}</strong>
                   <div className="item-meta">
                     {statusBadge(jr.status)}
+                    {jr.children_paused > 0 && (
+                      <span title="Paused child runs are waiting for a login or Resume">
+                        {statusBadge("needs attention")}
+                      </span>
+                    )}
                     <span className="sub">{jr.trigger}</span>
                     <span className="sub">
                       {jr.sources_done}/{jr.sources_total} done
                       {jr.sources_failed > 0 ? `, ${jr.sources_failed} failed` : ""}
+                      {jr.children_paused > 0 ? `, ${jr.children_paused} paused` : ""}
+                      {jr.skipped.length > 0 ? `, ${jr.skipped.length} skipped` : ""}
                     </span>
                     <span className="sub">
                       {jr.created_at ? new Date(jr.created_at).toLocaleString() : "—"}
