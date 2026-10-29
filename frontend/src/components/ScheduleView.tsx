@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ScheduleLatest, ScheduleProduct } from "../types";
+import type { ScheduleJobRef, ScheduleLatest, ScheduleProduct } from "../types";
 import { getSchedule } from "../api/client";
 import { apiError } from "../api/errors";
+
+/** "Nightly + Weekly (disabled)" — a disabled job covers the row but never fires. */
+function jobsLabel(jobs: ScheduleJobRef[]): string {
+  return jobs.map((j) => (j.enabled ? j.name : `${j.name} (disabled)`)).join(" + ");
+}
 
 const REASONS: Record<string, string> = {
   active_run: "a run was already active",
@@ -191,7 +196,7 @@ function ProductRows({
           <strong>{p.vendor_name} › {p.product_name}</strong>
           <div className="hint">
             {p.tier_name ?? "no tier"}
-            {p.jobs.length > 0 ? ` · ${p.jobs.join(" + ")}` : ""}
+            {p.jobs.length > 0 ? ` · ${jobsLabel(p.jobs)}` : ""}
           </div>
         </td>
         {empty ? (
@@ -208,7 +213,7 @@ function ProductRows({
           <tr key={s.source_id} style={{ background: "var(--ink-2)" }}>
             <td style={{ paddingLeft: "2rem" }}>
               {s.source_name}
-              {s.jobs.length > 0 && <div className="hint">{s.jobs.join(" + ")}</div>}
+              {s.jobs.length > 0 && <div className="hint">{jobsLabel(s.jobs)}</div>}
             </td>
             <td><LastCell latest={s.latest} lastOk={s.last_ok_at} /></td>
             <td><NextCell nextAt={s.next_at} /></td>

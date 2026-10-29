@@ -194,7 +194,7 @@ async def test_next_is_latest_among_sources_and_partly_scheduled_flag(env):
     assert {x["source_name"]: x["next_at"] is not None for x in p["sources"]} == \
         {"S0": True, "S1": True, "S2": False}
     assert _ts(p["sources"][0]["next_at"]) == NOW + timedelta(hours=2)
-    assert p["jobs"] == ["J1", "J1b", "J2"]
+    assert [j["name"] for j in p["jobs"]] == ["J1", "J1b", "J2"]
 
 
 async def test_disabled_job_does_not_schedule(env):
@@ -287,3 +287,56 @@ async def test_schedule_never_fetches_run_logs_or_large_json(env):
         assert "log_text" not in st
         assert "escalation_pending" not in st
         assert "extraction_runs.blocked_pending," not in st
+
+
+async def test_jobs_are_objects_marking_disabled(env):
+    c, f, _ = env
+    async with f() as s:
+        _, _, (a, b) = await _product(s, 2)
+        await _job(s, "On", [{"source_id": a.id}], nxt=NOW + timedelta(hours=1))
+        await _job(s, "Off", [{"source_id": a.id}, {"source_id": b.id}], enabled=False)
+        await s.commit()
+    p = (await _get(c))["P"]
+    assert p["jobs"] == [{"name": "Off", "enabled": False}, {"name": "On", "enabled": True}]
+    srcs = {x["source_name"]: x["jobs"] for x in p["sources"]}
+    assert srcs == {
+        "S0": [{"name": "Off", "enabled": False}, {"name": "On", "enabled": True}],
+        "S1": [{"name": "Off", "enabled": False}],
+    }
+
+
+async def test_failed_run_reports_zero_updated(env):
+    c, f, _ = env
+    async with f() as s:
+        _, _, (a,) = await _product(s, 1)
+        s.add(_run(a, 1, status=RunStatus.FAILED, articles_extracted=7, articles_updated=3))
+        await s.commit()
+    latest = (await _get(c))["P"]["latest"]
+    assert latest["outcome"] == "failed" and latest["updated"] == 0
+
+
+async def test_malformed_historical_skip_source_id_does_not_500(env):
+    c, f, _ = env
+    async with f() as s:
+        _, _, (a,) = await _product(s, 1)
+        j = await _job(s, "N", [{"source_id": a.id}])
+        s.add(JobRun(job_id=j.id, created_at=NOW - timedelta(hours=2), skipped=[
+            {"source_id": "not-a-uuid", "reason": "login_needed"},
+            {"source_id": None, "reason": "x"},
+            {"reason": "no id"},
+            {"source_id": str(a.id), "reason": "active_run"},
+        ]))
+        await s.commit()
+    latest = (await _get(c))["P"]["latest"]
+    assert latest["outcome"] == "skipped" and latest["reason"] == "active_run"
+
+
+async def test_skips_older_than_400_days_are_ignored(env):
+    c, f, _ = env
+    async with f() as s:
+        _, _, (a,) = await _product(s, 1)
+        j = await _job(s, "N", [{"source_id": a.id}])
+        s.add(JobRun(job_id=j.id, created_at=NOW - timedelta(days=401),
+                     skipped=[{"source_id": str(a.id), "reason": "login_needed"}]))
+        await s.commit()
+    assert (await _get(c))["P"]["latest"] is None
