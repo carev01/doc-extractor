@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import type { CatalogVendor, Job, JobRunItem, Tier } from "../types";
 import { listJobs, deleteJob, runJob, listJobRuns, listTiers, getJobCatalog } from "../api/client";
 import { apiError } from "../api/errors";
@@ -34,12 +34,17 @@ const SKIP_REASON: Record<string, string> = {
 export default function JobsManager() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [tiers, setTiers] = useState<Tier[]>([]);
-  // null until loaded: the editor resolves a job's picks from it, so it must
-  // not open on an empty catalog (saving would then wipe the job's coverage).
+  // null until loaded. The editor opens regardless but keeps its tree disabled
+  // (and Save off) until this open's fetch resolves, so an empty or stale
+  // catalog can never be read as an edit of the job's picks.
   const [catalog, setCatalog] = useState<CatalogVendor[] | null>(null);
   // undefined = closed, null = creating, Job = editing.
   const [editing, setEditing] = useState<Job | null | undefined>(undefined);
   const [error, setError] = useState("");
+  // Whether `catalog` is from the current open's fetch (it may be a stale earlier one).
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogError, setCatalogError] = useState("");
+  const catalogSeq = useRef(0);
 
   const refresh = useCallback(async () => {
     try {
@@ -55,9 +60,18 @@ export default function JobsManager() {
     listTiers()
       .then(setTiers)
       .catch((e) => setError(apiError(e, "Failed to load tiers")));
+    const seq = ++catalogSeq.current;
     getJobCatalog()
-      .then(setCatalog)
-      .catch((e) => setError(apiError(e, "Failed to load sources")));
+      .then((c) => {
+        if (seq !== catalogSeq.current) return;
+        setCatalog(c);
+        setCatalogLoading(false);
+      })
+      .catch((e) => {
+        if (seq !== catalogSeq.current) return;
+        setCatalogError(apiError(e, "Failed to load sources"));
+        setCatalogLoading(false);
+      });
   }, []);
 
   useEffect(() => {
@@ -69,9 +83,17 @@ export default function JobsManager() {
 
   const idx = useMemo(() => (catalog ? indexCatalog(catalog) : null), [catalog]);
 
+  // Marks the catalog stale before re-reading it (kept out of loadContext, which
+  // the mount effect calls and must not set state synchronously).
+  const reloadContext = () => {
+    setCatalogLoading(true);
+    setCatalogError("");
+    loadContext();
+  };
+
   const open = (job: Job | null) => {
     setError("");
-    loadContext();
+    reloadContext();
     setEditing(job);
   };
 
@@ -83,7 +105,6 @@ export default function JobsManager() {
         <button type="button" className="btn-primary" onClick={() => open(null)}>
           New job
         </button>
-        {editing !== undefined && !catalog && <span className="sub">Loading sources…</span>}
       </div>
 
       <ul className="item-list">
@@ -102,13 +123,16 @@ export default function JobsManager() {
         {jobs.length === 0 && <li className="empty">No jobs yet. Create one above.</li>}
       </ul>
 
-      {editing !== undefined && catalog && (
+      {editing !== undefined && (
         <JobEditor
           key={editing?.id ?? "new"}
           job={editing}
           jobs={jobs}
           tiers={tiers}
-          catalog={catalog}
+          catalog={catalog ?? []}
+          catalogLoading={catalogLoading}
+          catalogError={catalogError}
+          onRetryCatalog={reloadContext}
           onClose={() => setEditing(undefined)}
           onSaved={refresh}
         />
