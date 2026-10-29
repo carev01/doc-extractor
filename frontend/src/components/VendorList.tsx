@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { Vendor, Tier } from "../types";
 import { listAllVendors, createVendor, updateVendor, deleteVendor, listTiers, setVendorsTier } from "../api/client";
 import { apiError } from "../api/errors";
@@ -27,6 +27,31 @@ export default function VendorList({ onSelect, selectedId, access }: Props) {
   const [tiers, setTiers] = useState<Tier[]>([]);
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [tierMenu, setTierMenu] = useState(false);
+  const tierBarRef = useRef<HTMLDivElement>(null);
+
+  // Close the Set-tier menu on an outside click or Escape.
+  useEffect(() => {
+    if (!tierMenu) return;
+    const onDown = (e: MouseEvent) => {
+      if (tierBarRef.current && !tierBarRef.current.contains(e.target as Node)) setTierMenu(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setTierMenu(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [tierMenu]);
+
+  // Every vendor list refresh also drops ticks for vendors that are gone.
+  const loadedVendors = (list: Vendor[]) => {
+    setVendors(list);
+    const ids = new Set(list.map((v) => v.id));
+    setChecked((prev) => (prev.size === 0 || [...prev].every((id) => ids.has(id)) ? prev : new Set([...prev].filter((id) => ids.has(id)))));
+  };
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -45,6 +70,7 @@ export default function VendorList({ onSelect, selectedId, access }: Props) {
 
   const applyTier = async (tierId: string | null) => {
     setTierMenu(false);
+    setError("");
     try {
       await setVendorsTier(tierId, [...checked]);
       setChecked(new Set());
@@ -61,7 +87,7 @@ export default function VendorList({ onSelect, selectedId, access }: Props) {
   // admin grant editor hit, and indistinguishable here from "not created yet".
   const fetchVendors = useCallback(async () => {
     try {
-      setVendors(await listAllVendors());
+      loadedVendors(await listAllVendors());
     } catch {
       setError("Failed to load vendors");
     }
@@ -72,7 +98,7 @@ export default function VendorList({ onSelect, selectedId, access }: Props) {
   // setStates from an effect body. Same shape as ProductList/SourceList.
   useEffect(() => {
     listAllVendors()
-      .then(setVendors)
+      .then(loadedVendors)
       .catch(() => setError("Failed to load vendors"));
   }, []);
 
@@ -148,10 +174,24 @@ export default function VendorList({ onSelect, selectedId, access }: Props) {
       </form>
       )}
 
+      {isAdmin && vendors.length > 0 && (
+        <label className="sub" style={{ display: "flex", alignItems: "center", gap: "0.4rem", marginBottom: "0.5rem" }}>
+          <input
+            type="checkbox"
+            ref={(el) => {
+              if (el) el.indeterminate = checked.size > 0 && checked.size < vendors.length;
+            }}
+            checked={checked.size > 0 && checked.size === vendors.length}
+            onChange={(e) => setChecked(e.target.checked ? new Set(vendors.map((v) => v.id)) : new Set())}
+          />
+          Select all ({vendors.length})
+        </label>
+      )}
+
       {isAdmin && checked.size > 0 && (
-        <div className="heading-actions" style={{ position: "relative", marginBottom: "0.5rem" }}>
+        <div ref={tierBarRef} className="heading-actions" style={{ position: "relative", marginBottom: "0.5rem" }}>
           <span className="sub">{checked.size} selected</span>
-          <button className="btn-secondary-sm" onClick={() => setTierMenu((v) => !v)}>
+          <button className="btn-secondary-sm" aria-expanded={tierMenu} onClick={() => setTierMenu((v) => !v)}>
             Set tier ▾
           </button>
           <button className="btn-secondary-sm" onClick={() => setChecked(new Set())}>
@@ -173,9 +213,17 @@ export default function VendorList({ onSelect, selectedId, access }: Props) {
               }}
             >
               {tiers.map((t) => (
-                <li key={t.id} onClick={() => applyTier(t.id)}>{t.name}</li>
+                <li key={t.id} style={{ padding: 0 }}>
+                  <button type="button" className="link-btn" style={{ width: "100%", textAlign: "left", padding: "8px 12px" }} onClick={() => applyTier(t.id)}>
+                    {t.name}
+                  </button>
+                </li>
               ))}
-              <li onClick={() => applyTier(null)}>No tier</li>
+              <li style={{ padding: 0 }}>
+                <button type="button" className="link-btn" style={{ width: "100%", textAlign: "left", padding: "8px 12px" }} onClick={() => applyTier(null)}>
+                  No tier
+                </button>
+              </li>
             </ul>
           )}
         </div>
