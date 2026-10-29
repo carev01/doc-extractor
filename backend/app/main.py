@@ -29,6 +29,7 @@ from app.routes import (
     articles_router,
     export_router,
     jobs_router,
+    tiers_router,
     profiles_router,
     dashboard_router,
     auth_realms_router,
@@ -92,6 +93,7 @@ app.include_router(extraction_router)
 app.include_router(articles_router)
 app.include_router(export_router)
 app.include_router(jobs_router)
+app.include_router(tiers_router)
 app.include_router(profiles_router)
 app.include_router(dashboard_router)
 app.include_router(auth_realms_router)

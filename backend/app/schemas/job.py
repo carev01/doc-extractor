@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 
 
 ScheduleKind = Literal["daily", "weekly", "monthly_day", "monthly_nth"]
@@ -45,6 +45,55 @@ class JobUpdate(BaseModel):
     tier_id: uuid.UUID | None = None
 
 
+class JobTargetsOut(BaseModel):
+    vendor_ids: list[uuid.UUID] = []
+    product_ids: list[uuid.UUID] = []
+    source_ids: list[uuid.UUID] = []
+
+
+class JobCoverage(BaseModel):
+    sources: int = 0
+    products: int = 0           # distinct products those sources belong to
+    overlap_sources: int = 0    # sources another job also covers
+    login_sources: int = 0      # sources behind an auth realm
+
+
+class CoverageSet(BaseModel):
+    source_ids: list[uuid.UUID]
+
+
+class SchedulePreview(BaseModel):
+    """ScheduleSpec fields; ``kind`` may also be sent as ``schedule_kind``."""
+
+    kind: ScheduleKind = Field(validation_alias=AliasChoices("kind", "schedule_kind"))
+    time_of_day: str = "02:00"
+    timezone: str = "UTC"
+    weekday: int | None = None
+    interval_months: int | None = None
+    start_month: int | None = None
+    day_of_month: int | None = None
+    nth: Literal["first", "last"] | None = None
+
+
+class CatalogSource(BaseModel):
+    source_id: uuid.UUID
+    source_name: str
+    auth_realm: str | None = None
+
+
+class CatalogProduct(BaseModel):
+    product_id: uuid.UUID
+    product_name: str
+    sources: list[CatalogSource] = []
+
+
+class CatalogVendor(BaseModel):
+    vendor_id: uuid.UUID
+    vendor_name: str
+    tier_id: uuid.UUID | None = None
+    products: list[CatalogProduct] = []
+
+
 class JobResponse(BaseModel):
     id: uuid.UUID
     name: str
@@ -61,6 +110,9 @@ class JobResponse(BaseModel):
     cron: str | None
     next_run_at: datetime | None
     last_run_at: datetime | None
+    targets: JobTargetsOut = JobTargetsOut()
+    coverage: JobCoverage = JobCoverage()
+    next_runs: list[datetime] = []
 
 
 class JobList(BaseModel):
@@ -80,4 +132,5 @@ class JobRunResponse(BaseModel):
     created_at: datetime | None
     started_at: datetime | None
     completed_at: datetime | None
-    skipped: list[dict] | None = None
+    children_paused: int = 0
+    skipped: list[dict] = []

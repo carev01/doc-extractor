@@ -22,6 +22,7 @@ class VendorResponse(BaseModel):
     id: uuid.UUID
     name: str
     website: str | None
+    tier_id: uuid.UUID | None = None
     created_at: datetime
     updated_at: datetime
 
