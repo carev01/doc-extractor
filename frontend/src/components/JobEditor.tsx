@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CatalogVendor, Job, JobSchedule, ScheduleKind, Tier } from "../types";
-import { createJob, previewJobSchedule, setJobCoverage, updateJob } from "../api/client";
+import { createJob, previewJobSchedule, setJobCoverage, setJobExclusions, updateJob } from "../api/client";
 import { apiError } from "../api/errors";
 import SourceTreePicker, { type TreeVendor } from "./SourceTreePicker";
 import {
@@ -105,6 +105,22 @@ export default function JobEditor({
   };
   const [filter, setFilter] = useState("");
 
+  const initialExcluded = useMemo(() => new Set(job?.excluded_vendor_ids ?? []), [job]);
+  const [excluded, setExcluded] = useState<Set<string>>(initialExcluded);
+  const [showAllTierVendors, setShowAllTierVendors] = useState(false);
+  const tierVendors = useMemo(
+    () => (tierId ? catalog.filter((v) => v.tier_id === tierId) : []),
+    [catalog, tierId],
+  );
+  // Exclusions of vendors outside the chosen tier are inert; only these count.
+  const excludedInTier = tierVendors.filter((v) => excluded.has(v.vendor_id)).length;
+  const toggleExcluded = (id: string) => {
+    const next = new Set(excluded);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setExcluded(next);
+  };
+
   const [repeat, setRepeat] = useState<Repeat>(repeatOf(job?.schedule_kind ?? null));
   const [monthlyOn, setMonthlyOn] = useState<MonthlyOn>(
     job?.schedule_kind === "monthly_nth" ? (job.nth ?? "first") : "day",
@@ -197,7 +213,7 @@ export default function JobEditor({
   }, [catalog, filter, tierId, tiers]);
 
   const summary = useMemo(() => {
-    const covered = resolveJob(tierId, picks, idx);
+    const covered = resolveJob(tierId, picks, idx, excluded);
     const ov = overlapWith(covered, savedId, jobs, idx);
     return coverageLine(
       {
@@ -205,10 +221,11 @@ export default function JobEditor({
         products: new Set([...covered].map((s) => idx.productOf.get(s))).size,
         overlap_sources: ov.count,
         login_sources: [...covered].filter((s) => idx.login.has(s)).length,
+        excluded_vendors: excludedInTier,
       },
       ov.names,
     );
-  }, [tierId, picks, idx, savedId, jobs]);
+  }, [tierId, picks, idx, savedId, jobs, excluded, excludedInTier]);
 
   // Vendor/product targets the (fresh) catalog no longer has any sources for.
   // They survive a save that leaves the tree alone; editing the tree drops them.
@@ -227,6 +244,9 @@ export default function JobEditor({
   const picksDirty =
     picks.size !== initialPicks.size || [...picks].some((s) => !initialPicks.has(s));
 
+  const exclusionsDirty =
+    excluded.size !== initialExcluded.size || [...excluded].some((v) => !initialExcluded.has(v));
+
   const save = async () => {
     if (!name.trim()) {
       setError("A job needs a name");
@@ -240,6 +260,18 @@ export default function JobEditor({
       )
     )
       return;
+    // A tier change leaves exclusions of vendors outside the new tier inert;
+    // offer to clear them rather than keep them silently.
+    let exclusionsToSave = excluded;
+    let exclusionsChanged = exclusionsDirty;
+    if (job && tierId !== job.tier_id && excluded.size > 0) {
+      const inNewTier = new Set(tierVendors.map((v) => v.vendor_id));
+      const stale = [...excluded].filter((v) => !inNewTier.has(v));
+      if (stale.length > 0 && confirm(`Clear ${stale.length} exclusion${stale.length === 1 ? "" : "s"} that no longer apply?`)) {
+        exclusionsToSave = new Set([...excluded].filter((v) => inNewTier.has(v)));
+        exclusionsChanged = true;
+      }
+    }
     setBusy(true);
     setError("");
     let wrote = false;
@@ -257,6 +289,7 @@ export default function JobEditor({
       // Only rewrite the picks when they changed: an untouched tree must not
       // replace a dynamic target whose sources are all gone (nothing to tick).
       if (picksDirty || (!job && picks.size > 0)) await setJobCoverage(id, [...picks]);
+      if (exclusionsChanged) await setJobExclusions(id, [...exclusionsToSave]);
       onSaved();
       onClose();
     } catch (e) {
@@ -400,6 +433,43 @@ export default function JobEditor({
                 </ul>
               )}
             </div>
+          )}
+
+          {tierId && tierVendors.length > 0 && (
+            <>
+              <h4>
+                Vendors in {tierName(tierId)}{" "}
+                <span className="sub">{excludedInTier} excluded</span>
+              </h4>
+              <p className="muted">
+                Excluded vendors are skipped by the tier; explicit picks below still cover them.
+              </p>
+              {tierVendors.length > 10 && (
+                <button
+                  type="button"
+                  className="btn-secondary-sm"
+                  onClick={() => setShowAllTierVendors(!showAllTierVendors)}
+                >
+                  {showAllTierVendors ? "Hide vendors" : `Show ${tierVendors.length} vendors`}
+                </button>
+              )}
+              {(tierVendors.length <= 10 || showAllTierVendors) && (
+                <ul className="job-tier-vendors">
+                  {tierVendors.map((v) => (
+                    <li key={v.vendor_id}>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={excluded.has(v.vendor_id)}
+                          onChange={() => toggleExcluded(v.vendor_id)}
+                        />{" "}
+                        exclude {v.vendor_name}
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
           )}
 
           <h4>Explicit picks</h4>

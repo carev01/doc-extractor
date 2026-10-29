@@ -5,6 +5,7 @@ from app.models.product import Product
 from app.models.tier import Tier
 from app.models.job import Job
 from app.models.job_target import JobTarget
+from app.models.job_exclusion import JobExclusion
 from app.models.auth_realm import AuthRealm, RealmStatus
 from app.models.user import User, UserRole
 from app.models.api_key import APIKey
@@ -28,6 +29,7 @@ __all__ = [
     "Tier",
     "Job",
     "JobTarget",
+    "JobExclusion",
     "AuthRealm",
     "RealmStatus",
     "User",

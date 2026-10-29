@@ -249,6 +249,8 @@ export interface JobCoverage {
   overlap_sources: number;
   /** Sources behind an auth realm. */
   login_sources: number;
+  /** Excluded vendors that are currently in the job's tier. */
+  excluded_vendors: number;
 }
 
 export interface Job extends JobSchedule {
@@ -260,6 +262,8 @@ export interface Job extends JobSchedule {
   next_run_at: string | null;
   last_run_at: string | null;
   targets: JobTargets;
+  /** Vendors the tier part of coverage skips (explicit picks still win). */
+  excluded_vendor_ids: string[];
   coverage: JobCoverage;
   /** Next three firings (empty when disabled or unscheduled). */
   next_runs: string[];

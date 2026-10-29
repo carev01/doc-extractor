@@ -467,6 +467,7 @@ Admin-only. A job is a schedule plus a **coverage**: at most one tier, plus expl
 | `PATCH` | `/api/jobs/{id}` | Partial update; omitted fields are unchanged |
 | `DELETE` | `/api/jobs/{id}` | Delete a job |
 | `PUT` | `/api/jobs/{id}/coverage` | Replace the explicit targets: `{source_ids}` |
+| `PUT` | `/api/jobs/{id}/exclusions` | Replace the vendors the job's tier skips: `{vendor_ids}` |
 | `POST` | `/api/jobs/schedule/preview` | Next three fire times for a schedule, nothing saved |
 | `GET` | `/api/jobs/catalog` | Vendor > product > source tree for the coverage picker |
 | `GET` | `/api/jobs/schedule` | Per-product last successful refresh and next scheduled one |
@@ -495,7 +496,9 @@ Schedules are friendly fields; `cron` is **derived** and read-only, as is `next_
 
 Fields a kind does not use are cleared. Validation errors are `422 {"detail": message}`.
 
-`JobResponse` adds `last_run_at`, `targets {vendor_ids, product_ids, source_ids}`, `coverage {sources, products, overlap_sources, login_sources}` (sources behind an auth realm; overlap = sources another job also covers) and `next_runs` (next three fire times; empty when disabled).
+`JobResponse` adds `last_run_at`, `targets {vendor_ids, product_ids, source_ids}`, `excluded_vendor_ids` (vendors the tier part skips), `coverage {sources, products, overlap_sources, login_sources, excluded_vendors}` (sources behind an auth realm; overlap = sources another job also covers; `excluded_vendors` = exclusions whose vendor is currently in the job's tier) and `next_runs` (next three fire times; empty when disabled).
+
+`PUT /exclusions` replaces the set atomically: unknown vendor ids are `404` and nothing changes; vendors outside the job's tier are accepted but inert (not counted in `excluded_vendors`). Exclusions remove a vendor from the tier part only; explicit vendor / product / source targets still cover it. Returns the `JobResponse`.
 
 `PUT /coverage` takes the picked sources and stores their normalized form: a fully ticked product becomes a product target and a fully ticked vendor a vendor target, so later additions are included automatically. Unknown ids are `404` and nothing changes. It returns the `JobResponse`.
 
