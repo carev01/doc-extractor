@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 
 ScheduleKind = Literal["daily", "weekly", "monthly_day", "monthly_nth"]
@@ -43,6 +43,15 @@ class JobUpdate(BaseModel):
     day_of_month: int | None = None
     nth: Literal["first", "last"] | None = None
     tier_id: uuid.UUID | None = None
+
+    @field_validator("name", "enabled")
+    @classmethod
+    def _not_nullable(cls, v):
+        # Omit the field to leave it unchanged; an explicit null would hit the
+        # NOT NULL column (a 500). Runs only for fields actually sent.
+        if v is None:
+            raise ValueError("may not be null")
+        return v
 
 
 class JobTargetsOut(BaseModel):

@@ -52,6 +52,21 @@ async def _load(db: AsyncSession, tier_id: uuid.UUID) -> Tier:
     return tier
 
 
+_NAME_TAKEN = "A tier with that name already exists"
+_IN_USE_NAMES_CAP = 20
+
+
+async def _commit_name(db: AsyncSession) -> None:
+    """Commit a tier name change. The explicit ``_name_taken`` check is
+    check-then-insert, so a concurrent create can still win the race; the unique
+    constraint then surfaces as the same 409, never a 500."""
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=_NAME_TAKEN) from None
+
+
 async def _name_taken(db: AsyncSession, name: str, exclude: uuid.UUID | None = None) -> bool:
     q = select(Tier.id).where(Tier.name == name)
     if exclude is not None:
@@ -72,13 +87,13 @@ async def create_tier(body: TierCreate, db: AsyncSession = Depends(get_db)):
     if not name:
         raise HTTPException(status_code=422, detail="Tier name is required")
     if await _name_taken(db, name):
-        raise HTTPException(status_code=409, detail="A tier with that name already exists")
+        raise HTTPException(status_code=409, detail=_NAME_TAKEN)
     sort_order = body.sort_order
     if sort_order is None:
         sort_order = ((await db.execute(select(func.max(Tier.sort_order)))).scalar() or 0) + 1
     tier = Tier(name=name, sort_order=sort_order)
     db.add(tier)
-    await db.commit()
+    await _commit_name(db)
     return _resp(tier, {})
 
 
@@ -91,11 +106,11 @@ async def update_tier(tier_id: uuid.UUID, body: TierUpdate, db: AsyncSession = D
         if not name:
             raise HTTPException(status_code=422, detail="Tier name is required")
         if await _name_taken(db, name, exclude=tier.id):
-            raise HTTPException(status_code=409, detail="A tier with that name already exists")
+            raise HTTPException(status_code=409, detail=_NAME_TAKEN)
         tier.name = name
     if data.get("sort_order") is not None:
         tier.sort_order = data["sort_order"]
-    await db.commit()
+    await _commit_name(db)
     return _resp(tier, await _counts(db, [tier.id]))
 
 
@@ -104,10 +119,20 @@ async def delete_tier(tier_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     tier = await _load(db, tier_id)
     v, j = (await _counts(db, [tier.id]))[tier.id]
     if v or j:
+        # Name who is using it (capped) so the operator knows what to reassign.
+        vendor_names = (await db.execute(
+            select(Vendor.name).where(Vendor.tier_id == tier.id)
+            .order_by(Vendor.name).limit(_IN_USE_NAMES_CAP)
+        )).scalars().all()
+        job_names = (await db.execute(
+            select(Job.name).where(Job.tier_id == tier.id)
+            .order_by(Job.name).limit(_IN_USE_NAMES_CAP)
+        )).scalars().all()
         return JSONResponse(status_code=409, content={
             "detail": f"Tier is in use by {v} vendor(s) and {j} job(s); "
                       "reassign them before deleting",
             "vendors": v, "jobs": j,
+            "vendor_names": list(vendor_names), "job_names": list(job_names),
         })
     try:
         await db.delete(tier)
