@@ -2187,6 +2187,72 @@ a.btn-primary {
   align-items: center;
   gap: 0.5em;
 }
+.job-card .item-info > .sub {
+  display: block;
+  margin-top: 4px;
+}
+
+/* Job editor dialog: the body scrolls, the summary + actions stay put. */
+.picker-panel.job-editor {
+  max-height: 90vh;
+}
+.job-editor-body {
+  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.job-editor-body h4 {
+  margin: 6px 0 0;
+  font-size: 0.86rem;
+}
+.job-editor-body .export-row input[type="text"] {
+  min-height: var(--control-sm-h);
+  padding: 0 10px;
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 0.86rem;
+  min-width: 16rem;
+}
+.job-editor-body .schedule-fields {
+  margin-bottom: 0;
+}
+.job-editor-body .schedule-tz {
+  min-width: 12rem;
+}
+.job-editor .job-enabled {
+  justify-content: flex-end;
+}
+.job-editor-filter {
+  min-height: var(--control-sm-h);
+  padding: 0 12px;
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 0.86rem;
+}
+.job-editor-body .bump-plan {
+  max-height: none;
+  overflow: visible;
+}
+.job-next-runs ul {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0 0 0 1rem;
+}
+.job-coverage-line {
+  color: var(--text-dim);
+}
+.tree-sources > .tree-product {
+  padding: 2px 0;
+}
+.tree-caret .tree-note {
+  margin-left: 8px;
+}
 
 /* ============================================================
    Versioned-URL feature — shared chrome

@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.config import settings
 from app.core.database import Base
-from app.models import Vendor, Product, DocumentationSource, ExtractionRun, Job, JobRun
+from app.models import Vendor, Product, DocumentationSource, ExtractionRun, Job, JobRun, JobTarget
 from app.models.extraction_run import RunStatus
 from app.models.job_run import JobRunStatus
 from app.services.scheduling import tick, reconcile_job_runs
@@ -44,8 +44,11 @@ async def _source(db, job_id=None) -> uuid.UUID:
     prod = Product(vendor_id=v.id, name=f"P-{sfx}")
     db.add(prod)
     await db.flush()
-    s = DocumentationSource(product_id=prod.id, name=f"S-{sfx}", base_url=f"http://x/{sfx}", job_id=job_id)
+    s = DocumentationSource(product_id=prod.id, name=f"S-{sfx}", base_url=f"http://x/{sfx}")
     db.add(s)
+    await db.flush()
+    if job_id is not None:
+        db.add(JobTarget(job_id=job_id, source_id=s.id))
     await db.commit()
     await db.refresh(s)
     return s.id
@@ -53,7 +56,7 @@ async def _source(db, job_id=None) -> uuid.UUID:
 
 async def _job(db, enabled=True, next_run_at=None) -> uuid.UUID:
     job = Job(
-        name="Nightly", enabled=enabled, frequency="daily", time_of_day="02:00",
+        name="Nightly", enabled=enabled, schedule_kind="daily", time_of_day="02:00",
         cron="0 2 * * *", timezone="UTC", next_run_at=next_run_at,
     )
     db.add(job)

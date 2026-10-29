@@ -1,16 +1,22 @@
 """Scheduler tick: reap dead runs, reconcile job runs, fan out due jobs."""
 
 import logging
+from collections.abc import Sequence
 from datetime import datetime, timezone
+from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.job import Job
 from app.models.job_run import JobRun, JobRunStatus
+from app.core.sql import any_of
+from app.models.auth_realm import AuthRealm, RealmStatus
 from app.models.source import DocumentationSource
+from app.services.bulk_extract import realm_blocks_extraction
+from app.services.job_coverage import resolve_sources
 from app.services.cron import compute_next_run
 from app.services.queue import reap_stale_runs, reap_stale_exports
 
@@ -20,49 +26,104 @@ logger = logging.getLogger(__name__)
 async def fan_out_job(
     db: AsyncSession, job: Job, trigger: str, now: datetime | None = None
 ) -> JobRun | None:
-    """Create a JobRun and enqueue one pending ExtractionRun per assigned source.
+    """Create a JobRun and enqueue one pending ExtractionRun per covered source.
 
-    A source that already has an active run is coalesced (skipped) via a
-    savepoint so it never rolls back the whole fan-out. Returns the JobRun, or
-    None when the job has no sources assigned. Does not commit — the caller does.
+    Coverage is the job's resolved sources (tier + vendor/product/source targets).
+    A source that cannot be enqueued is recorded in ``job_run.skipped`` with a
+    reason: ``paused_run`` (a PAUSED run exists), ``active_run`` (the
+    uq_active_run_per_source coalesce, via a savepoint so it never rolls back the
+    whole fan-out), ``login_failed`` (realm LOGIN_FAILED) or ``login_needed``
+    (realm session expired and no saved credentials). Realms with saved
+    credentials are enqueued; the run logs in at start. Returns None when the job
+    covers no sources. Does not commit — the caller does.
     """
     now = now or datetime.now(timezone.utc)
-    source_ids = (
-        await db.execute(
-            select(DocumentationSource.id).where(DocumentationSource.job_id == job.id)
-        )
-    ).scalars().all()
+    source_ids = sorted((await resolve_sources(db, [job.id])).get(job.id, set()), key=str)
     if not source_ids:
         return None
+
+    paused = set((
+        await db.execute(
+            select(ExtractionRun.source_id).where(
+                any_of(ExtractionRun.source_id, source_ids),
+                ExtractionRun.status == RunStatus.PAUSED,
+            )
+        )
+    ).scalars().all())
+    realm_rows = (
+        await db.execute(
+            select(DocumentationSource.id, AuthRealm)
+            .join(AuthRealm, AuthRealm.id == DocumentationSource.auth_realm_id)
+            .where(any_of(DocumentationSource.id, source_ids))
+        )
+    ).all()
+    realms = {sid: realm for sid, realm in realm_rows}
 
     job_run = JobRun(job_id=job.id, trigger=trigger, status=JobRunStatus.PENDING)
     db.add(job_run)
     await db.flush()
 
     enqueued = 0
+    skipped: list[dict] = []
     for sid in source_ids:
-        try:
-            async with db.begin_nested():
-                db.add(
-                    ExtractionRun(
-                        source_id=sid, status=RunStatus.PENDING,
-                        trigger=trigger, job_run_id=job_run.id,
+        realm = realms.get(sid)
+        reason = None
+        if sid in paused:
+            reason = "paused_run"
+        elif realm is not None and realm.status == RealmStatus.LOGIN_FAILED:
+            reason = "login_failed"
+        elif realm_blocks_extraction(realm) and not (realm.username and realm.password):
+            reason = "login_needed"
+        if reason is None:
+            try:
+                async with db.begin_nested():
+                    db.add(
+                        ExtractionRun(
+                            source_id=sid, status=RunStatus.PENDING,
+                            trigger=trigger, job_run_id=job_run.id,
+                        )
                     )
-                )
-        except IntegrityError:
-            # uq_active_run_per_source — a run is already active for this source.
-            logger.info("Job %s: source %s coalesced (run already active)", job.id, sid)
-        else:
-            enqueued += 1
+            except IntegrityError:
+                # uq_active_run_per_source — a run is already active for this source.
+                reason = "active_run"
+            else:
+                enqueued += 1
+                continue
+        logger.info("Job %s: source %s skipped (%s)", job.id, sid, reason)
+        skipped.append({"source_id": str(sid), "reason": reason})
 
     job_run.sources_total = enqueued
+    job_run.skipped = skipped or None
     if enqueued == 0:
-        # Every source was already running — nothing to do.
+        # Nothing could be enqueued — nothing to do.
         job_run.status = JobRunStatus.COMPLETED
         job_run.completed_at = now
     job.last_run_at = now
     await db.flush()
     return job_run
+
+
+async def job_run_children_summary(
+    db: AsyncSession, job_run_ids: Sequence[UUID]
+) -> dict[UUID, dict]:
+    """Per JobRun, child ExtractionRun counts by status (always including
+    ``paused``) plus ``total``. One query regardless of how many JobRuns."""
+    out = {
+        jid: {"total": 0, **{st.value: 0 for st in RunStatus}} for jid in job_run_ids
+    }
+    if not out:
+        return out
+    rows = (
+        await db.execute(
+            select(ExtractionRun.job_run_id, ExtractionRun.status, func.count())
+            .where(any_of(ExtractionRun.job_run_id, list(out)))
+            .group_by(ExtractionRun.job_run_id, ExtractionRun.status)
+        )
+    ).all()
+    for jid, status, n in rows:
+        out[jid][status.value] = n
+        out[jid]["total"] += n
+    return out
 
 
 async def reconcile_job_runs(db: AsyncSession, now: datetime | None = None) -> int:

@@ -15,6 +15,8 @@ import {
   getEnrichmentStats,
 } from "../api/client";
 import JobsManager from "./JobsManager";
+import ScheduleView from "./ScheduleView";
+import TierManager from "./TierManager";
 import { apiError } from "../api/errors";
 
 const STATUS_COLORS: Record<string, string> = {
@@ -26,6 +28,7 @@ const STATUS_COLORS: Record<string, string> = {
   cancelled: "#6f8087",
   paused: "#5a7fa3",
   warning: "#c8923d",
+  "needs attention": "#c8923d",
 };
 
 function statusBadge(status: string) {
@@ -114,8 +117,8 @@ function EnrichProgress({ stat }: { stat: EnrichStat | undefined }) {
 
 export default function JobsView() {
   const [tab, setTab] = useState<
-    "active" | "recent" | "jobruns" | "exports" | "manage"
-  >("active");
+    "schedule" | "active" | "recent" | "jobruns" | "exports" | "manage"
+  >("schedule");
   const [runs, setRuns] = useState<ExtractionRun[]>([]);
   const [exportJobs, setExportJobs] = useState<ExportJobItem[]>([]);
   const [jobRuns, setJobRuns] = useState<JobRunItem[]>([]);
@@ -219,6 +222,9 @@ export default function JobsView() {
     <div className="jobs-view">
       <h2>Jobs</h2>
       <nav className="source-tabs" style={{ marginBottom: "1rem" }}>
+        <button className={tab === "schedule" ? "active" : ""} onClick={() => setTab("schedule")}>
+          Schedule
+        </button>
         <button className={tab === "active" ? "active" : ""} onClick={() => setTab("active")}>
           Active <span className="tab-count">{active.length}</span>
         </button>
@@ -237,7 +243,14 @@ export default function JobsView() {
       </nav>
       {error && <div className="error">{error}</div>}
 
-      {tab === "manage" && <JobsManager />}
+      {tab === "schedule" && <ScheduleView />}
+
+      {tab === "manage" && (
+        <>
+          <TierManager />
+          <JobsManager />
+        </>
+      )}
 
       {tab === "active" && (
         <section className="jobs-section">
@@ -316,10 +329,17 @@ export default function JobsView() {
                   <strong>{jr.job_name ?? "(deleted job)"}</strong>
                   <div className="item-meta">
                     {statusBadge(jr.status)}
+                    {jr.children_paused > 0 && (
+                      <span title="Paused child runs are waiting for a login or Resume">
+                        {statusBadge("needs attention")}
+                      </span>
+                    )}
                     <span className="sub">{jr.trigger}</span>
                     <span className="sub">
                       {jr.sources_done}/{jr.sources_total} done
                       {jr.sources_failed > 0 ? `, ${jr.sources_failed} failed` : ""}
+                      {jr.children_paused > 0 ? `, ${jr.children_paused} paused` : ""}
+                      {jr.skipped.length > 0 ? `, ${jr.skipped.length} skipped` : ""}
                     </span>
                     <span className="sub">
                       {jr.created_at ? new Date(jr.created_at).toLocaleString() : "—"}

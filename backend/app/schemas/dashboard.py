@@ -25,9 +25,6 @@ class DashboardSourceRow(BaseModel):
     last_run_new: int | None
     last_run_updated: int | None
     last_run_unchanged: int | None
-    job_id: uuid.UUID | None
-    job_name: str | None
-    next_run_at: str | None
 
 
 class DashboardResponse(BaseModel):
@@ -96,9 +93,6 @@ class OverviewSourceRow(BaseModel):
     escalation: OverviewEscalation
     blocked: OverviewBlocked
     active_run: bool
-    job_id: uuid.UUID | None
-    job_name: str | None
-    next_run_at: str | None
 
 
 class OverviewAggregate(BaseModel):

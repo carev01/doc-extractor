@@ -3,7 +3,6 @@ import type {
   Product,
   DocumentationSource,
   ExtractionRun,
-  Job,
   ProfileOption,
   AuthRealm,
   SourceEnrichment,
@@ -17,10 +16,7 @@ import {
   getRunStatus,
   listRuns,
   resanitizeSource,
-  listJobs,
   getProfiles,
-  assignSourceToJob,
-  unassignSourceFromJob,
   detectVersionToken,
   createPdfSourceFromUrl,
   uploadPdfSource,
@@ -84,7 +80,6 @@ export default function SourceList({
   const [sources, setSources] = useState<DocumentationSource[]>([]);
   const [showProductExport, setShowProductExport] = useState(false);
   const [showProductExtract, setShowProductExtract] = useState(false);
-  const [jobs, setJobs] = useState<Job[]>([]);
   const [authRealms, setAuthRealms] = useState<AuthRealm[]>([]);
   const [enrichment, setEnrichment] = useState<Map<string, SourceEnrichment>>(new Map());
   const [name, setName] = useState("");
@@ -132,11 +127,6 @@ export default function SourceList({
     listSources(product.id)
       .then((data) => setSources(data.sources))
       .catch(() => setError("Failed to load sources"));
-    listJobs()
-      .then((data) => setJobs(data.jobs))
-      .catch(() => {
-        /* non-fatal: job dropdown just stays empty */
-      });
     authRealmApi.list()
       .then(setAuthRealms)
       .catch(() => {
@@ -319,7 +309,6 @@ export default function SourceList({
           <SourceItem
             key={s.id}
             source={s}
-            jobs={jobs}
             authRealms={authRealms}
             selected={s.id === selectedSourceId}
             onSelect={onSelectSource}
@@ -346,7 +335,6 @@ export default function SourceList({
 
 interface SourceItemProps {
   source: DocumentationSource;
-  jobs: Job[];
   authRealms: AuthRealm[];
   selected: boolean;
   onSelect: (source: DocumentationSource) => void;
@@ -361,7 +349,6 @@ interface SourceItemProps {
 
 function SourceItem({
   source,
-  jobs,
   authRealms,
   selected,
   onSelect,
@@ -458,20 +445,6 @@ function SourceItem({
       onSourceChanged();
     } catch (e) {
       setItemError(apiError(e, "Failed to trigger extraction"));
-    }
-  };
-
-  const handleJobChange = async (nextJobId: string) => {
-    setItemError("");
-    try {
-      if (nextJobId) {
-        await assignSourceToJob(nextJobId, source.id);
-      } else if (source.job_id) {
-        await unassignSourceFromJob(source.job_id, source.id);
-      }
-      onSourceChanged();
-    } catch {
-      setItemError("Failed to change job assignment");
     }
   };
 
@@ -701,24 +674,6 @@ function SourceItem({
             >
               ↻ Re-derive
             </button>
-          </label>
-          <label className="sub" style={{ display: "flex", alignItems: "center", gap: "0.4em" }}>
-            Job:
-            <select
-              value={source.job_id ?? ""}
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => {
-                e.stopPropagation();
-                handleJobChange(e.target.value);
-              }}
-            >
-              <option value="">(none — manual only)</option>
-              {jobs.map((j) => (
-                <option key={j.id} value={j.id}>
-                  {j.name}
-                </option>
-              ))}
-            </select>
           </label>
           {authRealms.length > 0 && (
             <select

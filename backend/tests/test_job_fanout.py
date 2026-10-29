@@ -1,0 +1,167 @@
+"""fan_out_job: coverage-based fan-out with recorded skip reasons."""
+
+import os
+import sys
+import time
+import uuid
+from datetime import datetime, timezone
+
+import pytest
+import pytest_asyncio
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from app.core.config import settings
+from app.core.database import Base
+from app.models import (
+    AuthRealm, DocumentationSource, ExtractionRun, Job, JobRun, JobTarget, Product, Vendor,
+)
+from app.models.auth_realm import RealmStatus
+from app.models.extraction_run import RunStatus
+from app.models.job_run import JobRunStatus
+from app.services.scheduling import fan_out_job, job_run_children_summary, reconcile_job_runs
+
+TEST_DATABASE_URL = settings.database_url.rsplit("/", 1)[0] + "/docextractor_test"
+pytestmark = pytest.mark.asyncio
+NOW = datetime(2026, 6, 17, 5, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _secret_key(monkeypatch):
+    from cryptography.fernet import Fernet
+    from app.core import crypto
+    monkeypatch.setattr(settings, "secret_key", Fernet.generate_key().decode())
+    monkeypatch.setattr(crypto, "_cipher", None)
+
+
+@pytest_asyncio.fixture
+async def factory():
+    engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
+    f = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+    yield f
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    await engine.dispose()
+
+
+async def _setup(db, realm=None):
+    sfx = uuid.uuid4().hex[:8]
+    v = Vendor(name=f"V-{sfx}")
+    db.add(v)
+    await db.flush()
+    p = Product(vendor_id=v.id, name=f"P-{sfx}")
+    db.add(p)
+    await db.flush()
+    s = DocumentationSource(
+        product_id=p.id, name="S", base_url=f"https://x/{sfx}",
+        auth_realm_id=realm.id if realm else None,
+    )
+    db.add(s)
+    job = Job(name="J")
+    db.add(job)
+    await db.flush()
+    db.add(JobTarget(job_id=job.id, source_id=s.id))
+    await db.flush()
+    return job, s
+
+
+async def _realm(db, **kw):
+    r = AuthRealm(
+        name=f"R-{uuid.uuid4().hex[:6]}", login_domain="x.com",
+        browserless_profile_name=f"p-{uuid.uuid4().hex[:6]}", **kw,
+    )
+    db.add(r)
+    await db.flush()
+    return r
+
+
+def _expired_snapshot():
+    return {"cookies": [{"name": "session_token", "expires": time.time() - 3600}]}
+
+
+async def test_job_with_no_coverage_returns_none(factory):
+    async with factory() as db:
+        job = Job(name="Empty")
+        db.add(job)
+        await db.flush()
+        assert await fan_out_job(db, job, "scheduled", now=NOW) is None
+
+
+async def test_paused_run_is_skipped_not_doubled(factory):
+    async with factory() as db:
+        job, s = await _setup(db)
+        db.add(ExtractionRun(source_id=s.id, status=RunStatus.PAUSED, trigger="manual"))
+        await db.flush()
+        jr = await fan_out_job(db, job, "scheduled", now=NOW)
+        assert jr.skipped == [{"source_id": str(s.id), "reason": "paused_run"}]
+        assert jr.sources_total == 0
+        n = (await db.execute(select(ExtractionRun).where(ExtractionRun.source_id == s.id))).scalars().all()
+        assert len(n) == 1
+
+
+async def test_active_run_coalesces(factory):
+    async with factory() as db:
+        job, s = await _setup(db)
+        db.add(ExtractionRun(source_id=s.id, status=RunStatus.RUNNING, trigger="manual"))
+        await db.flush()
+        jr = await fan_out_job(db, job, "scheduled", now=NOW)
+        assert jr.skipped == [{"source_id": str(s.id), "reason": "active_run"}]
+        assert jr.sources_total == 0
+        assert jr.status == JobRunStatus.COMPLETED
+
+
+async def test_login_failed_realm_skipped(factory):
+    async with factory() as db:
+        r = await _realm(db, status=RealmStatus.LOGIN_FAILED, username="u", password="p")
+        job, s = await _setup(db, r)
+        jr = await fan_out_job(db, job, "scheduled", now=NOW)
+        assert jr.skipped == [{"source_id": str(s.id), "reason": "login_failed"}]
+        assert jr.sources_total == 0
+
+
+async def test_cookie_realm_expired_skipped_as_login_needed(factory):
+    async with factory() as db:
+        r = await _realm(db, status=RealmStatus.EXPIRED, state_snapshot=_expired_snapshot())
+        job, s = await _setup(db, r)
+        jr = await fan_out_job(db, job, "scheduled", now=NOW)
+        assert jr.skipped == [{"source_id": str(s.id), "reason": "login_needed"}]
+        assert jr.sources_total == 0
+
+
+async def test_credential_realm_expired_is_enqueued(factory):
+    async with factory() as db:
+        r = await _realm(
+            db, status=RealmStatus.EXPIRED, username="u", password="p",
+            state_snapshot=_expired_snapshot(),
+        )
+        job, s = await _setup(db, r)
+        jr = await fan_out_job(db, job, "scheduled", now=NOW)
+        assert not jr.skipped
+        assert jr.sources_total == 1
+        run = (await db.execute(select(ExtractionRun).where(ExtractionRun.source_id == s.id))).scalar_one()
+        assert run.job_run_id == jr.id
+
+
+async def test_all_children_paused_jobrun_reports_children_paused(factory):
+    async with factory() as db:
+        job, s = await _setup(db)
+        jr = await fan_out_job(db, job, "scheduled", now=NOW)
+        run = (await db.execute(select(ExtractionRun).where(ExtractionRun.job_run_id == jr.id))).scalar_one()
+        run.status = RunStatus.PAUSED
+        await db.flush()
+        other = JobRun(job_id=job.id, trigger="scheduled", status=JobRunStatus.PENDING)
+        db.add(other)
+        await db.flush()
+        summary = await job_run_children_summary(db, [jr.id, other.id])
+        assert summary[jr.id]["paused"] == 1
+        assert summary[jr.id]["total"] == 1
+        assert summary[other.id]["paused"] == 0
+        await reconcile_job_runs(db, NOW)
+        await db.refresh(jr)
+        assert jr.status == JobRunStatus.RUNNING

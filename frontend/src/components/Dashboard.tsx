@@ -396,7 +396,6 @@ export default function Dashboard({
               </th>
             ))}
             <th>Status</th>
-            <th>Job</th>
             <th>Flags</th>
           </tr>
         </thead>
@@ -421,14 +420,13 @@ export default function Dashboard({
                 {r.blocked.pending_count || "—"}
               </td>
               <td>{r.status}</td>
-              <td>{r.job_name ?? "—"}</td>
               <td>
                 <FlagBadges row={r} staleSeconds={staleSeconds} />
               </td>
             </tr>
           ))}
           {rows.length === 0 && (
-            <tr><td colSpan={10} className="sub">No sources match the current filters.</td></tr>
+            <tr><td colSpan={9} className="sub">No sources match the current filters.</td></tr>
           )}
         </tbody>
       </table>

@@ -433,23 +433,94 @@ and spending it before evicting any real export under the size cap.
 
 ---
 
-## Jobs (Scheduled Extraction)
+## Tiers
 
-Admin-only.
+Admin-only. A tier is an operator-defined label on a vendor (e.g. "Tier 1"); a job can target a tier and picks up whichever vendors carry it when the job fires.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/jobs` | List jobs |
-| `POST` | `/api/jobs` | Create a scheduled job |
+| `GET` | `/api/tiers` | List tiers (`id`, `name`, `sort_order`, `vendor_count`, `job_count`) |
+| `POST` | `/api/tiers` | Create a tier: `{name, sort_order?}` (`sort_order` defaults to last). `409` on a duplicate name |
+| `PATCH` | `/api/tiers/{id}` | Rename / reorder: `{name?, sort_order?}` |
+| `DELETE` | `/api/tiers/{id}` | `204`; `409 {detail, vendors, jobs}` while any vendor or job still references it |
+| `PUT` | `/api/tiers/{id}/vendors` | Bulk-tier: `{vendor_ids}` moves those vendors into the tier (additive; other vendors unchanged). Returns `{tier_id, updated}` |
+| `PUT` | `/api/tiers/none/vendors` | Same body; removes the given vendors from whatever tier they are in |
+
+An unknown tier or vendor id is a `404` naming the ids, and nothing is applied. `VendorResponse` carries `tier_id`.
+
+```bash
+curl -X PUT $API/api/tiers/$TIER_ID/vendors -H 'Content-Type: application/json' \
+  -d '{"vendor_ids": ["<vendor-uuid>", "<vendor-uuid>"]}'
+# -> {"tier_id": "…", "updated": 2}
+```
+
+---
+
+## Jobs (Scheduled Extraction)
+
+Admin-only. A job is a schedule plus a **coverage**: at most one tier, plus explicit vendor / product / source targets. Coverage is resolved to concrete sources each time the job fires, so new products or re-tiered vendors are picked up without editing the job. A job with `enabled=false` or no `schedule_kind` is a manual-only group.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/jobs` | List jobs (`{jobs, total}`) |
+| `POST` | `/api/jobs` | Create a job (`name` + schedule fields + `tier_id?`) |
 | `GET` | `/api/jobs/{id}` | Get a job |
-| `PATCH` | `/api/jobs/{id}` | Update a job (enable/disable, change schedule) |
+| `PATCH` | `/api/jobs/{id}` | Partial update; omitted fields are unchanged |
 | `DELETE` | `/api/jobs/{id}` | Delete a job |
-| `PUT` | `/api/jobs/{id}/sources` | Set sources for a job |
-| `PUT` | `/api/jobs/{id}/sources/{source_id}` | Add a source to a job |
-| `DELETE` | `/api/jobs/{id}/sources/{source_id}` | Remove a source from a job |
-| `POST` | `/api/jobs/{id}/run` | Trigger an immediate run |
-| `GET` | `/api/jobs/{id}/runs` | List runs for a job |
-| `GET` | `/api/jobs/runs` | List all job runs |
+| `PUT` | `/api/jobs/{id}/coverage` | Replace the explicit targets: `{source_ids}` |
+| `POST` | `/api/jobs/schedule/preview` | Next three fire times for a schedule, nothing saved |
+| `GET` | `/api/jobs/catalog` | Vendor > product > source tree for the coverage picker |
+| `GET` | `/api/jobs/schedule` | Per-product last successful refresh and next scheduled one |
+| `POST` | `/api/jobs/{id}/run` | Fire now (`trigger="manual"`); `409` if the job covers no sources |
+| `GET` | `/api/jobs/{id}/runs` | Runs of one job (`limit`, default 50) |
+| `GET` | `/api/jobs/runs` | Recent runs across all jobs, newest first (`limit`, default 30) |
+
+The per-source assign endpoints (`/api/jobs/{id}/sources[/{source_id}]`) and the old frequency fields are gone.
+
+### Schedule fields
+
+Schedules are friendly fields; `cron` is **derived** and read-only, as is `next_run_at` (null while disabled).
+
+| Field | Meaning |
+|-------|---------|
+| `schedule_kind` | `daily`, `weekly`, `monthly_day` or `monthly_nth` |
+| `time_of_day` | `HH:MM`, default `02:00` |
+| `timezone` | IANA name, default `UTC`; unknown names are `422` |
+| `weekday` | 0-6, **0 = Sunday** (`weekly`, `monthly_nth`) |
+| `interval_months` | One of 1, 2, 3, 4, 6, 12 (it must divide a year); `monthly_*` only, default 1 |
+| `start_month` | 1-12, the month the cycle is anchored to; defaults to next month in the job's timezone |
+| `day_of_month` | 1-28 (`monthly_day`) |
+| `nth` | `first` or `last` weekday of the month (`monthly_nth`) |
+| `enabled` | An enabled job must have a `schedule_kind` (`422` otherwise) |
+| `tier_id` | Optional tier to cover; unknown tier is `404` |
+
+Fields a kind does not use are cleared. Validation errors are `422 {"detail": message}`.
+
+`JobResponse` adds `last_run_at`, `targets {vendor_ids, product_ids, source_ids}`, `coverage {sources, products, overlap_sources, login_sources}` (sources behind an auth realm; overlap = sources another job also covers) and `next_runs` (next three fire times; empty when disabled).
+
+`PUT /coverage` takes the picked sources and stores their normalized form: a fully ticked product becomes a product target and a fully ticked vendor a vendor target, so later additions are included automatically. Unknown ids are `404` and nothing changes. It returns the `JobResponse`.
+
+```bash
+# Every 2nd month, first Sunday, 03:00 Europe/Lisbon, starting in November
+curl -X POST $API/api/jobs/schedule/preview -H 'Content-Type: application/json' \
+  -d '{"kind":"monthly_nth","nth":"first","weekday":0,"interval_months":2,"start_month":11,"time_of_day":"03:00","timezone":"Europe/Lisbon"}'
+# -> {"next_runs": ["…", "…", "…"]}
+```
+
+### Catalog
+
+`GET /api/jobs/catalog` returns `[{vendor_id, vendor_name, tier_id, products: [{product_id, product_name, sources: [{source_id, source_name, auth_realm}]}]}]`; `auth_realm` is the realm name or null.
+
+### Schedule view
+
+`GET /api/jobs/schedule` returns `{products: [...]}`, one row per product: `product_id`, `product_name`, `vendor_name`, `tier_name`, `jobs`, `source_count`, `last_ok_at`, `latest`, `next_at`, `scheduled_sources`, and per-source `sources`. `latest` is `{at, outcome, trigger, job_name, updated, reason, blocked}`; a failed run's `reason` is its error message (truncated), and a skip recorded by a job run competes with runs by time. A product's `last_ok_at` is the oldest across its sources (null if any never succeeded); `next_at` is the latest across scheduled sources and comes only from enabled jobs. A refresh counts only if it is a completed `extract` run with no `blocked_pending`.
+
+### Job runs
+
+`JobRunResponse`: `id`, `job_id`, `job_name`, `status`, `trigger`, `sources_total`, `sources_done`, `sources_failed`, `created_at`, `started_at`, `completed_at`, plus:
+
+- `children_paused`: how many child runs are currently PAUSED.
+- `skipped`: always a list of `{source_id, reason}` for sources the fan-out did not queue. Reasons: `active_run` (a run is already pending/running), `paused_run` (a paused run exists), `login_needed`, `login_failed` (the source's auth realm could not provide a session).
 
 ---
 

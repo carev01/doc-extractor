@@ -140,6 +140,11 @@ class ExtractionRun(Base):
     # per-run log handler so the UI can show raw logs without kubectl.
     log_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # True when the scheduler logged in (JIT) on this run's behalf.
+    auto_relogin_used: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

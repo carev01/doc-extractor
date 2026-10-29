@@ -167,6 +167,9 @@ async def get_realm(realm_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     return _response(await _get_realm(db, realm_id))
 
 
+_CREDENTIAL_FIELDS = frozenset({"username", "password", "totp_secret"})
+
+
 @router.patch("/{realm_id}", response_model=AuthRealmResponse)
 async def update_realm(
     realm_id: uuid.UUID,
@@ -175,8 +178,16 @@ async def update_realm(
 ):
     """Partially update an auth realm (name, credentials, selectors)."""
     realm = await _get_realm(db, realm_id)
+    creds_changed = False
     for field, value in payload.model_dump(exclude_unset=True).items():
+        if field in _CREDENTIAL_FIELDS and getattr(realm, field) != value:
+            creds_changed = True
         setattr(realm, field, value)
+    # LOGIN_FAILED stops job runs from retrying a scripted login (lockout risk);
+    # new credentials are what lifts it, so a job firing may try again.
+    if creds_changed and realm.status == RealmStatus.LOGIN_FAILED:
+        realm.status = RealmStatus.NEEDS_LOGIN
+        realm.error_message = None
     await db.commit()
     await db.refresh(realm)
     return _response(realm)

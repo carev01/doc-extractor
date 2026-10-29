@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
-import type { Vendor } from "../types";
-import { listAllVendors, createVendor, updateVendor, deleteVendor } from "../api/client";
+import type { Vendor, Tier } from "../types";
+import { listAllVendors, createVendor, updateVendor, deleteVendor, listTiers, setVendorsTier } from "../api/client";
 import { apiError } from "../api/errors";
 import BulkImport from "./BulkImport";
 import type { Access } from "../access";
@@ -22,6 +22,39 @@ export default function VendorList({ onSelect, selectedId, access }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [showImport, setShowImport] = useState(false);
+  // Tiers are admin-only on the server (/api/tiers), so only admins load them.
+  const isAdmin = access.isAdmin;
+  const [tiers, setTiers] = useState<Tier[]>([]);
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+  const [tierMenu, setTierMenu] = useState(false);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    listTiers()
+      .then(setTiers)
+      .catch(() => setTiers([]));
+  }, [isAdmin]);
+
+  const toggleChecked = (id: string) =>
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const applyTier = async (tierId: string | null) => {
+    setTierMenu(false);
+    try {
+      await setVendorsTier(tierId, [...checked]);
+      setChecked(new Set());
+      await fetchVendors();
+      setTiers(await listTiers());
+    } catch (e) {
+      setError(apiError(e, "Failed to set tier"));
+    }
+  };
+  const tierName = (id: string | null) => tiers.find((t) => t.id === id)?.name;
 
   // listAllVendors pages; a plain listVendors() call defaults to limit=50 and
   // would silently hide the 51st vendor onward — the same partial-list trap the
@@ -115,6 +148,39 @@ export default function VendorList({ onSelect, selectedId, access }: Props) {
       </form>
       )}
 
+      {isAdmin && checked.size > 0 && (
+        <div className="heading-actions" style={{ position: "relative", marginBottom: "0.5rem" }}>
+          <span className="sub">{checked.size} selected</span>
+          <button className="btn-secondary-sm" onClick={() => setTierMenu((v) => !v)}>
+            Set tier ▾
+          </button>
+          <button className="btn-secondary-sm" onClick={() => setChecked(new Set())}>
+            Clear
+          </button>
+          {tierMenu && (
+            <ul
+              className="item-list"
+              style={{
+                position: "absolute",
+                top: "100%",
+                zIndex: 10,
+                minWidth: "12rem",
+                padding: "8px 8px 0",
+                background: "var(--ink-0)",
+                border: "1px solid var(--line)",
+                borderRadius: "var(--radius-sm)",
+                boxShadow: "0 8px 24px -8px rgba(0, 0, 0, 0.6)",
+              }}
+            >
+              {tiers.map((t) => (
+                <li key={t.id} onClick={() => applyTier(t.id)}>{t.name}</li>
+              ))}
+              <li onClick={() => applyTier(null)}>No tier</li>
+            </ul>
+          )}
+        </div>
+      )}
+
       <ul className="item-list">
         {vendors.map((v) => (
           <li
@@ -122,8 +188,22 @@ export default function VendorList({ onSelect, selectedId, access }: Props) {
             className={v.id === selectedId ? "selected" : ""}
             onClick={() => onSelect(v)}
           >
+            {isAdmin && (
+              <input
+                type="checkbox"
+                aria-label={`Select ${v.name}`}
+                checked={checked.has(v.id)}
+                onClick={(e) => e.stopPropagation()}
+                onChange={() => toggleChecked(v.id)}
+              />
+            )}
             <div className="item-info">
               <strong>{v.name}</strong>
+              {isAdmin && tierName(v.tier_id) && (
+                <span className="status-badge" style={{ backgroundColor: "#5a7fa3", marginLeft: "0.5rem" }}>
+                  {tierName(v.tier_id)}
+                </span>
+              )}
               {v.website && <span className="sub">{v.website}</span>}
             </div>
             {canManage && (
