@@ -77,7 +77,7 @@ async def test_create_response_shape(env):
     j = await _job(c, enabled=True, schedule_kind="daily", time_of_day="03:30")
     assert j["cron"] == "30 3 * * *" and j["next_run_at"]
     assert j["targets"] == {"vendor_ids": [], "product_ids": [], "source_ids": []}
-    assert j["coverage"] == {"sources": 0, "products": 0, "overlap_sources": 0, "login_sources": 0}
+    assert j["coverage"] == {"sources": 0, "products": 0, "overlap_sources": 0, "login_sources": 0, "excluded_vendors": 0}
     assert len(j["next_runs"]) == 3
     assert (await c.get(f"/api/jobs/{j['id']}")).json()["next_runs"] == j["next_runs"]
 
@@ -166,7 +166,7 @@ async def test_coverage_put_normalizes_and_replaces(env):
     assert r.status_code == 200, r.text
     b = r.json()
     assert b["targets"] == {"vendor_ids": [ids["v1"]], "product_ids": [], "source_ids": []}  # whole vendor collapses
-    assert b["coverage"] == {"sources": 2, "products": 1, "overlap_sources": 0, "login_sources": 1}
+    assert b["coverage"] == {"sources": 2, "products": 1, "overlap_sources": 0, "login_sources": 1, "excluded_vendors": 0}
     r = await c.put(f"/api/jobs/{j['id']}/coverage", json={"source_ids": [ids["c"]]})
     t = r.json()["targets"]
     assert t["product_ids"] == [] and (t["vendor_ids"] == [ids["v2"]] or t["source_ids"] == [ids["c"]])

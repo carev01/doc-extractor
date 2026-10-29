@@ -28,6 +28,7 @@ export default function VendorList({ onSelect, selectedId, access }: Props) {
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [tierMenu, setTierMenu] = useState(false);
   const tierBarRef = useRef<HTMLDivElement>(null);
+  const tierToggleRef = useRef<HTMLButtonElement>(null);
 
   // Close the Set-tier menu on an outside click or Escape.
   useEffect(() => {
@@ -36,7 +37,10 @@ export default function VendorList({ onSelect, selectedId, access }: Props) {
       if (tierBarRef.current && !tierBarRef.current.contains(e.target as Node)) setTierMenu(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setTierMenu(false);
+      if (e.key === "Escape") {
+        setTierMenu(false);
+        tierToggleRef.current?.focus();
+      }
     };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
@@ -47,11 +51,11 @@ export default function VendorList({ onSelect, selectedId, access }: Props) {
   }, [tierMenu]);
 
   // Every vendor list refresh also drops ticks for vendors that are gone.
-  const loadedVendors = (list: Vendor[]) => {
+  const loadedVendors = useCallback((list: Vendor[]) => {
     setVendors(list);
     const ids = new Set(list.map((v) => v.id));
     setChecked((prev) => (prev.size === 0 || [...prev].every((id) => ids.has(id)) ? prev : new Set([...prev].filter((id) => ids.has(id)))));
-  };
+  }, []);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -91,7 +95,7 @@ export default function VendorList({ onSelect, selectedId, access }: Props) {
     } catch {
       setError("Failed to load vendors");
     }
-  }, []);
+  }, [loadedVendors]);
 
   // Inline promise chain rather than calling fetchVendors(): the
   // react-hooks/set-state-in-effect rule rejects invoking a function that
@@ -100,7 +104,7 @@ export default function VendorList({ onSelect, selectedId, access }: Props) {
     listAllVendors()
       .then(loadedVendors)
       .catch(() => setError("Failed to load vendors"));
-  }, []);
+  }, [loadedVendors]);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -191,7 +195,7 @@ export default function VendorList({ onSelect, selectedId, access }: Props) {
       {isAdmin && checked.size > 0 && (
         <div ref={tierBarRef} className="heading-actions" style={{ position: "relative", marginBottom: "0.5rem" }}>
           <span className="sub">{checked.size} selected</span>
-          <button className="btn-secondary-sm" aria-expanded={tierMenu} onClick={() => setTierMenu((v) => !v)}>
+          <button ref={tierToggleRef} className="btn-secondary-sm" aria-expanded={tierMenu} onClick={() => setTierMenu((v) => !v)}>
             Set tier ▾
           </button>
           <button className="btn-secondary-sm" onClick={() => setChecked(new Set())}>

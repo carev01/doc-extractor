@@ -64,6 +64,7 @@ def test_defect1_all_tables_in_metadata():
         "export_jobs",
         "extraction_runs",
         "image_descriptions",
+        "job_exclusions",
         "job_runs",
         "job_targets",
         "jobs",

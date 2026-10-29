@@ -65,10 +65,15 @@ class JobCoverage(BaseModel):
     products: int = 0           # distinct products those sources belong to
     overlap_sources: int = 0    # sources another job also covers
     login_sources: int = 0      # sources behind an auth realm
+    excluded_vendors: int = 0   # excluded vendors that are currently in the job's tier
 
 
 class CoverageSet(BaseModel):
     source_ids: list[uuid.UUID]
+
+
+class ExclusionsSet(BaseModel):
+    vendor_ids: list[uuid.UUID]
 
 
 class SchedulePreview(BaseModel):
@@ -120,6 +125,7 @@ class JobResponse(BaseModel):
     next_run_at: datetime | None
     last_run_at: datetime | None
     targets: JobTargetsOut = JobTargetsOut()
+    excluded_vendor_ids: list[uuid.UUID] = []
     coverage: JobCoverage = JobCoverage()
     next_runs: list[datetime] = []
 

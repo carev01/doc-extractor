@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.sql import any_of
-from app.models import DocumentationSource, Job, JobTarget, Product, Vendor
+from app.models import DocumentationSource, Job, JobExclusion, JobTarget, Product, Vendor
 
 
 @dataclass
@@ -32,13 +32,16 @@ async def resolve_sources(db: AsyncSession, job_ids: Sequence[UUID]) -> dict[UUI
     ids = list(out)
     S, P = DocumentationSource, Product
 
-    # Tier: every vendor currently in the job's tier.
+    # Tier: every vendor currently in the job's tier, minus the job's excluded
+    # vendors. Exclusions touch only this part; explicit targets below still win.
     for jid, sid in (await db.execute(
         select(Job.id, S.id)
         .join(Vendor, Vendor.tier_id == Job.tier_id)
         .join(P, P.vendor_id == Vendor.id)
         .join(S, S.product_id == P.id)
-        .where(any_of(Job.id, ids))
+        .outerjoin(JobExclusion, (JobExclusion.job_id == Job.id)
+                   & (JobExclusion.vendor_id == Vendor.id))
+        .where(any_of(Job.id, ids), JobExclusion.id.is_(None))
     )).all():
         out[jid].add(sid)
 

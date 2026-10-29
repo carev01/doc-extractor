@@ -18,10 +18,11 @@ from app.core.database import get_db
 from app.core.sql import any_of
 from app.models import AuthRealm, DocumentationSource, Product, Tier, Vendor
 from app.models.job import Job
+from app.models.job_exclusion import JobExclusion
 from app.models.job_run import JobRun
 from app.models.job_target import JobTarget
 from app.schemas.job import (
-    CatalogProduct, CatalogSource, CatalogVendor, CoverageSet, JobCoverage,
+    CatalogProduct, CatalogSource, CatalogVendor, CoverageSet, ExclusionsSet, JobCoverage,
     JobCreate, JobUpdate, JobResponse, JobList, JobRunResponse, JobTargetsOut,
     SchedulePreview,
 )
@@ -75,6 +76,20 @@ async def _responses(db: AsyncSession, jobs: list[Job]) -> list[JobResponse]:
         elif t.source_id:
             out.source_ids.append(t.source_id)
 
+    job_tier = {j.id: j.tier_id for j in jobs}
+    excluded: dict[uuid.UUID, list[uuid.UUID]] = {i: [] for i in ids}
+    in_tier: dict[uuid.UUID, int] = {i: 0 for i in ids}
+    for jid, vid, vtier in (await db.execute(
+        select(JobExclusion.job_id, JobExclusion.vendor_id, Vendor.tier_id)
+        .join(Vendor, Vendor.id == JobExclusion.vendor_id)
+        .where(any_of(JobExclusion.job_id, ids))
+        .order_by(JobExclusion.id)
+    )).all():
+        excluded[jid].append(vid)
+        tier = job_tier[jid]
+        if tier is not None and vtier == tier:
+            in_tier[jid] += 1
+
     now = datetime.now(timezone.utc)
     result = []
     for j in jobs:
@@ -92,7 +107,9 @@ async def _responses(db: AsyncSession, jobs: list[Job]) -> list[JobResponse]:
             day_of_month=j.day_of_month, nth=j.nth, tier_id=j.tier_id, cron=j.cron,
             next_run_at=j.next_run_at, last_run_at=j.last_run_at,
             targets=targets[j.id],
+            excluded_vendor_ids=excluded[j.id],
             coverage=JobCoverage(
+                excluded_vendors=in_tier[j.id],
                 sources=len(sids),
                 products=len({info[s][0] for s in sids if s in info}),
                 overlap_sources=sum(1 for s in sids if owners.get(s, 0) > 1),
@@ -342,6 +359,26 @@ async def set_coverage(job_id: uuid.UUID, body: CoverageSet, db: AsyncSession = 
         + [JobTarget(job_id=job.id, product_id=i) for i in t.product_ids]
         + [JobTarget(job_id=job.id, source_id=i) for i in t.source_ids]
     )
+    await db.commit()
+    return await _response(db, job)
+
+
+@router.put("/{job_id}/exclusions", response_model=JobResponse)
+async def set_exclusions(job_id: uuid.UUID, body: ExclusionsSet, db: AsyncSession = Depends(get_db)):
+    """Replace the vendors a tier job excludes. All-or-nothing: unknown vendor
+    ids are refused before anything changes. Vendors outside the job's tier are
+    accepted (inert) so a tier change does not invalidate the stored set."""
+    job = await _load(db, job_id)
+    ids = list(dict.fromkeys(body.vendor_ids))
+    if ids:
+        found = set((await db.execute(
+            select(Vendor.id).where(any_of(Vendor.id, ids))
+        )).scalars())
+        missing = [str(i) for i in ids if i not in found]
+        if missing:
+            raise HTTPException(status_code=404, detail=f"Unknown vendor ids: {', '.join(missing)}")
+    await db.execute(delete(JobExclusion).where(JobExclusion.job_id == job.id))
+    db.add_all([JobExclusion(job_id=job.id, vendor_id=i) for i in ids])
     await db.commit()
     return await _response(db, job)
 

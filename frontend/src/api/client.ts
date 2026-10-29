@@ -443,6 +443,12 @@ export async function setJobCoverage(id: string, sourceIds: string[]): Promise<J
   return res.data;
 }
 
+/** Replace the vendors a tier job excludes (vendors outside the tier are inert). */
+export async function setJobExclusions(id: string, vendorIds: string[]): Promise<Job> {
+  const res = await api.put(`/jobs/${id}/exclusions`, { vendor_ids: vendorIds });
+  return res.data;
+}
+
 /** Vendors → products → sources, for the coverage picker. */
 export async function getJobCatalog(): Promise<CatalogVendor[]> {
   const res = await api.get("/jobs/catalog");

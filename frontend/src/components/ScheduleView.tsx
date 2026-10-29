@@ -74,18 +74,21 @@ function Outcome({ l }: { l: ScheduleLatest }) {
       text = `skipped${reason ? `: ${reason}` : ""}`;
   }
   return (
-    <span
-      style={{
-        color,
-        display: "-webkit-box",
-        WebkitLineClamp: 2,
-        WebkitBoxOrient: "vertical",
-        overflow: "hidden",
-        overflowWrap: "anywhere",
-      }}
-      title={l.reason ?? undefined}
-    >
-      {icon} {text}
+    <span style={{ color }} title={l.reason ?? undefined}>
+      {icon}{" "}
+      <span style={{ display: "inline-block", maxWidth: "100%", verticalAlign: "top" }}>
+        <span
+          style={{
+            display: "-webkit-box",
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: "vertical",
+            overflow: "hidden",
+            overflowWrap: "anywhere",
+          }}
+        >
+          {text}
+        </span>
+      </span>
     </span>
   );
 }
@@ -249,6 +252,7 @@ function ProductRows({
               className="link-btn"
               style={{ font: "inherit", color: "inherit", padding: 0, textAlign: "left", cursor: "pointer" }}
               aria-expanded={isOpen}
+              aria-controls={isOpen ? p.sources.map((s) => `sched-src-${s.source_id}`).join(" ") : undefined}
               onClick={(e) => {
                 e.stopPropagation();
                 onToggle();
@@ -274,7 +278,7 @@ function ProductRows({
       </tr>
       {isOpen &&
         p.sources.map((s) => (
-          <tr key={s.source_id} style={{ background: "var(--ink-2)" }}>
+          <tr key={s.source_id} id={`sched-src-${s.source_id}`} style={{ background: "var(--ink-2)" }}>
             <td style={{ paddingLeft: "2rem" }}>
               {s.source_name}
               {s.jobs.length > 0 && <div className="hint">{jobsLabel(s.jobs)}</div>}

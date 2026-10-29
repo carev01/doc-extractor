@@ -167,7 +167,7 @@ function JobCard({
   const tier = tiers.find((t) => t.id === job.tier_id);
   const overlapNames = useMemo(() => {
     if (!idx || job.coverage.overlap_sources === 0) return [];
-    const mine = resolveJob(job.tier_id, resolveTargets(job.targets, idx), idx);
+    const mine = resolveJob(job.tier_id, resolveTargets(job.targets, idx), idx, job.excluded_vendor_ids);
     return overlapWith(mine, job.id, jobs, idx).names;
   }, [idx, job, jobs]);
 

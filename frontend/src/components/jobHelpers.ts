@@ -61,6 +61,8 @@ export interface CatalogIndex {
   sourcesOf: Map<string, string[]>;
   /** tier id → source ids of every vendor holding it */
   tierSources: Map<string, string[]>;
+  /** tier id → vendor id → that vendor's source ids */
+  tierVendorSources: Map<string, Map<string, string[]>>;
 }
 
 export function indexCatalog(catalog: CatalogVendor[]): CatalogIndex {
@@ -69,6 +71,7 @@ export function indexCatalog(catalog: CatalogVendor[]): CatalogIndex {
     login: new Set(),
     sourcesOf: new Map(),
     tierSources: new Map(),
+    tierVendorSources: new Map(),
   };
   for (const v of catalog) {
     const vs: string[] = [];
@@ -82,7 +85,12 @@ export function indexCatalog(catalog: CatalogVendor[]): CatalogIndex {
       }
     }
     idx.sourcesOf.set(v.vendor_id, vs);
-    if (v.tier_id) idx.tierSources.set(v.tier_id, [...(idx.tierSources.get(v.tier_id) ?? []), ...vs]);
+    if (v.tier_id) {
+      idx.tierSources.set(v.tier_id, [...(idx.tierSources.get(v.tier_id) ?? []), ...vs]);
+      const byVendor = idx.tierVendorSources.get(v.tier_id) ?? new Map<string, string[]>();
+      byVendor.set(v.vendor_id, vs);
+      idx.tierVendorSources.set(v.tier_id, byVendor);
+    }
   }
   return idx;
 }
@@ -96,14 +104,25 @@ export function resolveTargets(t: JobTargets, idx: CatalogIndex): Set<string> {
   return out;
 }
 
-/** Everything a job covers today: its tier's sources plus its explicit picks. */
+/** Everything a job covers today: its tier's sources (minus the excluded
+ * vendors', tier part only) plus its explicit picks, which always win. */
 export function resolveJob(
   tierId: string | null,
   picks: Set<string>,
   idx: CatalogIndex,
+  excludedVendorIds: Iterable<string> = [],
 ): Set<string> {
   const out = new Set(picks);
-  if (tierId) for (const s of idx.tierSources.get(tierId) ?? []) out.add(s);
+  if (!tierId) return out;
+  const excluded = new Set(excludedVendorIds);
+  if (excluded.size === 0) {
+    for (const s of idx.tierSources.get(tierId) ?? []) out.add(s);
+    return out;
+  }
+  for (const [vendorId, sources] of idx.tierVendorSources.get(tierId) ?? []) {
+    if (excluded.has(vendorId)) continue;
+    for (const s of sources) out.add(s);
+  }
   return out;
 }
 
@@ -118,7 +137,7 @@ export function overlapWith(
   const names: string[] = [];
   for (const j of jobs) {
     if (j.id === self) continue;
-    const theirs = resolveJob(j.tier_id, resolveTargets(j.targets, idx), idx);
+    const theirs = resolveJob(j.tier_id, resolveTargets(j.targets, idx), idx, j.excluded_vendor_ids);
     let hit = false;
     for (const s of covered) {
       if (theirs.has(s)) {
@@ -133,7 +152,13 @@ export function overlapWith(
 
 /** "covers 14 products / 62 sources; 2 also covered by Weekly; 3 need a login". */
 export function coverageLine(
-  c: { sources: number; products: number; overlap_sources: number; login_sources: number },
+  c: {
+    sources: number;
+    products: number;
+    overlap_sources: number;
+    login_sources: number;
+    excluded_vendors?: number;
+  },
   overlapNames: string[] = [],
 ): string {
   const parts = [`covers ${c.products} product(s) / ${c.sources} source(s)`];
@@ -143,5 +168,7 @@ export function coverageLine(
     );
   }
   if (c.login_sources > 0) parts.push(`${c.login_sources} need a login`);
-  return parts.join("; ");
+  const line = parts.join("; ");
+  const ex = c.excluded_vendors ?? 0;
+  return ex > 0 ? `${line} · ${ex} vendor${ex === 1 ? "" : "s"} excluded` : line;
 }

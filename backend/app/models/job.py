@@ -54,6 +54,9 @@ class Job(Base):
     targets: Mapped[list["JobTarget"]] = relationship(
         "JobTarget", back_populates="job", cascade="all, delete-orphan", passive_deletes=True
     )
+    exclusions: Mapped[list["JobExclusion"]] = relationship(
+        "JobExclusion", back_populates="job", cascade="all, delete-orphan", passive_deletes=True
+    )
     runs: Mapped[list["JobRun"]] = relationship(
         "JobRun", back_populates="job", cascade="all, delete-orphan"
     )
