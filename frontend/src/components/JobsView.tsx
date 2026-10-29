@@ -15,6 +15,7 @@ import {
   getEnrichmentStats,
 } from "../api/client";
 import JobsManager from "./JobsManager";
+import TierManager from "./TierManager";
 import { apiError } from "../api/errors";
 
 const STATUS_COLORS: Record<string, string> = {
@@ -237,7 +238,12 @@ export default function JobsView() {
       </nav>
       {error && <div className="error">{error}</div>}
 
-      {tab === "manage" && <JobsManager />}
+      {tab === "manage" && (
+        <>
+          <TierManager />
+          <JobsManager />
+        </>
+      )}
 
       {tab === "active" && (
         <section className="jobs-section">

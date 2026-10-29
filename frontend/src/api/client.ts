@@ -59,6 +59,7 @@ import type {
   ApiKeyItem,
   ApiKeyCreated,
   AdminApiKey,
+  Tier,
 } from "../types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -106,6 +107,35 @@ api.interceptors.response.use(
     return Promise.reject(error);
   },
 );
+
+// ── Tiers (admin-only) ──
+
+export async function listTiers(): Promise<Tier[]> {
+  const res = await api.get("/tiers");
+  return res.data;
+}
+
+export async function createTier(data: { name: string; sort_order?: number }): Promise<Tier> {
+  const res = await api.post("/tiers", data);
+  return res.data;
+}
+
+export async function updateTier(
+  id: string,
+  data: { name?: string; sort_order?: number },
+): Promise<Tier> {
+  const res = await api.patch(`/tiers/${id}`, data);
+  return res.data;
+}
+
+export async function deleteTier(id: string): Promise<void> {
+  await api.delete(`/tiers/${id}`);
+}
+
+/** Move vendors into a tier (additive); `null` clears their tier. */
+export async function setVendorsTier(tierId: string | null, vendorIds: string[]): Promise<void> {
+  await api.put(`/tiers/${tierId ?? "none"}/vendors`, { vendor_ids: vendorIds });
+}
 
 // ── Vendors ──
 

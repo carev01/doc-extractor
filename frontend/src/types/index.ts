@@ -4,8 +4,17 @@ export interface Vendor {
   id: string;
   name: string;
   website: string | null;
+  tier_id: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface Tier {
+  id: string;
+  name: string;
+  sort_order: number;
+  vendor_count: number;
+  job_count: number;
 }
 
 export interface VendorList {
