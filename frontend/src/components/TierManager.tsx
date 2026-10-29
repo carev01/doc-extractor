@@ -10,11 +10,11 @@ export default function TierManager() {
   const [name, setName] = useState("");
   const [error, setError] = useState("");
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (keepError = false) => {
     try {
       setTiers(await listTiers());
     } catch (e) {
-      setError(apiError(e, "Failed to load tiers"));
+      if (!keepError) setError(apiError(e, "Failed to load tiers"));
     }
   }, []);
 
@@ -26,14 +26,16 @@ export default function TierManager() {
 
   const run = async (fn: () => Promise<unknown>, fallback: string) => {
     setError("");
+    let failed = false;
     try {
       await fn();
     } catch (e) {
+      failed = true;
       setError(apiError(e, fallback));
     } finally {
       // Also after a failure: a reorder that died midway has already
       // renumbered some tiers, and the list on screen would be stale.
-      await refresh();
+      await refresh(failed);
     }
   };
 

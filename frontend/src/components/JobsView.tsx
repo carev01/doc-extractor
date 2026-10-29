@@ -44,6 +44,11 @@ function statusBadge(status: string) {
 
 /** A completed run whose escalation failed shows an amber "warning" badge
  *  instead of the green "completed". */
+/** Only a completed job run with nothing queued swaps its badge for the skipped note; FAILED/CANCELLED keep theirs. */
+function nothingQueued(jr: JobRunItem) {
+  return jr.status === "completed" && jr.sources_total === 0 && jr.skipped.length > 0;
+}
+
 function runStatusBadge(run: ExtractionRun) {
   if (run.status === "completed" && (run.escalation_warning || run.blocked_warning)) {
     return statusBadge("warning");
@@ -328,7 +333,7 @@ export default function JobsView() {
                 <div className="item-info">
                   <strong>{jr.job_name ?? "(deleted job)"}</strong>
                   <div className="item-meta">
-                    {jr.sources_total === 0 && jr.skipped.length > 0 ? null : statusBadge(jr.status)}
+                    {nothingQueued(jr) ? null : statusBadge(jr.status)}
                     {jr.children_paused > 0 && (
                       <span title="Paused child runs are waiting for a login or Resume">
                         {statusBadge("needs attention")}
@@ -336,7 +341,7 @@ export default function JobsView() {
                     )}
                     <span className="sub">{jr.trigger}</span>
                     <span className="sub">
-                      {jr.sources_total === 0 && jr.skipped.length > 0 ? (
+                      {nothingQueued(jr) ? (
                         `nothing queued — ${jr.skipped.length} skipped`
                       ) : (
                         <>

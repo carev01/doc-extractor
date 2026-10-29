@@ -121,7 +121,7 @@ export default function JobEditor({
 
   // The preview remembers which schedule it answers, so a stale one can be dimmed.
   const [preview, setPreview] = useState<{ key: string; runs: string[] }>({ key: "", runs: [] });
-  const [previewError, setPreviewError] = useState("");
+  const [previewError, setPreviewError] = useState<{ key: string; msg: string }>({ key: "", msg: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -154,12 +154,12 @@ export default function JobEditor({
         .then((runs) => {
           if (cancelled) return;
           setPreview({ key: JSON.stringify(schedule), runs });
-          setPreviewError("");
+          setPreviewError({ key: "", msg: "" });
         })
         .catch((e) => {
           if (cancelled) return;
           setPreview({ key: "", runs: [] });
-          setPreviewError(apiError(e, "Could not preview this schedule"));
+          setPreviewError({ key: JSON.stringify(schedule), msg: apiError(e, "Could not preview this schedule") });
         });
     }, 300);
     return () => {
@@ -386,8 +386,8 @@ export default function JobEditor({
               <span className="sub">
                 Next runs{!enabled && " (if enabled)"}:
               </span>
-              {previewError ? (
-                <span className="error-inline">{previewError}</span>
+              {previewError.key === scheduleKey ? (
+                <span className="error-inline">{previewError.msg}</span>
               ) : preview.key !== scheduleKey ? (
                 <span className="sub">updating…</span>
               ) : (
