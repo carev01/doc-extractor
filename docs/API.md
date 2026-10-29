@@ -85,7 +85,6 @@ pass `force: true` to proceed and let the next run resolve it.
 | `GET` | `/api/sources/{id}` | Get a source |
 | `PATCH` | `/api/sources/{id}` | Update a source |
 | `DELETE` | `/api/sources/{id}` | Delete a source |
-| `GET` | `/api/sources/pickable` | List sources available for export/jobs |
 | `POST` | `/api/sources/import` | Bulk import sources |
 | `POST` | `/api/sources/{id}/detect-version-token` | Auto-detect version token from page |
 | `GET` | `/api/sources/{id}/changelog` | Get changelog (versioned article diffs) |

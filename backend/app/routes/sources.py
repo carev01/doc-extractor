@@ -35,8 +35,6 @@ from app.schemas.source import (
     SourceUpdate,
     SourceResponse,
     SourceListResponse,
-    PickableSource,
-    PickableSourceList,
     SourceImportRequest,
     SourceImportRow,
     SourceImportResult,
@@ -172,40 +170,6 @@ async def list_sources(
     sources = result.scalars().all()
 
     return SourceListResponse(sources=sources, total=total)
-
-
-@router.get("/pickable", response_model=PickableSourceList)
-async def list_pickable_sources(
-    db: AsyncSession = Depends(get_db),
-    principal: Principal = Depends(get_principal),
-):
-    """All sources with vendor/product labels."""
-    visible = principal.visible_vendor_ids()
-    if visible is not None and not visible:
-        return PickableSourceList(sources=[])
-
-    query = (
-        select(
-            DocumentationSource.id,
-            DocumentationSource.name,
-            Vendor.name.label("vendor_name"),
-            Product.name.label("product_name"),
-        )
-        .join(Product, DocumentationSource.product_id == Product.id)
-        .join(Vendor, Product.vendor_id == Vendor.id)
-        .order_by(Vendor.name, Product.name, DocumentationSource.name)
-    )
-    if visible is not None:
-        query = query.where(Product.vendor_id.in_(visible))
-
-    rows = (await db.execute(query)).all()
-    return PickableSourceList(sources=[
-        PickableSource(
-            id=r.id, name=r.name, vendor_name=r.vendor_name,
-            product_name=r.product_name,
-        )
-        for r in rows
-    ])
 
 
 REQUIRED_COLUMNS = {"vendor", "product", "source_name", "base_url"}

@@ -469,13 +469,6 @@ export interface ProfileOption {
   label: string;
 }
 
-export interface PickableSource {
-  id: string;
-  name: string;
-  vendor_name: string;
-  product_name: string;
-}
-
 // ── Consolidated dashboard overview (/dashboard/overview) ──
 
 export interface OverviewLastRun {

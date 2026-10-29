@@ -76,11 +76,11 @@ def test_defect1_all_tables_in_metadata():
         "vendors",
         "webhook_deliveries",
         "webhooks",
-    ], f"Expected 22 tables, got {len(table_names)}: {table_names}"
+    ], f"Unexpected table set ({len(table_names)}): {table_names}"
 
 
 def test_defect1_tables_created_on_startup(db_session):
-    """Verify that all 9 tables exist and are usable after create_all."""
+    """Verify that the tables exist and are usable after create_all."""
     # If we got here, create_all worked. Let's confirm by inserting and
     # querying a vendor.
     v = Vendor(name="TableCheckVendor")
