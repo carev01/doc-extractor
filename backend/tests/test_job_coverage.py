@@ -142,9 +142,28 @@ async def test_product_with_no_sources_is_never_a_target(factory):
         await db.flush()
         t = await normalize_targets(db, [vp[0][1][0].id])
         assert empty.id not in t.product_ids
-        assert t.product_ids == [vp[0][0].id]
-        assert t.vendor_ids == []
+        assert empty.id not in t.product_ids
         assert (await normalize_targets(db, [])).product_ids == []
+
+
+async def test_empty_product_does_not_block_vendor_target(factory):
+    async with factory() as db:
+        v, vp = await _vendor(db, n_products=2, n_sources=1)
+        empty = Product(vendor_id=v.id, name="Empty")
+        db.add(empty)
+        await db.flush()
+        t = await normalize_targets(db, [s.id for _, ss in vp for s in ss])
+        assert t.vendor_ids == [v.id] and t.product_ids == [] and t.source_ids == []
+
+
+async def test_vendor_with_only_empty_products_is_never_a_target(factory):
+    async with factory() as db:
+        v, _ = await _vendor(db, n_products=0)
+        db.add(Product(vendor_id=v.id, name="Empty"))
+        await db.flush()
+        other, op = await _vendor(db, n_products=1, n_sources=1)
+        t = await normalize_targets(db, [op[0][1][0].id])
+        assert v.id not in t.vendor_ids and t.vendor_ids == [other.id]
 
 
 async def test_deleted_target_disappears_and_resolution_still_works(factory):

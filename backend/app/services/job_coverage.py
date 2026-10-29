@@ -73,8 +73,9 @@ async def normalize_targets(db: AsyncSession, source_ids: Sequence[UUID]) -> Tar
     """Collapse a picked source set into the fewest targets.
 
     A product whose current sources are all picked becomes a product target; a
-    vendor whose products are all fully picked becomes a vendor target. A product
-    with no sources can never count as fully picked, so it blocks its vendor.
+    vendor whose products-with-sources are all fully picked becomes a vendor target.
+    Products with no sources are ignored for vendor fullness (the picker gives them
+    no checkbox) but never become product targets themselves.
     """
     picked = set(source_ids)
     if not picked:
@@ -99,7 +100,10 @@ async def normalize_targets(db: AsyncSession, source_ids: Sequence[UUID]) -> Tar
 
     vendor_products: dict[UUID, set[UUID]] = defaultdict(set)
     for vid, pid in (await db.execute(
-        select(P.vendor_id, P.id).where(any_of(P.vendor_id, vendor_ids))
+        select(P.vendor_id, P.id)
+        .join(S, S.product_id == P.id)
+        .where(any_of(P.vendor_id, vendor_ids))
+        .distinct()
     )).all():
         vendor_products[vid].add(pid)
     full_vendors = {v for v, ps in vendor_products.items() if ps and ps <= full_products}
