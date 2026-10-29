@@ -116,3 +116,38 @@ async def test_tiers_admin_only(env):
     state["principal"] = Principal(see_all=True, role=UserRole.READ_WRITE)
     assert (await c.get("/api/tiers")).status_code == 403
     assert (await c.post("/api/tiers", json={"name": "x"})).status_code == 403
+
+
+async def test_tier_in_use_409_names_the_vendors_and_jobs(env):
+    c, factory, _ = env
+    tid = await _tier(c)
+    vids = [await _vendor(factory, f"V{i:02d}") for i in range(22)]
+    r = await c.put(f"/api/tiers/{tid}/vendors", json={"vendor_ids": [str(v) for v in vids]})
+    assert r.status_code == 200
+    for name in ("Nightly", "Weekly"):
+        assert (await c.post("/api/jobs", json={"name": name, "tier_id": tid})).status_code == 201
+    r = await c.delete(f"/api/tiers/{tid}")
+    assert r.status_code == 409
+    body = r.json()
+    assert body["vendors"] == 22 and body["jobs"] == 2
+    # Names are listed (sorted) and capped at 20; the counts stay exact.
+    assert body["vendor_names"] == [f"V{i:02d}" for i in range(20)]
+    assert body["job_names"] == ["Nightly", "Weekly"]
+
+
+async def test_tier_name_race_is_409_not_500(env, monkeypatch):
+    """The explicit name check can lose a race; the unique constraint must then
+    surface as the same 409, never a 500."""
+    from app.routes import tiers as tiers_route
+    c, _, _ = env
+    await _tier(c, "Gold")
+    t2 = await _tier(c, "Silver")
+
+    async def never_taken(*a, **kw):
+        return False
+    monkeypatch.setattr(tiers_route, "_name_taken", never_taken)
+    r = await c.post("/api/tiers", json={"name": "Gold"})
+    assert r.status_code == 409, r.text
+    r = await c.patch(f"/api/tiers/{t2}", json={"name": "Gold"})
+    assert r.status_code == 409, r.text
+    assert [t["name"] for t in (await c.get("/api/tiers")).json()] == ["Gold", "Silver"]

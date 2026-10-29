@@ -436,3 +436,249 @@ async def test_cancel_during_raw_http_relogin_raises_cancel(factory, monkeypatch
             await firecrawl_mod._pause_for_expiry(db, src, realm, run.id)
         assert ei.value.action == "cancel"
         assert fake.calls == 1
+
+
+# --- Deferred minors: pause during re-login; cancel during a failed re-login --
+
+class ControlDuringLogin(FakeLogin):
+    """A scripted login during which the user clicks Pause/Cancel (committed by
+    the API from its own session while the login is in flight)."""
+
+    def __init__(self, factory, run_id, control, ok=True):
+        super().__init__(ok=ok)
+        self.factory, self.run_id, self.control = factory, run_id, control
+
+    async def __call__(self, db, realm):
+        async with self.factory() as other:
+            r = await other.get(ExtractionRun, self.run_id)
+            r.control = self.control
+            await other.commit()
+        await super().__call__(db, realm)
+
+
+async def test_pause_during_mid_run_relogin_pauses_instead_of_requeue(factory, monkeypatch):
+    async with factory() as db:
+        realm, src, jr = await _setup(db, expires_in=timedelta(hours=3))
+        run = await _run(db, src, job_run=jr)
+        await db.commit()
+        fake = ControlDuringLogin(factory, run.id, "pause")
+        monkeypatch.setattr(realm_manager, "run_scripted_login", fake)
+        out = await firecrawl_mod.firecrawl_service._handle_auth_wall(
+            db, src, run.id, NeedsLoginError("wall"))
+        assert fake.calls == 1
+        assert out.status == RunStatus.PAUSED
+    async with factory() as fresh:
+        row = await fresh.get(ExtractionRun, run.id)
+        assert row.status == RunStatus.PAUSED and row.control is None
+        assert (await fresh.get(AuthRealm, realm.id)).status == RealmStatus.ACTIVE
+
+
+async def test_pause_during_raw_http_relogin_raises_pause(factory, monkeypatch):
+    async with factory() as db:
+        realm, src, jr = await _setup(db, expires_in=timedelta(hours=3))
+        run = await _run(db, src, job_run=jr)
+        await db.commit()
+        fake = ControlDuringLogin(factory, run.id, "pause")
+        monkeypatch.setattr(realm_manager, "run_scripted_login", fake)
+        with pytest.raises(firecrawl_mod.RunControlSignal) as ei:
+            await firecrawl_mod._pause_for_expiry(db, src, realm, run.id)
+        assert ei.value.action == "pause"
+
+
+async def test_cancel_during_failed_mid_run_relogin_cancels(factory, monkeypatch):
+    from app.models import TocCheckpoint
+    async with factory() as db:
+        realm, src, jr = await _setup(db, expires_in=timedelta(hours=3))
+        run = await _run(db, src, job_run=jr)
+        db.add(TocCheckpoint(source_id=src.id))
+        await db.commit()
+        fake = ControlDuringLogin(factory, run.id, "cancel", ok=False)
+        monkeypatch.setattr(realm_manager, "run_scripted_login", fake)
+        out = await firecrawl_mod.firecrawl_service._handle_auth_wall(
+            db, src, run.id, NeedsLoginError("wall"))
+        assert fake.calls == 1
+        assert out.status == RunStatus.CANCELLED and out.completed_at is not None
+    async with factory() as fresh:
+        row = await fresh.get(ExtractionRun, run.id)
+        assert row.status == RunStatus.CANCELLED and row.control is None
+        assert (await fresh.get(AuthRealm, realm.id)).status == RealmStatus.LOGIN_FAILED
+        from sqlalchemy import select as _sel
+        assert (await fresh.execute(
+            _sel(TocCheckpoint).where(TocCheckpoint.source_id == src.id))).first() is None
+
+
+async def test_cancel_during_failed_raw_http_relogin_raises_cancel(factory, monkeypatch):
+    async with factory() as db:
+        realm, src, jr = await _setup(db, expires_in=timedelta(hours=3))
+        run = await _run(db, src, job_run=jr)
+        await db.commit()
+        fake = ControlDuringLogin(factory, run.id, "cancel", ok=False)
+        monkeypatch.setattr(realm_manager, "run_scripted_login", fake)
+        with pytest.raises(firecrawl_mod.RunControlSignal) as ei:
+            await firecrawl_mod._pause_for_expiry(db, src, realm, run.id)
+        assert ei.value.action == "cancel"
+        await db.refresh(realm)
+        assert realm.status == RealmStatus.LOGIN_FAILED
+
+
+@pytest.mark.parametrize("control,expected", [
+    (None, "requeue"), ("cancel", "cancel"), ("pause", "pause"),
+])
+async def test_relogin_outcome_rereads_control(factory, control, expected):
+    """The extract_source handler re-checks a 'requeue' with this after the
+    re-login's commit: a Pause/Cancel that landed since still wins."""
+    async with factory() as db:
+        realm, src, jr = await _setup(db)
+        run = await _run(db, src, job_run=jr)
+        await db.commit()
+        async with factory() as other:
+            r = await other.get(ExtractionRun, run.id)
+            r.control = control
+            await other.commit()
+        assert await firecrawl_mod._relogin_outcome(db, run) == expected
+
+
+# --- B7: the pause notification names the right fix --------------------------
+
+@pytest.fixture
+def notes(monkeypatch):
+    sent: list[str] = []
+
+    async def _capture(title, body, **kw):
+        sent.append(body)
+    monkeypatch.setattr(firecrawl_mod, "notify", _capture)
+    return sent
+
+
+async def test_pause_after_rejected_relogin_says_fix_credentials(factory, monkeypatch, notes):
+    monkeypatch.setattr(realm_manager, "run_scripted_login", FakeLogin(ok=False))
+    async with factory() as db:
+        realm, src, jr = await _setup(db, expires_in=timedelta(hours=3))
+        run = await _run(db, src, job_run=jr)
+        await db.commit()
+        await firecrawl_mod.firecrawl_service._handle_auth_wall(
+            db, src, run.id, NeedsLoginError("wall"))
+        run2 = await _run(db, src, job_run=None)
+        await db.commit()
+        with pytest.raises(firecrawl_mod.RunControlSignal):
+            await firecrawl_mod._pause_for_expiry(db, src, realm, run2.id)
+    assert len(notes) == 2
+    for body in notes:
+        assert "credentials" in body and "fresh cookie" not in body
+
+
+async def test_pause_of_cookie_realm_says_upload_cookie(factory, fake_login, notes):
+    async with factory() as db:
+        realm, src, _ = await _setup(db, expires_in=timedelta(hours=3), creds=False)
+        run = await _run(db, src, job_run=None)
+        await db.commit()
+        await firecrawl_mod.firecrawl_service._handle_auth_wall(
+            db, src, run.id, NeedsLoginError("wall"))
+    assert len(notes) == 1 and "fresh cookie" in notes[0]
+
+
+# --- Fix round 1: one pre-run login ATTEMPT per realm per JobRun --------------
+
+async def test_browserless_outage_logs_in_once_per_firing(factory, monkeypatch):
+    """An infrastructure failure leaves the realm EXPIRED (not LOGIN_FAILED), so
+    the once-per-firing guard must key on the attempt, not on a success: the
+    sibling run of the same JobRun fails without a second login."""
+    from unittest.mock import AsyncMock
+    from app.services.browserless import BrowserlessError
+    client = AsyncMock()
+    client.run_login.side_effect = BrowserlessError("browserless 503")
+    monkeypatch.setattr(realm_manager, "browserless_client", client)
+    async with factory() as db:
+        realm, src, jr = await _setup(db, expires_in=timedelta(minutes=5))
+        run1 = await _run(db, src, job_run=jr, status=RunStatus.RUNNING)
+        await db.commit()
+        rid, r1, jid = realm.id, run1.id, jr.id
+    async with factory() as db:  # sibling 1 (its own worker session)
+        realm, run1 = await db.get(AuthRealm, rid), await db.get(ExtractionRun, r1)
+        with pytest.raises(NeedsLoginError):
+            await realm_manager.session_for_run(db, realm, run=run1)
+        run1.status = RunStatus.FAILED
+        await db.commit()
+        assert realm.status == RealmStatus.EXPIRED
+    async with factory() as db:  # sibling 2
+        realm = await db.get(AuthRealm, rid)
+        src = await db.get(DocumentationSource, src.id)
+        run2 = await _run(db, src, job_run=await db.get(JobRun, jid))
+        with pytest.raises(NeedsLoginError):
+            await realm_manager.session_for_run(db, realm, run=run2)
+    assert client.run_login.await_count == 1
+
+
+async def test_next_firing_retries_after_an_outage(factory, monkeypatch):
+    from unittest.mock import AsyncMock
+    from app.services.browserless import BrowserlessError
+    client = AsyncMock()
+    client.run_login.side_effect = BrowserlessError("browserless 503")
+    monkeypatch.setattr(realm_manager, "browserless_client", client)
+    async with factory() as db:
+        realm, src, jr = await _setup(db, expires_in=timedelta(minutes=5))
+        run1 = await _run(db, src, job_run=jr)
+        with pytest.raises(NeedsLoginError):
+            await realm_manager.session_for_run(db, realm, run=run1)
+        run1.status = RunStatus.FAILED
+        jr2 = JobRun(job_id=jr.job_id, trigger="scheduled",
+                     created_at=datetime.now(timezone.utc) + timedelta(seconds=1))
+        db.add(jr2)
+        await db.flush()
+        run2 = await _run(db, src, job_run=jr2)
+        with pytest.raises(NeedsLoginError):
+            await realm_manager.session_for_run(db, realm, run=run2)
+    assert client.run_login.await_count == 2
+
+
+# --- Fix round 1: the run row is not locked while notifying -------------------
+
+class LockProbe:
+    """A notify() stand-in that, from another session, tries to write the run
+    row as the API's Pause/Cancel would — with a short lock_timeout, so a lock
+    still held by the worker shows up as a failure instead of a hang."""
+
+    def __init__(self, factory, run_id):
+        self.factory, self.run_id, self.results = factory, run_id, []
+
+    async def __call__(self, *a, **kw):
+        from sqlalchemy import text
+        async with self.factory() as other:
+            try:
+                await other.execute(text("SET LOCAL lock_timeout = '500ms'"))
+                await other.execute(
+                    text("UPDATE extraction_runs SET error_message = 'probe' WHERE id = :id"),
+                    {"id": self.run_id})
+                await other.rollback()
+                self.results.append("free")
+            except Exception as exc:  # LockNotAvailable
+                await other.rollback()
+                self.results.append(f"locked: {type(exc).__name__}")
+
+
+async def test_auth_wall_pause_does_not_hold_run_lock_while_notifying(factory, fake_login, monkeypatch):
+    async with factory() as db:
+        realm, src, _ = await _setup(db, expires_in=timedelta(hours=3))
+        run = await _run(db, src, job_run=None)
+        await db.commit()
+        probe = LockProbe(factory, run.id)
+        monkeypatch.setattr(firecrawl_mod, "notify", probe)
+        out = await firecrawl_mod.firecrawl_service._handle_auth_wall(
+            db, src, run.id, NeedsLoginError("wall"))
+        assert out.status == RunStatus.PAUSED
+    assert probe.results == ["free"]
+    async with factory() as fresh:  # the PAUSED state was committed before notify
+        assert (await fresh.get(ExtractionRun, run.id)).status == RunStatus.PAUSED
+
+
+async def test_raw_http_pause_does_not_hold_run_lock_while_notifying(factory, fake_login, monkeypatch):
+    async with factory() as db:
+        realm, src, _ = await _setup(db, expires_in=timedelta(hours=3))
+        run = await _run(db, src, job_run=None)
+        await db.commit()
+        probe = LockProbe(factory, run.id)
+        monkeypatch.setattr(firecrawl_mod, "notify", probe)
+        with pytest.raises(firecrawl_mod.RunControlSignal) as ei:
+            await firecrawl_mod._pause_for_expiry(db, src, realm, run.id)
+        assert ei.value.action == "pause"
+    assert probe.results == ["free"]

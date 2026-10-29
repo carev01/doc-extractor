@@ -328,7 +328,7 @@ export default function JobsView() {
                 <div className="item-info">
                   <strong>{jr.job_name ?? "(deleted job)"}</strong>
                   <div className="item-meta">
-                    {statusBadge(jr.status)}
+                    {jr.sources_total === 0 && jr.skipped.length > 0 ? null : statusBadge(jr.status)}
                     {jr.children_paused > 0 && (
                       <span title="Paused child runs are waiting for a login or Resume">
                         {statusBadge("needs attention")}
@@ -336,10 +336,16 @@ export default function JobsView() {
                     )}
                     <span className="sub">{jr.trigger}</span>
                     <span className="sub">
-                      {jr.sources_done}/{jr.sources_total} done
-                      {jr.sources_failed > 0 ? `, ${jr.sources_failed} failed` : ""}
-                      {jr.children_paused > 0 ? `, ${jr.children_paused} paused` : ""}
-                      {jr.skipped.length > 0 ? `, ${jr.skipped.length} skipped` : ""}
+                      {jr.sources_total === 0 && jr.skipped.length > 0 ? (
+                        `nothing queued — ${jr.skipped.length} skipped`
+                      ) : (
+                        <>
+                          {jr.sources_done}/{jr.sources_total} done
+                          {jr.sources_failed > 0 ? `, ${jr.sources_failed} failed` : ""}
+                          {jr.children_paused > 0 ? `, ${jr.children_paused} paused` : ""}
+                          {jr.skipped.length > 0 ? `, ${jr.skipped.length} skipped` : ""}
+                        </>
+                      )}
                     </span>
                     <span className="sub">
                       {jr.created_at ? new Date(jr.created_at).toLocaleString() : "—"}

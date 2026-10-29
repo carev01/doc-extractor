@@ -21,6 +21,10 @@ interface Props {
   jobs: Job[];
   tiers: Tier[];
   catalog: CatalogVendor[];
+  /** True until THIS open's catalog fetch has resolved (the catalog may be a stale earlier read). */
+  catalogLoading: boolean;
+  catalogError: string;
+  onRetryCatalog: () => void;
   onClose: () => void;
   /** Called after anything was written, so the list can refresh. */
   onSaved: () => void;
@@ -40,6 +44,19 @@ const TIMEZONES: string[] = (() => {
   }
 })();
 
+/** The month after the current one (1-12) as the calendar reads in `tz`, like the backend default. */
+function nextMonthIn(tz: string): number {
+  const now = new Date();
+  let month = now.getMonth() + 1;
+  try {
+    const m = new Intl.DateTimeFormat("en-US", { timeZone: tz, month: "numeric" }).format(now);
+    if (Number(m) >= 1) month = Number(m);
+  } catch {
+    /* unknown zone: fall back to the browser's month */
+  }
+  return (month % 12) + 1;
+}
+
 function repeatOf(kind: string | null): Repeat {
   if (kind === "daily" || kind === "weekly") return kind;
   if (kind === "monthly_day" || kind === "monthly_nth") return "monthly";
@@ -52,7 +69,17 @@ function repeatOf(kind: string | null): Repeat {
  * coverage summary. Save writes the fields, then the picks (``PUT /coverage``,
  * which the backend folds into dynamic vendor/product targets).
  */
-export default function JobEditor({ job, jobs, tiers, catalog, onClose, onSaved }: Props) {
+export default function JobEditor({
+  job,
+  jobs,
+  tiers,
+  catalog,
+  catalogLoading,
+  catalogError,
+  onRetryCatalog,
+  onClose,
+  onSaved,
+}: Props) {
   const idx = useMemo(() => indexCatalog(catalog), [catalog]);
   const initialPicks = useMemo(
     () => (job ? resolveTargets(job.targets, idx) : new Set<string>()),
@@ -83,14 +110,17 @@ export default function JobEditor({ job, jobs, tiers, catalog, onClose, onSaved 
     job?.schedule_kind === "monthly_nth" ? (job.nth ?? "first") : "day",
   );
   const [interval, setIntervalMonths] = useState(job?.interval_months ?? 1);
-  // Matches the backend default (next month) so the preview and the save agree.
-  const [startMonth, setStartMonth] = useState(job?.start_month ?? (new Date().getMonth() + 1) % 12 + 1);
+  // Unless the user picks one, the default (next month, in the job's timezone)
+  // is derived, so it follows the timezone and matches the backend's default.
+  const [startPicked, setStartPicked] = useState<number | null>(job?.start_month ?? null);
   const [dayOfMonth, setDayOfMonth] = useState(job?.day_of_month ?? 1);
   const [weekday, setWeekday] = useState(job?.weekday ?? 0);
   const [time, setTime] = useState(job?.time_of_day ?? "02:00");
   const [tz, setTz] = useState(job?.timezone ?? browserTz);
+  const startMonth = startPicked ?? nextMonthIn(tz);
 
-  const [preview, setPreview] = useState<string[]>([]);
+  // The preview remembers which schedule it answers, so a stale one can be dimmed.
+  const [preview, setPreview] = useState<{ key: string; runs: string[] }>({ key: "", runs: [] });
   const [previewError, setPreviewError] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -112,6 +142,8 @@ export default function JobEditor({ job, jobs, tiers, catalog, onClose, onSaved 
     [kind, repeat, time, tz, weekday, interval, startMonth, dayOfMonth, monthlyOn],
   );
 
+  const scheduleKey = JSON.stringify(schedule);
+
   // Live "Next runs": debounced so typing a timezone doesn't fire per keystroke.
   useEffect(() => {
     if (!schedule.schedule_kind) return;
@@ -121,12 +153,12 @@ export default function JobEditor({ job, jobs, tiers, catalog, onClose, onSaved 
       previewJobSchedule({ ...rest, kind: schedule_kind })
         .then((runs) => {
           if (cancelled) return;
-          setPreview(runs);
+          setPreview({ key: JSON.stringify(schedule), runs });
           setPreviewError("");
         })
         .catch((e) => {
           if (cancelled) return;
-          setPreview([]);
+          setPreview({ key: "", runs: [] });
           setPreviewError(apiError(e, "Could not preview this schedule"));
         });
     }, 300);
@@ -178,6 +210,20 @@ export default function JobEditor({ job, jobs, tiers, catalog, onClose, onSaved 
     );
   }, [tierId, picks, idx, savedId, jobs]);
 
+  // Vendor/product targets the (fresh) catalog no longer has any sources for.
+  // They survive a save that leaves the tree alone; editing the tree drops them.
+  const emptyPicks = useMemo(() => {
+    if (!job || catalogLoading || catalogError) return [];
+    const names = new Map<string, string>();
+    for (const v of catalog) {
+      names.set(v.vendor_id, v.vendor_name);
+      for (const p of v.products) names.set(p.product_id, `${v.vendor_name} › ${p.product_name}`);
+    }
+    return [...job.targets.vendor_ids, ...job.targets.product_ids]
+      .filter((id) => (idx.sourcesOf.get(id) ?? []).length === 0)
+      .map((id) => names.get(id) ?? `(removed ${id.slice(0, 8)})`);
+  }, [job, catalog, idx, catalogLoading, catalogError]);
+
   const picksDirty =
     picks.size !== initialPicks.size || [...picks].some((s) => !initialPicks.has(s));
 
@@ -186,15 +232,26 @@ export default function JobEditor({ job, jobs, tiers, catalog, onClose, onSaved 
       setError("A job needs a name");
       return;
     }
+    if (
+      picksDirty &&
+      emptyPicks.length > 0 &&
+      !confirm(
+        `These empty picks will be dropped from the job because the source tree was edited:\n\n${emptyPicks.join("\n")}\n\nContinue?`,
+      )
+    )
+      return;
     setBusy(true);
     setError("");
+    let wrote = false;
     const body = { name: name.trim(), enabled: enabled && kind !== null, tier_id: tierId, ...schedule };
     try {
       let id = savedId;
       if (id) {
         await updateJob(id, body);
+        wrote = true;
       } else {
         id = (await createJob(body)).id;
+        wrote = true;
         setSavedId(id);
       }
       // Only rewrite the picks when they changed: an untouched tree must not
@@ -204,7 +261,8 @@ export default function JobEditor({ job, jobs, tiers, catalog, onClose, onSaved 
       onClose();
     } catch (e) {
       setError(apiError(e, "Failed to save the job"));
-      onSaved();
+      // Only refresh the list if something was actually written before the failure.
+      if (wrote) onSaved();
     } finally {
       setBusy(false);
     }
@@ -266,7 +324,7 @@ export default function JobEditor({ job, jobs, tiers, catalog, onClose, onSaved 
                 {interval > 1 && (
                   <label className="sub">
                     starting{" "}
-                    <select value={startMonth} onChange={(e) => setStartMonth(Number(e.target.value))}>
+                    <select value={startMonth} onChange={(e) => setStartPicked(Number(e.target.value))}>
                       {MONTHS.map((m, i) => (
                         <option key={m} value={i + 1}>
                           {m}
@@ -330,9 +388,11 @@ export default function JobEditor({ job, jobs, tiers, catalog, onClose, onSaved 
               </span>
               {previewError ? (
                 <span className="error-inline">{previewError}</span>
+              ) : preview.key !== scheduleKey ? (
+                <span className="sub">updating…</span>
               ) : (
                 <ul>
-                  {preview.map((r) => (
+                  {preview.runs.map((r) => (
                     <li key={r} className="sub">
                       {fmtInTz(r, tz)}
                     </li>
@@ -355,7 +415,21 @@ export default function JobEditor({ job, jobs, tiers, catalog, onClose, onSaved 
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
           />
-          {catalog.length === 0 ? (
+          {emptyPicks.length > 0 && (
+            <p className="muted">
+              Empty picks (no sources left): {emptyPicks.join(", ")} — kept unless you change the tree.
+            </p>
+          )}
+          {catalogError ? (
+            <p>
+              <span className="error-inline">{catalogError}</span>{" "}
+              <button type="button" className="btn-secondary-sm" onClick={onRetryCatalog}>
+                Retry
+              </button>
+            </p>
+          ) : catalogLoading ? (
+            <p className="sub">Loading sources…</p>
+          ) : catalog.length === 0 ? (
             <p className="muted">No sources yet.</p>
           ) : (
             <SourceTreePicker vendors={tree} selected={picks} onChange={setPicks} />
@@ -366,7 +440,7 @@ export default function JobEditor({ job, jobs, tiers, catalog, onClose, onSaved 
         {error && <span className="error-inline">{error}</span>}
 
         <div className="picker-actions">
-          <button type="button" className="btn-primary" disabled={busy} onClick={save}>
+          <button type="button" className="btn-primary" disabled={busy || catalogLoading} onClick={save}>
             {busy ? "Saving…" : savedId ? "Save" : "Create job"}
           </button>
           <button type="button" className="btn-secondary-sm" onClick={onClose}>

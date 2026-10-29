@@ -49,17 +49,6 @@ class SourceListResponse(BaseModel):
     total: int
 
 
-class PickableSource(BaseModel):
-    id: uuid.UUID
-    name: str
-    vendor_name: str
-    product_name: str
-
-
-class PickableSourceList(BaseModel):
-    sources: list[PickableSource]
-
-
 class SourceImportRequest(BaseModel):
     csv: str
 

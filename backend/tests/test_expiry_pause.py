@@ -49,7 +49,12 @@ async def test_pause_for_expiry_invalidates_notifies_and_raises(monkeypatch):
 
         async def get(self, model, pk):
             # A manual run (no job_run_id) is never auto-re-logged in.
-            return types.SimpleNamespace(id=pk, job_run_id=None, auto_relogin_used=False)
+            return types.SimpleNamespace(id=pk, job_run_id=None, auto_relogin_used=False,
+                                         control=None)
+
+        async def refresh(self, obj, **kw):
+            # The control re-read (a Cancel clicked meanwhile would win); none here.
+            calls["refresh"] = kw.get("attribute_names")
 
     realm = types.SimpleNamespace(name="Rubrik Docs", status=fc.RealmStatus.ACTIVE,
                                   username="u", password="p")

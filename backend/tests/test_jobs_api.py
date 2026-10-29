@@ -226,3 +226,14 @@ async def test_job_run_children_paused_and_skipped(env):
         s.add(JobRun(job_id=uuid.UUID(j2["id"]), status=JobRunStatus.COMPLETED)); await s.commit()
     row = (await c.get(f"/api/jobs/{j2['id']}/runs")).json()[0]
     assert row["children_paused"] == 0 and row["skipped"] == []
+
+
+@pytest.mark.parametrize("field", ["name", "enabled"])
+async def test_patch_null_not_null_field_is_422(env, field):
+    """name / enabled are NOT NULL: an explicit null must be refused, not 500."""
+    c, _, _, _ = env
+    j = await _job(c, name="Keep", enabled=True, schedule_kind="daily")
+    r = await c.patch(f"/api/jobs/{j['id']}", json={field: None})
+    assert r.status_code == 422, r.text
+    got = (await c.get(f"/api/jobs/{j['id']}")).json()
+    assert got["name"] == "Keep" and got["enabled"] is True

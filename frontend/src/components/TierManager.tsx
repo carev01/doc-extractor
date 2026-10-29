@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import axios from "axios";
 import type { Tier } from "../types";
 import { listTiers, createTier, updateTier, deleteTier } from "../api/client";
 import { apiError } from "../api/errors";
@@ -27,9 +28,12 @@ export default function TierManager() {
     setError("");
     try {
       await fn();
-      await refresh();
     } catch (e) {
       setError(apiError(e, fallback));
+    } finally {
+      // Also after a failure: a reorder that died midway has already
+      // renumbered some tiers, and the list on screen would be stale.
+      await refresh();
     }
   };
 
@@ -72,10 +76,19 @@ export default function TierManager() {
       await deleteTier(t.id);
       await refresh();
     } catch (e) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const d = (e as any)?.response?.data;
-      if (d && typeof d.vendors === "number") {
-        setError(`${d.detail ?? "Tier in use"} (${d.vendors} vendor(s), ${d.jobs} job(s))`);
+      const d = axios.isAxiosError(e) ? e.response?.data : undefined;
+      if (axios.isAxiosError(e) && e.response?.status === 409 && d && typeof d.vendors === "number") {
+        const names = (label: string, list: unknown, count: number) => {
+          if (!Array.isArray(list) || list.length === 0) return "";
+          const more = count > list.length ? ` and ${count - list.length} more` : "";
+          return `${label}: ${list.join(", ")}${more}`;
+        };
+        const detail = [names("Vendors", d.vendor_names, d.vendors), names("Jobs", d.job_names, d.jobs)]
+          .filter(Boolean)
+          .join(" · ");
+        setError(
+          `${d.detail ?? "Tier in use"} (${d.vendors} vendor(s), ${d.jobs} job(s))` + (detail ? ` — ${detail}` : ""),
+        );
       } else {
         setError(apiError(e, "Failed to delete tier"));
       }

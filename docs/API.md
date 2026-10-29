@@ -85,7 +85,6 @@ pass `force: true` to proceed and let the next run resolve it.
 | `GET` | `/api/sources/{id}` | Get a source |
 | `PATCH` | `/api/sources/{id}` | Update a source |
 | `DELETE` | `/api/sources/{id}` | Delete a source |
-| `GET` | `/api/sources/pickable` | List sources available for export/jobs |
 | `POST` | `/api/sources/import` | Bulk import sources |
 | `POST` | `/api/sources/{id}/detect-version-token` | Auto-detect version token from page |
 | `GET` | `/api/sources/{id}/changelog` | Get changelog (versioned article diffs) |
@@ -513,7 +512,7 @@ curl -X POST $API/api/jobs/schedule/preview -H 'Content-Type: application/json' 
 
 ### Schedule view
 
-`GET /api/jobs/schedule` returns `{products: [...]}`, one row per product: `product_id`, `product_name`, `vendor_name`, `tier_name`, `jobs`, `source_count`, `last_ok_at`, `latest`, `next_at`, `scheduled_sources`, and per-source `sources`. `latest` is `{at, outcome, trigger, job_name, updated, reason, blocked}`; a failed run's `reason` is its error message (truncated), and a skip recorded by a job run competes with runs by time. A product's `last_ok_at` is the oldest across its sources (null if any never succeeded); `next_at` is the latest across scheduled sources and comes only from enabled jobs. A refresh counts only if it is a completed `extract` run with no `blocked_pending`.
+`GET /api/jobs/schedule` returns `{products: [...]}`, one row per product: `product_id`, `product_name`, `vendor_name`, `tier_name`, `jobs` (`[{name, enabled}]`, so a disabled job can be marked), `source_count`, `last_ok_at`, `latest`, `next_at`, `scheduled_sources`, and per-source `sources`. `latest` is `{at, outcome, trigger, job_name, updated, reason, blocked}`; a failed run's `reason` is its error message (truncated) and its `updated` is 0, and a skip recorded by a job run competes with runs by time. A product's `last_ok_at` is the oldest across its sources (null if any never succeeded); `next_at` is the latest across scheduled sources and comes only from enabled jobs. A refresh counts only if it is a completed `extract` run with no `blocked_pending`.
 
 ### Job runs
 

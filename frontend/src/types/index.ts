@@ -469,13 +469,6 @@ export interface ProfileOption {
   label: string;
 }
 
-export interface PickableSource {
-  id: string;
-  name: string;
-  vendor_name: string;
-  product_name: string;
-}
-
 // ── Consolidated dashboard overview (/dashboard/overview) ──
 
 export interface OverviewLastRun {
@@ -857,13 +850,19 @@ export interface ScheduleLatest {
   blocked: number;
 }
 
+/** A job covering a schedule row; disabled jobs are listed but never fire. */
+export interface ScheduleJobRef {
+  name: string;
+  enabled: boolean;
+}
+
 export interface ScheduleSource {
   source_id: string;
   source_name: string;
   last_ok_at: string | null;
   latest: ScheduleLatest | null;
   next_at: string | null;
-  jobs: string[];
+  jobs: ScheduleJobRef[];
 }
 
 export interface ScheduleProduct {
@@ -871,7 +870,7 @@ export interface ScheduleProduct {
   product_name: string;
   vendor_name: string;
   tier_name: string | null;
-  jobs: string[];
+  jobs: ScheduleJobRef[];
   source_count: number;
   last_ok_at: string | null;
   latest: ScheduleLatest | null;

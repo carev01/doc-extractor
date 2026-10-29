@@ -9,18 +9,30 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.sql import any_of
+from app.models.auth_realm import AuthRealm, RealmStatus
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.job import Job
 from app.models.job_run import JobRun, JobRunStatus
-from app.core.sql import any_of
-from app.models.auth_realm import AuthRealm, RealmStatus
 from app.models.source import DocumentationSource
 from app.services.bulk_extract import realm_blocks_extraction
-from app.services.job_coverage import resolve_sources
 from app.services.cron import compute_next_run
-from app.services.queue import reap_stale_runs, reap_stale_exports
+from app.services.job_coverage import resolve_sources
+from app.services.queue import reap_stale_exports, reap_stale_runs
 
 logger = logging.getLogger(__name__)
+
+
+def _needs_human_login(realm: AuthRealm | None) -> bool:
+    """True when a run on *realm* could only fail with NeedsLoginError: no saved
+    credentials to log in with, and no usable session — expired, or none at all
+    (mirrors ``realm_manager.ensure_session``, which accepts only an ACTIVE realm
+    with a stored snapshot when there are no credentials)."""
+    if realm is None or (realm.username and realm.password):
+        return False
+    return realm_blocks_extraction(realm) or not (
+        realm.status == RealmStatus.ACTIVE and realm.state_snapshot
+    )
 
 
 async def fan_out_job(
@@ -33,9 +45,9 @@ async def fan_out_job(
     reason: ``paused_run`` (a PAUSED run exists), ``active_run`` (the
     uq_active_run_per_source coalesce, via a savepoint so it never rolls back the
     whole fan-out), ``login_failed`` (realm LOGIN_FAILED) or ``login_needed``
-    (realm session expired and no saved credentials). Realms with saved
-    credentials are enqueued; the run logs in at start. Returns None when the job
-    covers no sources. Does not commit — the caller does.
+    (no saved credentials and no usable session: expired, or never stored).
+    Realms with saved credentials are enqueued; the run logs in at start.
+    Returns None when the job covers no sources. Does not commit — the caller does.
     """
     now = now or datetime.now(timezone.utc)
     source_ids = sorted((await resolve_sources(db, [job.id])).get(job.id, set()), key=str)
@@ -72,7 +84,7 @@ async def fan_out_job(
             reason = "paused_run"
         elif realm is not None and realm.status == RealmStatus.LOGIN_FAILED:
             reason = "login_failed"
-        elif realm_blocks_extraction(realm) and not (realm.username and realm.password):
+        elif _needs_human_login(realm):
             reason = "login_needed"
         if reason is None:
             try:

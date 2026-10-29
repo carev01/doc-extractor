@@ -17,9 +17,8 @@ from app.schemas.dashboard import (
     DashboardEnrichmentResponse, DashboardOverviewResponse, DashboardResponse,
     DashboardSourceRow, DashboardSummary, EnrichmentAggregate, OverviewAggregate,
     OverviewBlocked, OverviewEnrichment, OverviewEscalation, OverviewLastRun,
-    OverviewSourceRow,
-    SourceEnrichmentRow,
-        )
+    OverviewSourceRow, SourceEnrichmentRow,
+)
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 

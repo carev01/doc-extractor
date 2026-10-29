@@ -140,7 +140,9 @@ class ExtractionRun(Base):
     # per-run log handler so the UI can show raw logs without kubectl.
     log_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # True when the scheduler logged in (JIT) on this run's behalf.
+    # True once a mid-run auth wall has spent this run's one automatic scripted
+    # re-login (realm_manager.try_auto_relogin, job runs only). Set before the
+    # attempt, so a failed re-login is not retried when the run is resumed.
     auto_relogin_used: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )

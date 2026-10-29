@@ -109,3 +109,69 @@ async def test_job_spec_roundtrip(factory):
         await db.commit()
         await db.refresh(job)
         assert spec_to_cron(job_spec(job)) == job.cron
+
+
+async def test_deleting_a_vendor_drops_its_targets_and_its_products_targets(factory):
+    from app.models import DocumentationSource
+    async with factory() as db:
+        v, p = await _vendor_product(db)
+        other_v, _ = await _vendor_product(db)
+        s = DocumentationSource(product_id=p.id, name="S", base_url="https://x/s")
+        db.add(s)
+        job = Job(name="J")
+        db.add(job)
+        await db.flush()
+        db.add_all([
+            JobTarget(job_id=job.id, vendor_id=v.id),
+            JobTarget(job_id=job.id, product_id=p.id),
+            JobTarget(job_id=job.id, source_id=s.id),
+            JobTarget(job_id=job.id, vendor_id=other_v.id),
+        ])
+        await db.commit()
+        jid, vid, ovid = job.id, v.id, other_v.id
+    async with factory() as db:
+        await db.delete(await db.get(Vendor, vid))
+        await db.commit()
+    async with factory() as db:
+        rows = (await db.execute(select(JobTarget).where(JobTarget.job_id == jid))).scalars().all()
+        assert [(r.vendor_id, r.product_id, r.source_id) for r in rows] == [(ovid, None, None)]
+        assert await db.get(Job, jid) is not None
+
+
+async def test_deleting_a_source_drops_its_target_only(factory):
+    from app.models import DocumentationSource
+    async with factory() as db:
+        v, p = await _vendor_product(db)
+        s1 = DocumentationSource(product_id=p.id, name="S1", base_url="https://x/1")
+        s2 = DocumentationSource(product_id=p.id, name="S2", base_url="https://x/2")
+        db.add_all([s1, s2])
+        job = Job(name="J")
+        db.add(job)
+        await db.flush()
+        db.add_all([JobTarget(job_id=job.id, source_id=s1.id),
+                    JobTarget(job_id=job.id, source_id=s2.id)])
+        await db.commit()
+        jid, s1id, s2id = job.id, s1.id, s2.id
+    async with factory() as db:
+        await db.delete(await db.get(DocumentationSource, s1id))
+        await db.commit()
+    async with factory() as db:
+        rows = (await db.execute(select(JobTarget).where(JobTarget.job_id == jid))).scalars().all()
+        assert [r.source_id for r in rows] == [s2id]
+
+
+async def test_tier_used_by_a_job_cannot_be_deleted_at_db_level(factory):
+    """Job.tier_id is ON DELETE RESTRICT, independently of vendors using it."""
+    async with factory() as db:
+        t = Tier(name="Gold", sort_order=1)
+        db.add(t)
+        await db.flush()
+        db.add(Job(name="J", tier_id=t.id))
+        await db.commit()
+        tid = t.id
+    async with factory() as db:
+        with pytest.raises(IntegrityError):
+            await db.delete(await db.get(Tier, tid))
+            await db.commit()
+    async with factory() as db:
+        assert await db.get(Tier, tid) is not None

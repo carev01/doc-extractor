@@ -1,5 +1,6 @@
 """Schedule view: per-product last-ok / latest / next aggregation."""
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -194,7 +195,7 @@ async def test_next_is_latest_among_sources_and_partly_scheduled_flag(env):
     assert {x["source_name"]: x["next_at"] is not None for x in p["sources"]} == \
         {"S0": True, "S1": True, "S2": False}
     assert _ts(p["sources"][0]["next_at"]) == NOW + timedelta(hours=2)
-    assert p["jobs"] == ["J1", "J1b", "J2"]
+    assert [j["name"] for j in p["jobs"]] == ["J1", "J1b", "J2"]
 
 
 async def test_disabled_job_does_not_schedule(env):
@@ -278,12 +279,82 @@ async def test_schedule_never_fetches_run_logs_or_large_json(env):
         _, _, (a,) = await _product(s, 1)
         s.add_all([_run(a, 2, log_text="x" * 1000), _run(a, 1, blocked=[{"url": "u"}, {"url": "v"}])])
         await s.commit()
-    statements.clear()
-    p = (await _get(c))["P"]
+    # What each statement actually returned (cursor.description), not how its
+    # SQL happens to be spelled: robust to aliasing, qualification and order.
+    fetched: list[tuple[str, list[str]]] = []
+
+    def capture(conn, cursor, statement, params, context, executemany):
+        if cursor.description and "extraction_runs" in statement:
+            fetched.append((statement, [d[0] for d in cursor.description]))
+
+    engine = f.kw["bind"].sync_engine
+    event.listen(engine, "after_cursor_execute", capture)
+    try:
+        p = (await _get(c))["P"]
+    finally:
+        event.remove(engine, "after_cursor_execute", capture)
     assert p["latest"]["blocked"] == 2 and p["latest"]["outcome"] == "warn"
-    run_sql = [st for st in statements if "extraction_runs" in st]
-    assert run_sql
-    for st in run_sql:
-        assert "log_text" not in st
-        assert "escalation_pending" not in st
-        assert "extraction_runs.blocked_pending," not in st
+    assert fetched
+    for st, cols in fetched:
+        for big in ("log_text", "escalation_pending", "blocked_pending"):
+            assert not [c_ for c_ in cols if big in c_], f"{big} fetched by: {st}"
+        # An aliased fetch hides from the column names, so also check the SQL:
+        # the big columns may appear only as a jsonb_typeof/jsonb_array_length
+        # argument (the blocked count), never on their own.
+        bare = re.sub(r"jsonb_(?:typeof|array_length)\(extraction_runs\.blocked_pending\)", "", st)
+        for big in ("log_text", "escalation_pending", "blocked_pending"):
+            assert big not in bare, f"{big} referenced by: {st}"
+    # Sanity: the probe does see a column when one is fetched.
+    assert any("blocked" in cols for _, cols in fetched)
+
+async def test_jobs_are_objects_marking_disabled(env):
+    c, f, _ = env
+    async with f() as s:
+        _, _, (a, b) = await _product(s, 2)
+        await _job(s, "On", [{"source_id": a.id}], nxt=NOW + timedelta(hours=1))
+        await _job(s, "Off", [{"source_id": a.id}, {"source_id": b.id}], enabled=False)
+        await s.commit()
+    p = (await _get(c))["P"]
+    assert p["jobs"] == [{"name": "Off", "enabled": False}, {"name": "On", "enabled": True}]
+    srcs = {x["source_name"]: x["jobs"] for x in p["sources"]}
+    assert srcs == {
+        "S0": [{"name": "Off", "enabled": False}, {"name": "On", "enabled": True}],
+        "S1": [{"name": "Off", "enabled": False}],
+    }
+
+
+async def test_failed_run_reports_zero_updated(env):
+    c, f, _ = env
+    async with f() as s:
+        _, _, (a,) = await _product(s, 1)
+        s.add(_run(a, 1, status=RunStatus.FAILED, articles_extracted=7, articles_updated=3))
+        await s.commit()
+    latest = (await _get(c))["P"]["latest"]
+    assert latest["outcome"] == "failed" and latest["updated"] == 0
+
+
+async def test_malformed_historical_skip_source_id_does_not_500(env):
+    c, f, _ = env
+    async with f() as s:
+        _, _, (a,) = await _product(s, 1)
+        j = await _job(s, "N", [{"source_id": a.id}])
+        s.add(JobRun(job_id=j.id, created_at=NOW - timedelta(hours=2), skipped=[
+            {"source_id": "not-a-uuid", "reason": "login_needed"},
+            {"source_id": None, "reason": "x"},
+            {"reason": "no id"},
+            {"source_id": str(a.id), "reason": "active_run"},
+        ]))
+        await s.commit()
+    latest = (await _get(c))["P"]["latest"]
+    assert latest["outcome"] == "skipped" and latest["reason"] == "active_run"
+
+
+async def test_skips_older_than_400_days_are_ignored(env):
+    c, f, _ = env
+    async with f() as s:
+        _, _, (a,) = await _product(s, 1)
+        j = await _job(s, "N", [{"source_id": a.id}])
+        s.add(JobRun(job_id=j.id, created_at=NOW - timedelta(days=401),
+                     skipped=[{"source_id": str(a.id), "reason": "login_needed"}]))
+        await s.commit()
+    assert (await _get(c))["P"]["latest"] is None

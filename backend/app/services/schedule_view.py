@@ -17,16 +17,27 @@ from app.models import DocumentationSource, ExtractionRun, Job, JobRun, Product,
 from app.models.extraction_run import RunStatus
 from app.services.job_coverage import resolve_sources
 
-_SKIPS_SQL = text("""
-    SELECT DISTINCT ON (e->>'source_id')
-           (e->>'source_id')::uuid AS source_id, e->>'reason' AS reason,
-           jr.created_at AS at, j.name AS job_name
+# Latest skip per source from JobRun.skipped (JSONB written by fan_out_job).
+# Historical rows are not trusted: a malformed ``source_id`` must never 500 the
+# view, so the cast is guarded by a CASE (Postgres does not promise WHERE-clause
+# evaluation order, so a filter beside the cast would not protect it). Only the
+# last SKIPS_WINDOW_DAYS of JobRuns are scanned — older skips are not "latest".
+SKIPS_WINDOW_DAYS = 400
+_SKIPS_SQL = text(f"""
+    SELECT DISTINCT ON (s.source_id)
+           s.source_id, s.reason, jr.created_at AS at, j.name AS job_name
     FROM job_runs jr
     JOIN jobs j ON j.id = jr.job_id
     CROSS JOIN LATERAL jsonb_array_elements(
         CASE WHEN jsonb_typeof(jr.skipped) = 'array' THEN jr.skipped ELSE '[]'::jsonb END) e
-    WHERE (e->>'source_id')::uuid = ANY(:ids)
-    ORDER BY e->>'source_id', jr.created_at DESC
+    CROSS JOIN LATERAL (SELECT
+        CASE WHEN e->>'source_id' ~*
+                  '^[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}$'
+             THEN (e->>'source_id')::uuid END AS source_id,
+        e->>'reason' AS reason) s
+    WHERE jr.created_at >= now() - interval '{SKIPS_WINDOW_DAYS} days'
+      AND s.source_id = ANY(:ids)
+    ORDER BY s.source_id, jr.created_at DESC
 """)
 
 
@@ -38,17 +49,26 @@ _BLOCKED_COUNT = literal_column(
 
 def _run_event(run, job_name: str | None) -> dict:
     """``run`` is a lean row (never the ORM entity: log_text is up to 200 KB)."""
-    if run.status == RunStatus.FAILED:
+    failed = run.status == RunStatus.FAILED
+    if failed:
         outcome = "failed"
     else:
         outcome = "warn" if run.blocked > 0 else "ok"
     return {
         "at": run.completed_at or run.started_at, "outcome": outcome,
         "trigger": run.trigger, "job_name": job_name,
-        "updated": (run.articles_extracted or 0) + (run.articles_updated or 0),
-        "reason": (run.error_message or "")[:300] or None if run.status == RunStatus.FAILED else None,
+        # A failed run's partial counters are not an update the product received.
+        "updated": 0 if failed else (run.articles_extracted or 0) + (run.articles_updated or 0),
+        "reason": ((run.error_message or "")[:300] or None) if failed else None,
         "blocked": run.blocked if run.blocked > 0 else 0,
     }
+
+
+def _job_refs(jobs) -> list[dict]:
+    """Jobs covering a source/product, as ``{name, enabled}`` sorted by name, so
+    the UI can mark a disabled job instead of implying it will run."""
+    return [{"name": j.name, "enabled": bool(j.enabled)}
+            for j in sorted(jobs, key=lambda j: (j.name, str(j.id)))]
 
 
 async def build_schedule(db: AsyncSession) -> dict:
@@ -131,10 +151,10 @@ async def build_schedule(db: AsyncSession) -> dict:
 
     products = []
     for pid, pname, vname, tname in rows:
-        sources, job_names = [], set()
+        sources, product_jobs = [], {}
         for sid, sname in by_product.get(pid, []):
             cj = src_jobs.get(sid, [])
-            job_names.update(j.name for j in cj)
+            product_jobs.update((j.id, j) for j in cj)
             nexts = [j.next_run_at for j in cj if j.enabled and j.next_run_at]
             ev = [_run_event(*latest_run[sid])] if sid in latest_run else []
             if sid in skips:
@@ -144,13 +164,13 @@ async def build_schedule(db: AsyncSession) -> dict:
                 "last_ok_at": last_ok.get(sid),
                 "latest": pick_latest(ev),
                 "next_at": min(nexts) if nexts else None,
-                "jobs": sorted(j.name for j in cj),
+                "jobs": _job_refs(cj),
             })
         oks = [s["last_ok_at"] for s in sources]
         nexts = [s["next_at"] for s in sources if s["next_at"]]
         products.append({
             "product_id": pid, "product_name": pname, "vendor_name": vname,
-            "tier_name": tname, "jobs": sorted(job_names),
+            "tier_name": tname, "jobs": _job_refs(product_jobs.values()),
             "source_count": len(sources),
             "last_ok_at": min(oks) if oks and all(oks) else None,
             "latest": least_fresh(sources),

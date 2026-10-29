@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ScheduleLatest, ScheduleProduct } from "../types";
+import type { ScheduleJobRef, ScheduleLatest, ScheduleProduct } from "../types";
 import { getSchedule } from "../api/client";
 import { apiError } from "../api/errors";
+
+/** "Nightly + Weekly (disabled)" — a disabled job covers the row but never fires. */
+function jobsLabel(jobs: ScheduleJobRef[]): string {
+  return jobs.map((j) => (j.enabled ? j.name : `${j.name} (disabled)`)).join(" + ");
+}
 
 const REASONS: Record<string, string> = {
   active_run: "a run was already active",
@@ -19,15 +24,29 @@ function fmtDate(iso: string | null): string {
   });
 }
 
+/** Calendar days in the viewer's local time, so 23:00 tonight vs 01:00 tomorrow is "in 1 day". */
 function inDays(iso: string): string {
-  const days = Math.round((new Date(iso).getTime() - Date.now()) / 86400000);
+  const at = new Date(iso);
+  if (at.getTime() < Date.now()) return "overdue";
+  const midnight = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((midnight(at) - midnight(new Date())) / 86400000);
   if (days <= 0) return "today";
   return days === 1 ? "in 1 day" : `in ${days} days`;
 }
 
+const TRIGGERS: Record<string, string> = {
+  scheduled: "job",
+  manual: "manual",
+  bulk: "bulk",
+  force: "force",
+  "version-bump": "version bump",
+  version_bump: "version bump",
+};
+
 function triggerLabel(l: ScheduleLatest): string {
-  if (l.job_name) return `job: ${l.job_name}`;
-  return l.trigger ?? "";
+  const t = l.trigger ? (TRIGGERS[l.trigger] ?? l.trigger) : "";
+  if (l.job_name) return `${t || "job"}: ${l.job_name}`;
+  return t;
 }
 
 function Outcome({ l }: { l: ScheduleLatest }) {
@@ -55,7 +74,17 @@ function Outcome({ l }: { l: ScheduleLatest }) {
       text = `skipped${reason ? `: ${reason}` : ""}`;
   }
   return (
-    <span style={{ color }} title={l.reason ?? undefined}>
+    <span
+      style={{
+        color,
+        display: "-webkit-box",
+        WebkitLineClamp: 2,
+        WebkitBoxOrient: "vertical",
+        overflow: "hidden",
+        overflowWrap: "anywhere",
+      }}
+      title={l.reason ?? undefined}
+    >
       {icon} {text}
     </span>
   );
@@ -68,7 +97,7 @@ function LastCell({ latest, lastOk }: { latest: ScheduleLatest | null; lastOk: s
       <div>
         {fmtDate(latest.at)} <Outcome l={latest} />
       </div>
-      <div className="hint">{triggerLabel(latest)}</div>
+      {triggerLabel(latest) && <div className="hint">{triggerLabel(latest)}</div>}
       {(latest.outcome !== "ok" || !lastOk || new Date(lastOk) < new Date(latest.at)) && (
         <div className="hint">last OK: {lastOk ? fmtDate(lastOk) : "never"}</div>
       )}
@@ -97,15 +126,28 @@ export default function ScheduleView() {
   const [tier, setTier] = useState("all");
   const [open, setOpen] = useState<Set<string>>(new Set());
 
+  const [reloads, setReloads] = useState(0);
+  const [refreshing, setRefreshing] = useState(true);
+
   useEffect(() => {
     let live = true;
     getSchedule()
-      .then((r) => live && setProducts(r.products))
-      .catch((e) => live && setError(apiError(e, "Failed to load schedule")));
+      .then((r) => {
+        if (!live) return;
+        setProducts(r.products);
+        setError("");
+      })
+      .catch((e) => live && setError(apiError(e, "Failed to load schedule")))
+      .finally(() => live && setRefreshing(false));
     return () => {
       live = false;
     };
-  }, []);
+  }, [reloads]);
+
+  const refresh = () => {
+    setRefreshing(true);
+    setReloads((n) => n + 1);
+  };
 
   const tiers = useMemo(
     () => [...new Set((products ?? []).map((p) => p.tier_name).filter((t): t is string => !!t))].sort(),
@@ -127,7 +169,15 @@ export default function ScheduleView() {
       return n;
     });
 
-  if (error) return <div className="error">{error}</div>;
+  if (error && !products)
+    return (
+      <div>
+        <div className="error">{error}</div>
+        <button type="button" className="btn-secondary-sm" onClick={refresh}>
+          Retry
+        </button>
+      </div>
+    );
   if (!products) return <p className="muted">Loading…</p>;
 
   return (
@@ -146,6 +196,10 @@ export default function ScheduleView() {
           ))}
           <option value="none">No tier</option>
         </select>
+        <button type="button" className="btn-secondary-sm" disabled={refreshing} onClick={refresh}>
+          {refreshing ? "Refreshing…" : "Refresh"}
+        </button>
+        {error && <span className="error-inline">{error}</span>}
       </div>
       {shown.length === 0 && <p className="empty">No products match.</p>}
       {shown.length > 0 && (
@@ -187,11 +241,26 @@ function ProductRows({
     <>
       <tr style={{ cursor: empty ? "default" : "pointer" }} onClick={empty ? undefined : onToggle}>
         <td>
-          {!empty && <span aria-hidden>{isOpen ? "▾ " : "▸ "}</span>}
-          <strong>{p.vendor_name} › {p.product_name}</strong>
+          {empty ? (
+            <strong>{p.vendor_name} › {p.product_name}</strong>
+          ) : (
+            <button
+              type="button"
+              className="link-btn"
+              style={{ font: "inherit", color: "inherit", padding: 0, textAlign: "left", cursor: "pointer" }}
+              aria-expanded={isOpen}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggle();
+              }}
+            >
+              <span aria-hidden>{isOpen ? "▾ " : "▸ "}</span>
+              <strong>{p.vendor_name} › {p.product_name}</strong>
+            </button>
+          )}
           <div className="hint">
             {p.tier_name ?? "no tier"}
-            {p.jobs.length > 0 ? ` · ${p.jobs.join(" + ")}` : ""}
+            {p.jobs.length > 0 ? ` · ${jobsLabel(p.jobs)}` : ""}
           </div>
         </td>
         {empty ? (
@@ -208,7 +277,7 @@ function ProductRows({
           <tr key={s.source_id} style={{ background: "var(--ink-2)" }}>
             <td style={{ paddingLeft: "2rem" }}>
               {s.source_name}
-              {s.jobs.length > 0 && <div className="hint">{s.jobs.join(" + ")}</div>}
+              {s.jobs.length > 0 && <div className="hint">{jobsLabel(s.jobs)}</div>}
             </td>
             <td><LastCell latest={s.latest} lastOk={s.last_ok_at} /></td>
             <td><NextCell nextAt={s.next_at} /></td>
