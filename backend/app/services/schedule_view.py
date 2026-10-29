@@ -6,10 +6,10 @@ source, and its ``next_at`` the *latest* upcoming job among its sources.
 Query count is constant in the number of products/sources.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import select, text
+from sqlalchemy import literal_column, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.sql import any_of
@@ -30,21 +30,24 @@ _SKIPS_SQL = text("""
 """)
 
 
-def _has_blocked(run: ExtractionRun) -> bool:
-    return isinstance(run.blocked_pending, list) and len(run.blocked_pending) > 0
+_BLOCKED_COUNT = literal_column(
+    "CASE WHEN jsonb_typeof(extraction_runs.blocked_pending) = 'array' "
+    "THEN jsonb_array_length(extraction_runs.blocked_pending) ELSE 0 END"
+)
 
 
-def _run_event(run: ExtractionRun, job_name: str | None) -> dict:
+def _run_event(run, job_name: str | None) -> dict:
+    """``run`` is a lean row (never the ORM entity: log_text is up to 200 KB)."""
     if run.status == RunStatus.FAILED:
         outcome = "failed"
     else:
-        outcome = "warn" if _has_blocked(run) else "ok"
+        outcome = "warn" if run.blocked > 0 else "ok"
     return {
         "at": run.completed_at or run.started_at, "outcome": outcome,
         "trigger": run.trigger, "job_name": job_name,
         "updated": (run.articles_extracted or 0) + (run.articles_updated or 0),
         "reason": (run.error_message or "")[:300] or None if run.status == RunStatus.FAILED else None,
-        "blocked": len(run.blocked_pending) if _has_blocked(run) else 0,
+        "blocked": run.blocked if run.blocked > 0 else 0,
     }
 
 
@@ -68,30 +71,33 @@ async def build_schedule(db: AsyncSession) -> dict:
         for sid in cover[j.id]:
             src_jobs.setdefault(sid, []).append(j)
 
-    latest_run: dict[UUID, tuple[ExtractionRun, str | None]] = {}
+    latest_run: dict[UUID, tuple] = {}
     last_ok: dict[UUID, datetime] = {}
     skips: dict[UUID, dict] = {}
     if sids:
         E = ExtractionRun
         when = E.completed_at.desc().nullslast(), E.started_at.desc()
-        for run, jname in (await db.execute(
-            select(E, Job.name)
+        lean = (E.source_id, E.status, E.trigger, E.started_at, E.completed_at,
+                E.articles_extracted, E.articles_updated, E.error_message,
+                _BLOCKED_COUNT.label("blocked"))
+        for row in (await db.execute(
+            select(*lean, Job.name.label("job_name"))
             .outerjoin(JobRun, JobRun.id == E.job_run_id)
             .outerjoin(Job, Job.id == JobRun.job_id)
             .where(any_of(E.source_id, sids), E.kind == "extract",
                    E.status.in_([RunStatus.COMPLETED, RunStatus.FAILED]))
             .distinct(E.source_id).order_by(E.source_id, *when)
         )).all():
-            latest_run[run.source_id] = (run, jname)
+            latest_run[row.source_id] = (row, row.job_name)
         for run in (await db.execute(
-            select(E)
+            select(E.source_id, E.started_at, E.completed_at)
             .where(any_of(E.source_id, sids), E.kind == "extract",
                    E.status == RunStatus.COMPLETED)
             .where(text("CASE WHEN jsonb_typeof(extraction_runs.blocked_pending) = 'array' "
                         "THEN jsonb_array_length(extraction_runs.blocked_pending) = 0 "
                         "ELSE true END"))
             .distinct(E.source_id).order_by(E.source_id, *when)
-        )).scalars():
+        )).all():
             last_ok[run.source_id] = run.completed_at or run.started_at
         for r in (await db.execute(_SKIPS_SQL, {"ids": sids})).all():
             skips[r.source_id] = {
@@ -106,6 +112,22 @@ async def build_schedule(db: AsyncSession) -> dict:
     def pick_latest(events: list[dict]) -> dict | None:
         events = [e for e in events if e and e["at"]]
         return max(events, key=lambda e: e["at"]) if events else None
+
+    _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
+
+    def least_fresh(sources: list[dict]) -> dict | None:
+        """The product's latest event is its *least fresh* source's: never-OK
+        sources first (one never attempted before one that only failed), then
+        the oldest last OK. Taking the freshest source's event instead would
+        make a multi-source product look fresher than it is."""
+        if not sources:
+            return None
+        return min(sources, key=lambda s: (
+            s["last_ok_at"] is not None,
+            s["last_ok_at"] or _EPOCH,
+            s["latest"] is not None,
+            s["latest"]["at"] if s["latest"] else _EPOCH,
+        ))["latest"]
 
     products = []
     for pid, pname, vname, tname in rows:
@@ -131,7 +153,7 @@ async def build_schedule(db: AsyncSession) -> dict:
             "tier_name": tname, "jobs": sorted(job_names),
             "source_count": len(sources),
             "last_ok_at": min(oks) if oks and all(oks) else None,
-            "latest": pick_latest([s["latest"] for s in sources]),
+            "latest": least_fresh(sources),
             "next_at": max(nexts) if nexts else None,
             "scheduled_sources": len(nexts),
             "sources": sources,

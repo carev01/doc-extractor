@@ -92,7 +92,41 @@ async def test_least_fresh_source_drives_product_last_ok(env):
         s.add_all([_run(a, 1), _run(b, 30)]); await s.commit()
     p = (await _get(c))["P"]
     assert _ts(p["last_ok_at"]) == NOW - timedelta(hours=30)
-    assert _ts(p["latest"]["at"]) == NOW - timedelta(hours=1)
+    # latest comes from the least-fresh source, never the freshest one
+    assert _ts(p["latest"]["at"]) == NOW - timedelta(hours=30)
+
+
+async def test_latest_is_least_fresh_sources_latest_event(env):
+    c, f, _ = env
+    async with f() as s:
+        _, _, (a, b) = await _product(s)
+        # a: fresh OK; b: old OK, then a newer failure (still older than a's OK)
+        s.add_all([_run(a, 1), _run(b, 30), _run(b, 5, status=RunStatus.FAILED)])
+        await s.commit()
+    p = (await _get(c))["P"]
+    assert _ts(p["last_ok_at"]) == NOW - timedelta(hours=30)
+    assert _ts(p["latest"]["at"]) == NOW - timedelta(hours=5)
+    assert p["latest"]["outcome"] == "failed"
+
+
+async def test_never_ok_source_drives_latest(env):
+    c, f, _ = env
+    async with f() as s:
+        _, _, (a, b) = await _product(s)
+        s.add_all([_run(a, 1), _run(b, 3, status=RunStatus.FAILED)]); await s.commit()
+    p = (await _get(c))["P"]
+    assert p["last_ok_at"] is None
+    assert p["latest"]["outcome"] == "failed"
+    assert _ts(p["latest"]["at"]) == NOW - timedelta(hours=3)
+
+
+async def test_never_run_source_makes_latest_null(env):
+    c, f, _ = env
+    async with f() as s:
+        _, _, (a, b) = await _product(s)
+        s.add(_run(a, 1)); await s.commit()
+    p = (await _get(c))["P"]
+    assert p["last_ok_at"] is None and p["latest"] is None
 
 
 async def test_never_ok_source_nulls_product_last_ok(env):
@@ -236,3 +270,20 @@ async def test_blocked_zero_for_ok_and_skip(env):
         await s.commit()
     srcs = {x["source_name"]: x["latest"] for x in (await _get(c))["P"]["sources"]}
     assert srcs["S0"]["blocked"] == 0 and srcs["S1"]["blocked"] == 0
+
+
+async def test_schedule_never_fetches_run_logs_or_large_json(env):
+    c, f, statements = env
+    async with f() as s:
+        _, _, (a,) = await _product(s, 1)
+        s.add_all([_run(a, 2, log_text="x" * 1000), _run(a, 1, blocked=[{"url": "u"}, {"url": "v"}])])
+        await s.commit()
+    statements.clear()
+    p = (await _get(c))["P"]
+    assert p["latest"]["blocked"] == 2 and p["latest"]["outcome"] == "warn"
+    run_sql = [st for st in statements if "extraction_runs" in st]
+    assert run_sql
+    for st in run_sql:
+        assert "log_text" not in st
+        assert "escalation_pending" not in st
+        assert "extraction_runs.blocked_pending," not in st

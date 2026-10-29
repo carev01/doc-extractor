@@ -69,7 +69,7 @@ function LastCell({ latest, lastOk }: { latest: ScheduleLatest | null; lastOk: s
         {fmtDate(latest.at)} <Outcome l={latest} />
       </div>
       <div className="hint">{triggerLabel(latest)}</div>
-      {latest.outcome !== "ok" && (
+      {(latest.outcome !== "ok" || !lastOk || new Date(lastOk) < new Date(latest.at)) && (
         <div className="hint">last OK: {lastOk ? fmtDate(lastOk) : "never"}</div>
       )}
     </>
