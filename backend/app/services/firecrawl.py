@@ -49,8 +49,8 @@ from app.services.sanitize import sanitize_markdown
 from app.services.toc_checkpoint import TocBuildCheckpoint
 from app.services.versioning import (
     REVISION_PLACEHOLDER,
-    VERSION_PLACEHOLDER,
     derive_topic_key,
+    has_version_placeholder,
     like_pattern,
     resolve_template,
     templatize,
@@ -1180,7 +1180,7 @@ class FirecrawlService:
         # stored before {rev} existed, whose keys and URLs both carry the previous
         # release's build id in a position the version wildcard alone can't span.
         if existing_article is None and (
-            VERSION_PLACEHOLDER in match_key or REVISION_PLACEHOLDER in match_key
+            has_version_placeholder(match_key) or REVISION_PLACEHOLDER in match_key
         ):
             pattern = like_pattern(match_key)
             ver_matches = (
@@ -2847,7 +2847,10 @@ class FirecrawlService:
                     "is_article": e.is_article, "parent_url": e.parent_url,
                     "content_selector": e.content_selector,
                     "content_url": e.content_url,
-                    "topic_key": derive_topic_key(e.url, source.url_template, product_version),
+                    "topic_key": derive_topic_key(
+                        e.url, source.url_template, product_version,
+                        slug_versions=getattr(profile, "slug_versions", False),
+                    ),
                 }
                 for e in toc_objs
             ]

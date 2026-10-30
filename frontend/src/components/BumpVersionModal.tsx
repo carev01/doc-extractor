@@ -39,7 +39,8 @@ export default function BumpVersionModal({ product, sources, onClose, onBumped }
   const [error, setError] = useState("");
   const [preview, setPreview] = useState<Preview | null>(null);
 
-  const templated = sources.filter((s) => s.url_template && s.url_template.includes("{version}"));
+  // Any version form counts (mirrors the backend's has_version_placeholder).
+  const templated = sources.filter((s) => s.url_template && /\{version(?:_compact|_major)?\}/.test(s.url_template));
   const v = newVersion.trim();
 
   const wantsPreview = v !== "" && v !== product.version && templated.length > 0;

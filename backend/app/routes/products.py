@@ -34,6 +34,7 @@ from app.services.versioning import (
     REVISION_PLACEHOLDER,
     derive_topic_key,
     extract_revision,
+    has_version_placeholder,
     resolve_template,
     templatize,
     upgrade_template,
@@ -187,8 +188,13 @@ async def enable_versioning(
         arts = (
             await db.execute(select(Article).where(Article.source_id == src.id))
         ).scalars().all()
+        slug_versions = getattr(
+            profile_registry.get(src.platform or ""), "slug_versions", False
+        )
         for art in arts:
-            art.topic_key = derive_topic_key(art.source_url, tmpl, body.version)
+            art.topic_key = derive_topic_key(
+                art.source_url, tmpl, body.version, slug_versions=slug_versions
+            )
     product.version = body.version
     await db.commit()
     return {"version": product.version, "templatized_sources": templatized}
@@ -319,7 +325,7 @@ async def bump_version(
             )
         )
     ).scalars().all()
-    templated = [s for s in sources if "{version}" in (s.url_template or "")]
+    templated = [s for s in sources if has_version_placeholder(s.url_template)]
     if not templated:
         raise HTTPException(
             status_code=400, detail="No templated ({version}) sources to bump"
@@ -385,7 +391,7 @@ async def preview_version_bump(
             )
         )
     ).scalars().all()
-    templated = [s for s in sources if "{version}" in (s.url_template or "")]
+    templated = [s for s in sources if has_version_placeholder(s.url_template)]
     return {
         "version": product.version,
         "target_version": body.version,
