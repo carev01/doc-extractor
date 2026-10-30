@@ -1775,6 +1775,9 @@ class FirecrawlService:
         request_delay = float(getattr(profile, "raw_http_request_delay", 0) or 0)
         retry_statuses = getattr(profile, "raw_http_retry_statuses", None)
         raw_user_agent = getattr(profile, "raw_user_agent", None)
+        # A profile whose head-level "revision" date is really a site publish
+        # stamp opts out of it (see aem_guides): only the scoped body is read.
+        vendor_page_dates = getattr(profile, "vendor_page_dates", True)
         # Failure tracking is over pages *attempted this run* (not resumed ones),
         # so the guard reflects the source's current behaviour.
         attempted = 0
@@ -1838,7 +1841,7 @@ class FirecrawlService:
                                     markdown_content=md, doc_html=body_html,
                                     # Whole document: body_html is already scoped,
                                     # so <head> metadata is gone from it.
-                                    page_html=raw,
+                                    page_html=raw if vendor_page_dates else None,
                                     toc_entry_id=entry.get("toc_entry_id"),
                                     sort_order=entry.get("sort_order", 0),
                                     title=entry["title"], change_status=None,

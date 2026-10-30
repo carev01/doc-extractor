@@ -16,8 +16,11 @@ and the topic body is static too — so the profile runs entirely on raw_http:
   ``.topic-renderer__content``. The rest of the header (Table of Contents / PDF
   Export / Share toolbar), the breadcrumb and the "Last published" line are
   chrome. That date is a site publish stamp, not a page revision — pages of a
-  guide carry it within milliseconds of each other — so it is deliberately not
-  captured (see page_dates: a fabricated date is worse than an honest NULL).
+  guide carry it within milliseconds of each other — and the same stamp sits in
+  the head as ``last-modified`` and as JSON-LD ``dateModified``, which page_dates
+  would otherwise read as ``vendor_meta``. ``vendor_page_dates = False`` keeps it
+  out (a fabricated date is worse than an honest NULL). Only the raw_http path
+  consults that flag, which suffices because this profile is raw_http-only.
 
 Two portal traits shape the rest:
 
@@ -49,6 +52,7 @@ class AemGuidesProfile:
     raw_http_concurrency = 1
     raw_http_request_delay = 2.0
     slug_versions = True
+    vendor_page_dates = False
 
     def detect(self, root_html: str, root_url: str) -> bool:
         # The topic renderer is AEM Guides'; cmp-navigation alone is any AEM site.
