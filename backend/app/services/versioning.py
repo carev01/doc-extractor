@@ -25,6 +25,15 @@ value*:
     source look brand new, retiring the old corpus and re-adding it — the
     duplication class that the CommCell incident belongs to).
 
+``{version_compact}`` / ``{version_major}``
+    The same operator-typed version, spelled differently: separators stripped
+    (``25-1`` → ``251``) or only its leading component (``24-1`` → ``24``).
+    Arctera's AEM Guides portal writes one release three ways in one URL —
+    ``…/arctera-system-recovery-24-readme/24-1/arcteratm-system-recovery-24-1-readme.html``,
+    ``…/backup-exec-readme/25-1/backup-exec-251-readme.html`` — and a template
+    that can name only the verbatim form resolves a bump to a URL that 404s.
+    They are derived, never stored: the operator still types one version.
+
 ``{rev}`` is never stored resolved and never asked of the operator. It is read
 off each URL *positionally* by :func:`extract_revision`, which needs no network
 and no profile — deliberately, because key derivation is the load-bearing path:
@@ -37,11 +46,30 @@ fail without costing data.
 import re
 
 VERSION_PLACEHOLDER = "{version}"
+VERSION_COMPACT_PLACEHOLDER = "{version_compact}"
+VERSION_MAJOR_PLACEHOLDER = "{version_major}"
 REVISION_PLACEHOLDER = "{rev}"
 
 # Every placeholder the template language knows. Used to turn a topic key into a
 # SQL LIKE pattern and to find the literal text that delimits a placeholder.
-_PLACEHOLDER_RE = re.compile(r"\{(?:version|rev)\}")
+_PLACEHOLDER_RE = re.compile(r"\{(?:version|version_compact|version_major|rev)\}")
+# The placeholders whose value derives from the product version.
+_VERSION_FORM_RE = re.compile(r"\{(?:version|version_compact|version_major)\}")
+
+
+def version_forms(version: str) -> dict[str, str]:
+    """Every spelling of *version* the template language can name."""
+    major = re.match(r"[0-9A-Za-z]+", version)
+    return {
+        VERSION_PLACEHOLDER: version,
+        VERSION_COMPACT_PLACEHOLDER: re.sub(r"[^0-9A-Za-z]", "", version),
+        VERSION_MAJOR_PLACEHOLDER: major.group(0) if major else version,
+    }
+
+
+def has_version_placeholder(text: str | None) -> bool:
+    """Whether *text* (a template or topic key) carries any version form."""
+    return bool(text) and _VERSION_FORM_RE.search(text) is not None
 
 
 def resolve_template(
@@ -53,7 +81,9 @@ def resolve_template(
     Leaves ``{rev}`` in place when *revision* is None — callers that need a
     fetchable URL must supply one (or carry the previous release's, which at
     least stays well-formed until a run resolves the current one)."""
-    out = template.replace(VERSION_PLACEHOLDER, version)
+    out = template
+    for placeholder, value in version_forms(version).items():
+        out = out.replace(placeholder, value)
     if revision is not None:
         out = out.replace(REVISION_PLACEHOLDER, revision)
     return out
@@ -97,7 +127,7 @@ def extract_revision(
     if REVISION_PLACEHOLDER not in url_template:
         return None
     head, _, tail = url_template.partition(REVISION_PLACEHOLDER)
-    prefix = head.replace(VERSION_PLACEHOLDER, version)
+    prefix = resolve_template(head, version)
     if not prefix or not url.startswith(prefix):
         return None
     rest = url[len(prefix):]
@@ -119,40 +149,69 @@ def like_pattern(topic_key: str) -> str:
     article across a release boundary, where neither its key nor its URL matches
     the freshly-derived ones.
     """
-    esc = (
-        topic_key.replace("\\", "\\\\")
-        .replace("%", "\\%")
-        .replace("_", "\\_")
+    # Escape the literal parts only: the placeholder names themselves carry
+    # underscores ({version_compact}) that escaping would un-recognise.
+    return "%".join(
+        part.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        for part in _PLACEHOLDER_RE.split(topic_key)
     )
-    return _PLACEHOLDER_RE.sub("%", esc)
 
 
-def _anchor_all_placeholders(url: str, url_template: str, version: str) -> str | None:
-    """Template-anchor every ``{version}`` in *url_template* against *url*.
+def _anchor_all_placeholders(
+    url: str, url_template: str, version: str
+) -> tuple[str, int] | None:
+    """Template-anchor every version-form placeholder in *url_template* against *url*.
 
-    Returns the key with each placeholder position swapped back to
-    ``{version}`` (the rest of *url* — the article path past the template —
-    unchanged), or None when the template's literal text doesn't line up with
-    *url* at every step. Only meaningful for templates with more than one
-    placeholder; a single-placeholder template returns None so the existing
-    prefix anchor handles it exactly as before.
+    Walks the template's placeholders in order, checking that the literal text
+    before each one and the placeholder's value (in its own form) line up with
+    *url*. Returns ``(key, consumed)``: *url* with each anchored position swapped
+    back to its placeholder, and how many characters of *url* the anchored part
+    covers. The walk stops at the first literal that doesn't line up (e.g. a page
+    outside the template's second block, or one holding ``{rev}``) and keeps what
+    it anchored so far; None when nothing could be anchored.
     """
-    parts = url_template.split(VERSION_PLACEHOLDER)
-    if len(parts) < 3:
+    forms = version_forms(version)
+    pos, out, last = 0, [], 0
+    cursor = 0
+    for m in _VERSION_FORM_RE.finditer(url_template):
+        literal = url_template[cursor:m.start()]
+        value = forms[m.group(0)]
+        if (url[pos:pos + len(literal)] != literal
+                or url[pos + len(literal):pos + len(literal) + len(value)] != value):
+            break
+        out.append(literal + m.group(0))
+        pos += len(literal) + len(value)
+        cursor = m.end()
+        last = pos
+    if not out:
         return None
-    pos, out = 0, []
-    for literal in parts[:-1]:
-        if url[pos:pos + len(literal)] != literal:
-            return None
-        pos += len(literal)
-        if url[pos:pos + len(version)] != version:
-            return None
-        out.append(literal + VERSION_PLACEHOLDER)
-        pos += len(version)
-    return "".join(out) + url[pos:]
+    return "".join(out) + url[last:], len("".join(out))
 
 
-def derive_topic_key(url: str | None, url_template: str | None, version: str | None) -> str | None:
+def _template_slug_versions(key: str, start: int, version: str) -> str:
+    """Template the version (verbatim and compact) where it occurs in the page's
+    own slug, past the anchored prefix ending at *start*.
+
+    Digit-delimited only, so ``2510`` or ``1251`` are never read as ``251``. The
+    major form is left alone: two digits match far too much to be identity.
+    """
+    forms = version_forms(version)
+    head, tail = key[:start], key[start:]
+    for placeholder in (VERSION_PLACEHOLDER, VERSION_COMPACT_PLACEHOLDER):
+        value = forms[placeholder]
+        if not value:
+            continue
+        tail = re.sub(rf"(?<![0-9]){re.escape(value)}(?![0-9])", placeholder, tail)
+    return head + tail
+
+
+def derive_topic_key(
+    url: str | None,
+    url_template: str | None,
+    version: str | None,
+    *,
+    slug_versions: bool = False,
+) -> str | None:
     """Return the version-independent key for *url*.
 
     When the version is known, replace it with ``{version}`` — anchored at the
@@ -169,6 +228,13 @@ def derive_topic_key(url: str | None, url_template: str | None, version: str | N
     token (every occurrence — Cohesity repeats it), which is what lets a key
     survive a release whose URL changed in more than the version segment.
 
+    ``slug_versions`` (a platform's opt-in, see the profile attribute of that
+    name) also templates the version where the vendor spells it into the page's
+    own slug past the template (``…-wizard-help-v251/…``), so such a page keeps
+    its history across a bump instead of being retired and re-added. Off by
+    default because turning it on changes the key of every such page, and a
+    live corpus must never re-key as a side effect of a code change.
+
     *url* may be ``None`` for a url-less structural TOC node (a Flare "book"/
     section header that carries no page, common in HelpSystem.xml/Toc chunks);
     such entries have no topic identity, so it is returned unchanged rather than
@@ -180,28 +246,37 @@ def derive_topic_key(url: str | None, url_template: str | None, version: str | N
     # Template-anchored replacement (preferred): swap exactly the version segment
     # at the template's placeholder offset.
     anchored = False
-    if url_template and VERSION_PLACEHOLDER in url_template:
+    slug_start = 0
+    if url_template and has_version_placeholder(url_template):
         # Every placeholder, walked positionally: a template may carry the
         # version more than once (Atempo's GitBook language variants live at
-        # /lina-7.4/lina-7.4-en/…), and anchoring only the first left the second
-        # literal in every key, so a bump would re-key the whole source. The
-        # walk compares the template's literal text between placeholders, so a
-        # version inside an article slug past the template is never touched; a
-        # literal it can't match (e.g. one holding {rev}) falls back to the
-        # single-anchor path below.
-        walked = _anchor_all_placeholders(url, url_template, version)
-        if walked is not None:
-            key, anchored = walked, True
-        else:
+        # /lina-7.4/lina-7.4-en/…) or in several spellings (Arctera's
+        # …-24-readme/24-1/…-24-1-readme.html). Anchoring only the first left the
+        # rest literal in every key, so a bump would re-key the whole source.
+        # The walk compares the template's literal text between placeholders, so
+        # a version inside an article slug past the template is never touched.
+        # A single-{version} template keeps the prefix anchor below, unchanged.
+        walk = None
+        if (len(_VERSION_FORM_RE.findall(url_template)) > 1
+                or VERSION_PLACEHOLDER not in url_template):
+            walk = _anchor_all_placeholders(url, url_template, version)
+        if walk is not None:
+            key, slug_start = walk
+            anchored = True
+        elif VERSION_PLACEHOLDER in url_template:
             prefix = url_template.split(VERSION_PLACEHOLDER, 1)[0]
             if url.startswith(prefix) and url[len(prefix):len(prefix) + len(version)] == version:
                 key = prefix + VERSION_PLACEHOLDER + url[len(prefix) + len(version):]
                 anchored = True
+                slug_start = len(prefix) + len(VERSION_PLACEHOLDER)
     # Fallback: templatize by the version substring even without a (matching)
     # template, so the key stays consistent when url_template is absent or the
     # version sits at an unexpected offset. Only when the version actually occurs.
     if not anchored and version in url:
         key = url.replace(version, VERSION_PLACEHOLDER, 1)
+        slug_start = key.index(VERSION_PLACEHOLDER) + len(VERSION_PLACEHOLDER)
+    if slug_versions and (anchored or VERSION_PLACEHOLDER in key):
+        key = _template_slug_versions(key, slug_start, version)
 
     # Then the volatile per-release token, read off *url* itself (see
     # extract_revision). Replaced everywhere it occurs, not once: Cohesity repeats

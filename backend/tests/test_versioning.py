@@ -2,6 +2,7 @@ import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.services.versioning import (
     resolve_template, derive_topic_key, detect_version_token, VERSION_PLACEHOLDER,
+    version_forms, like_pattern,
 )
 
 ARC = "https://docs.example.com/UDP/Available/{version}/ENU/SolG/default.htm"
@@ -101,3 +102,101 @@ def test_multi_placeholder_leaves_the_version_in_a_slug_alone():
     url = "https://documentation.atempo.com/lina-7.4/lina-7.4-en/whats-new-in-7.4"
     assert derive_topic_key(url, ATEMPO, "7.4") == \
         "https://documentation.atempo.com/lina-{version}/lina-{version}-en/whats-new-in-7.4"
+
+
+# ── Derived version forms ({version_compact}, {version_major}) ────────────────
+# Arctera's AEM Guides portal spells one version three ways in a single URL: the
+# folder (25-1), a compact slug (backup-exec-251-readme) and, for System
+# Recovery, the bare major in the guide folder (arctera-system-recovery-24-readme).
+
+BE_README = (
+    "https://docs.backupexec.com/us/en/backupexec-userdocs/release-notes/all-platforms/"
+    "backup-exec-readme/{version}/backup-exec-{version_compact}-readme.html"
+)
+SR_README = (
+    "https://docs.backupexec.com/us/en/sr-userdocs/release-notes/all-platforms/"
+    "arctera-system-recovery-{version_major}-readme/{version}/"
+    "arcteratm-system-recovery-{version}-readme.html"
+)
+RTC = (
+    "https://docs.backupexec.com/us/en/backupexec-userdocs/supplemental-content/all-platforms/"
+    "sdr-recover-this-computer-wizard-help/{version}/recover-this-computer-wizard-help.html"
+)
+
+
+def test_resolve_template_substitutes_derived_forms():
+    assert resolve_template(BE_README, "25-1").endswith(
+        "/backup-exec-readme/25-1/backup-exec-251-readme.html")
+    assert resolve_template(SR_README, "24-1").endswith(
+        "/arctera-system-recovery-24-readme/24-1/arcteratm-system-recovery-24-1-readme.html")
+
+
+def test_version_forms_strip_separators_and_take_the_major():
+    assert version_forms("25-1") == {
+        "{version}": "25-1", "{version_compact}": "251", "{version_major}": "25",
+    }
+    assert version_forms("11.2.0.1")["{version_compact}"] == "11201"
+    assert version_forms("11.2.0.1")["{version_major}"] == "11"
+
+
+def test_derived_placeholders_are_anchored_positionally():
+    url = ("https://docs.backupexec.com/us/en/backupexec-userdocs/release-notes/all-platforms/"
+           "backup-exec-readme/25-1/backup-exec-251-readme/about-this-readme.html")
+    assert derive_topic_key(url, BE_README, "25-1") == (
+        "https://docs.backupexec.com/us/en/backupexec-userdocs/release-notes/all-platforms/"
+        "backup-exec-readme/{version}/backup-exec-{version_compact}-readme/about-this-readme.html")
+
+
+def test_major_placeholder_key_is_stable_across_a_major_bump():
+    base = "https://docs.backupexec.com/us/en/sr-userdocs/release-notes/all-platforms/"
+    u24 = base + "arctera-system-recovery-24-readme/24-1/arcteratm-system-recovery-24-1-readme/install.html"
+    u25 = base + "arctera-system-recovery-25-readme/25-1/arcteratm-system-recovery-25-1-readme/install.html"
+    assert derive_topic_key(u24, SR_README, "24-1") == derive_topic_key(u25, SR_README, "25-1")
+
+
+def test_a_url_off_the_second_block_keeps_the_leading_anchors():
+    # Walk stops at the first literal that doesn't line up; what it anchored stays.
+    url = ("https://docs.backupexec.com/us/en/backupexec-userdocs/release-notes/all-platforms/"
+           "backup-exec-readme/25-1/legal-notice.html")
+    assert derive_topic_key(url, BE_README, "25-1") == (
+        "https://docs.backupexec.com/us/en/backupexec-userdocs/release-notes/all-platforms/"
+        "backup-exec-readme/{version}/legal-notice.html")
+
+
+def test_slug_versions_templates_the_version_inside_page_slugs():
+    url = ("https://docs.backupexec.com/us/en/backupexec-userdocs/supplemental-content/all-platforms/"
+           "sdr-recover-this-computer-wizard-help/25-1/recover-this-computer-wizard-help/"
+           "sdr-recover-this-computer-wizard-help-v251/creating-a-simple-volume.html")
+    key = derive_topic_key(url, RTC, "25-1", slug_versions=True)
+    assert key.endswith("/{version}/recover-this-computer-wizard-help/"
+                        "sdr-recover-this-computer-wizard-help-v{version_compact}/creating-a-simple-volume.html")
+    nxt = url.replace("25-1", "25-2").replace("v251", "v252")
+    assert derive_topic_key(nxt, RTC, "25-2", slug_versions=True) == key
+
+
+def test_slug_versions_templates_the_verbatim_form_in_slugs_too():
+    url = ("https://docs.backupexec.com/us/en/sr-userdocs/release-notes/all-platforms/"
+           "arctera-system-recovery-24-readme/24-1/arcteratm-system-recovery-24-1-readme/"
+           "what-s-new-in-arctera-system-recovery-24-1.html")
+    assert derive_topic_key(url, SR_README, "24-1", slug_versions=True).endswith(
+        "/arcteratm-system-recovery-{version}-readme/what-s-new-in-arctera-system-recovery-{version}.html")
+
+
+def test_slug_versions_needs_a_digit_boundary():
+    # 2510 / 1251 are other numbers, not the 251 build of 25-1.
+    url = ("https://docs.backupexec.com/us/en/backupexec-userdocs/supplemental-content/all-platforms/"
+           "sdr-recover-this-computer-wizard-help/25-1/recover-this-computer-wizard-help/"
+           "error-2510-and-1251.html")
+    assert derive_topic_key(url, RTC, "25-1", slug_versions=True).endswith("/error-2510-and-1251.html")
+
+
+def test_slugs_are_left_alone_without_the_opt_in():
+    url = ("https://docs.backupexec.com/us/en/backupexec-userdocs/supplemental-content/all-platforms/"
+           "sdr-recover-this-computer-wizard-help/25-1/recover-this-computer-wizard-help/"
+           "sdr-recover-this-computer-wizard-help-v251/creating-a-simple-volume.html")
+    assert derive_topic_key(url, RTC, "25-1").endswith("-v251/creating-a-simple-volume.html")
+
+
+def test_like_pattern_wildcards_derived_placeholders():
+    assert like_pattern("https://x/{version_major}-r/{version}/a-{version_compact}.html") == \
+        "https://x/%-r/%/a-%.html"
