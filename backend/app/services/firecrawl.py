@@ -12,6 +12,7 @@ import shutil
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
+from http.cookiejar import CookieJar
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -285,6 +286,23 @@ def _saved_image_size(article_dir: str, filename: str) -> int:
         return 0
 
 
+class _NoCookieJar(CookieJar):
+    """A cookie jar that never stores anything.
+
+    The service's one long-lived client fetches every vendor's pages; with a
+    normal jar each ``Set-Cookie`` a site answered with (Securiti refreshes
+    ``connect.sid`` on every authenticated page) rode on every later request to
+    that domain — so a fetch meant to go out logged-out was silently
+    authenticated, and one realm's session could outlive the realm. Session
+    cookies are only ever the ones a caller passes to ``fetch_raw``."""
+
+    def set_cookie(self, cookie):
+        pass
+
+    def extract_cookies(self, response, request):
+        pass
+
+
 def _cookie_header(cookies: list[dict] | None) -> str | None:
     """Build a ``Cookie`` request-header value from a realm cookie list."""
     if not cookies:
@@ -514,7 +532,7 @@ class FirecrawlService:
     TRANSIENT_RETRIES = 5
     TRANSIENT_BACKOFF = 4.0  # seconds; doubles each attempt (4,8,16,32,64)
 
-    def __init__(self):
+    def __init__(self, transport: httpx.AsyncBaseTransport | None = None):
         self.base_url = settings.firecrawl_api_url.rstrip("/")
         self.api_key = settings.firecrawl_api_key
         self.client = httpx.AsyncClient(
@@ -523,7 +541,9 @@ class FirecrawlService:
                 read=300.0,
                 write=30.0,
                 pool=30.0,
-            )
+            ),
+            cookies=_NoCookieJar(),
+            transport=transport,
         )
         # Per-source content scrape options, set at run start so the webhook /
         # empty-content retries scope content the same way the batch did.
@@ -749,20 +769,15 @@ class FirecrawlService:
         When cookies are supplied, redirects are followed manually so the Cookie
         header is re-attached on every same-host hop. httpx 0.28+ explicitly
         strips the Cookie header when following redirects automatically (it
-        re-derives it from the client cookie jar, which is empty here), so an
+        re-derives it from the client cookie jar, which never stores anything —
+        see ``_NoCookieJar``), so an
         authenticated page that 30x-redirects would otherwise land unauthenticated.
         """
         ck = _cookie_header(cookies)
         ua = user_agent or _BROWSER_UA
 
         if not ck:
-            # No cookies — use automatic redirect following (unchanged behaviour).
-            resp = await self._request_with_retry(
-                lambda: self.client.get(url, headers={"User-Agent": ua}, follow_redirects=True),
-                what=f"raw GET {url}",
-                retry_statuses=retry_statuses,
-            )
-            return resp.text
+            return await self._fetch_raw_logged_out(url, ua, retry_statuses)
 
         # Cookies supplied — follow redirects manually, re-attaching the Cookie
         # header on each same-host hop.
@@ -809,6 +824,35 @@ class FirecrawlService:
 
         # Redirect cap reached — return whatever the last response held.
         return resp.text if resp is not None else ""
+
+    async def _fetch_raw_logged_out(self, url: str, ua: str, retry_statuses) -> str:
+        """``fetch_raw`` without session cookies: follows redirects like httpx's
+        automatic mode (any host, at most 20 hops), carrying only the cookies
+        *this* redirect chain sets. The client keeps no jar (``_NoCookieJar``), so
+        a site's cookie-check redirect (set a cookie, redirect, insist on it)
+        still works, while nothing it sets reaches a later call."""
+        chain = httpx.Cookies()
+        current_url = url
+        for _ in range(20):
+            request = self.client.build_request("GET", current_url, headers={"User-Agent": ua})
+            chain.set_cookie_header(request)
+            try:
+                resp = await self._request_with_retry(
+                    lambda: self.client.send(request, follow_redirects=False),
+                    what=f"raw GET {current_url}",
+                    retry_statuses=retry_statuses,
+                )
+                return resp.text
+            except httpx.HTTPStatusError as exc:
+                resp = exc.response
+                if resp is None or resp.status_code not in (301, 302, 303, 307, 308):
+                    raise
+            chain.extract_cookies(resp)
+            location = resp.headers.get("location")
+            if not location:
+                return resp.text
+            current_url = urljoin(current_url, location)
+        raise httpx.TooManyRedirects(f"Exceeded 20 redirects fetching {url}", request=request)
 
     async def _request_with_retry(
         self, send: Callable[[], Awaitable[httpx.Response]], what: str,
