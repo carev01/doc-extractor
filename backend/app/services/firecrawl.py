@@ -834,12 +834,16 @@ class FirecrawlService:
         chain = httpx.Cookies()
         current_url = url
         for _ in range(20):
-            request = self.client.build_request("GET", current_url, headers={"User-Agent": ua})
-            chain.set_cookie_header(request)
+            hop_url = current_url
+            headers = {"User-Agent": ua}
+            probe = httpx.Request("GET", hop_url)   # domain/path matching only
+            chain.set_cookie_header(probe)
+            if "cookie" in probe.headers:
+                headers["Cookie"] = probe.headers["cookie"]
             try:
                 resp = await self._request_with_retry(
-                    lambda: self.client.send(request, follow_redirects=False),
-                    what=f"raw GET {current_url}",
+                    lambda: self.client.get(hop_url, headers=headers, follow_redirects=False),
+                    what=f"raw GET {hop_url}",
                     retry_statuses=retry_statuses,
                 )
                 return resp.text
@@ -852,7 +856,7 @@ class FirecrawlService:
             if not location:
                 return resp.text
             current_url = urljoin(current_url, location)
-        raise httpx.TooManyRedirects(f"Exceeded 20 redirects fetching {url}", request=request)
+        raise httpx.TooManyRedirects(f"Exceeded 20 redirects fetching {url}")
 
     async def _request_with_retry(
         self, send: Callable[[], Awaitable[httpx.Response]], what: str,
