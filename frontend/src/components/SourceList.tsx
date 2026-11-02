@@ -515,10 +515,14 @@ function SourceItem({
       const total = run.articles_total ?? 0;
       const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
 
-      if (run.current_phase === "toc_discovery") {
+      if (run.current_phase === "toc_discovery" || run.current_phase === "toc_rebuild") {
         return (
           <div className="run-progress">
-            <span className="run-phase">Discovering table of contents…</span>
+            <span className="run-phase">
+              {run.current_phase === "toc_rebuild"
+                ? "Rebuilding table of contents…"
+                : "Discovering table of contents…"}
+            </span>
             <div className="progress-bar indeterminate" />
           </div>
         );

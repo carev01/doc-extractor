@@ -7,6 +7,7 @@ import uuid
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -116,6 +117,27 @@ async def test_list_export_jobs_with_names(client):
     j = body["jobs"][0]
     assert j["vendor_name"] == "Acme" and j["source_name"] == "Docs"
     assert j["format"] == "pdf" and j["status"] == "pending"
+
+
+async def test_pending_export_reports_waiting_for_a_running_extraction(client):
+    # Exports run alongside extractions but wait while their own source is
+    # extracting; the Jobs view says so instead of a bare "pending".
+    c, factory = client
+    sid = await _source(factory)
+    async with factory() as s:
+        s.add(ExtractionRun(source_id=sid, status=RunStatus.RUNNING))
+        s.add(ExportJob(source_id=sid, status=ExportStatus.PENDING,
+                        request={"source_id": str(sid), "format": "markdown"}))
+        await s.commit()
+    j = (await c.get("/api/export/jobs")).json()["jobs"][0]
+    assert j["waiting_for_extraction"] is True
+
+    async with factory() as s:
+        run = (await s.execute(select(ExtractionRun))).scalar_one()
+        run.status = RunStatus.COMPLETED
+        await s.commit()
+    j = (await c.get("/api/export/jobs")).json()["jobs"][0]
+    assert j["waiting_for_extraction"] is False
 
 
 async def test_cancel_queued_export_job(client):

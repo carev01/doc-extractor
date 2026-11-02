@@ -1,6 +1,7 @@
 """Firecrawl integration service — full-site extraction with TOC preservation."""
 
 import asyncio
+import time
 import hashlib
 import json
 import base64
@@ -3024,12 +3025,26 @@ class FirecrawlService:
                     )).all()
                     fragments = [(u, f) for (u, f) in rows if f]
                     if fragments:
+                        # Its own phase, committed before the thread starts: the
+                        # rebuild runs for minutes in silence (Rubrik RSC: 149 MB
+                        # of fragments) and read as a hung "content_scraping".
+                        run.current_phase = "toc_rebuild"
+                        await db.commit()
+                        logger.info(
+                            "Rebuilding TOC hierarchy for %s from %d page fragments",
+                            source.name, len(fragments),
+                        )
+                        rebuild_started = time.monotonic()
                         try:
                             # Stitching ~100s of MB of fragments is CPU-heavy;
                             # run it off the event loop so it doesn't block the
                             # worker heartbeat.
                             rebuilt = await asyncio.to_thread(
                                 profile.rebuild_toc, fragments, source.base_url
+                            )
+                            logger.info(
+                                "TOC rebuild for %s took %.0fs",
+                                source.name, time.monotonic() - rebuild_started,
                             )
                             if rebuilt:
                                 # Superset: add flat entries for scraped articles not

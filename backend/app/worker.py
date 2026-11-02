@@ -1,9 +1,14 @@
-"""Worker process: claim pending extraction runs and execute them.
+"""Worker process: claim pending extraction runs and export jobs and execute them.
+
+Two lanes run concurrently in one process: extractions one at a time, and
+exports one at a time beside them (generation runs on a thread). They exclude
+each other per source only — see queue.claim_next_export / claim_next_run.
 
 Run with: python -m app.worker
 """
 
 import asyncio
+import contextvars
 import logging
 import socket
 import threading
@@ -34,12 +39,22 @@ LOG_TEXT_CAP = 200_000  # keep the last ~200KB of a run's logs
 WORKER_ID = socket.gethostname()
 
 
+# Set inside the export lane. asyncio.to_thread copies the context into the
+# export thread, so _RunLogHandler can tell an export's log records apart from
+# the extraction it is capturing.
+_EXPORT_LANE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "export_lane", default=False
+)
+
+
 class _RunLogHandler(logging.Handler):
     """Buffers formatted log records so the worker can persist a run's logs.
 
-    The worker handles one run at a time, so this is attached to the root logger
-    for the duration of a single run and detached afterwards. Thread-safe drain
-    (logging may emit from worker threads).
+    The extraction lane handles one run at a time, so this is attached to the
+    root logger for the duration of a single run and detached afterwards.
+    Records emitted from the export lane, which runs concurrently, are skipped
+    so they don't land in the run's log. Thread-safe drain (logging may emit
+    from worker threads).
     """
 
     def __init__(self) -> None:
@@ -51,6 +66,8 @@ class _RunLogHandler(logging.Handler):
         self._buf: list[str] = []
 
     def emit(self, record: logging.LogRecord) -> None:
+        if _EXPORT_LANE.get():
+            return
         try:
             line = self.format(record)
         except Exception:  # never let logging crash the run
@@ -132,11 +149,19 @@ async def _heartbeat_export(job_id: uuid.UUID, session_factory) -> None:
 
 
 async def run_one(claim_session_factory=None, work_session_factory=None) -> bool:
-    """Claim and execute one run. Returns True if a run was handled."""
+    """Claim and execute one extraction run, else one export job (both lanes,
+    serially). Returns True if something was handled."""
+    if await run_one_extraction(claim_session_factory, work_session_factory):
+        return True
+    return await run_one_export(claim_session_factory, work_session_factory)
+
+
+async def run_one_extraction(claim_session_factory=None, work_session_factory=None) -> bool:
+    """Claim and execute one extraction run. Returns True if a run was handled."""
     claim_session_factory = claim_session_factory or async_session
     work_session_factory = work_session_factory or async_session
 
-    # 1) Try to claim an extraction run — open, claim, close.
+    # Claim an extraction run — open, claim, close.
     async with claim_session_factory() as db:
         run = await claim_next_run(db, WORKER_ID)
         run_id = run.id if run else None
@@ -223,8 +248,15 @@ async def run_one(claim_session_factory=None, work_session_factory=None) -> bool
             # Final flush of anything buffered after the last interval tick.
             await _flush_once(run_id, log_handler, work_session_factory)
         return True
+    return False
 
-    # 2) No extraction run — try an export job — open, claim, close.
+
+async def run_one_export(claim_session_factory=None, work_session_factory=None) -> bool:
+    """Claim and execute one export job. Returns True if a job was handled."""
+    claim_session_factory = claim_session_factory or async_session
+    work_session_factory = work_session_factory or async_session
+
+    # Claim an export job — open, claim, close.
     async with claim_session_factory() as db:
         job = await claim_next_export(db, WORKER_ID)
         job_id = job.id if job else None
@@ -234,10 +266,13 @@ async def run_one(claim_session_factory=None, work_session_factory=None) -> bool
         return False
 
     hb = asyncio.create_task(_heartbeat_export(job_id, work_session_factory))
+    # Reset on exit: run_one calls this from the extraction lane's own task.
+    lane = _EXPORT_LANE.set(True)
     try:
         # Generation is synchronous; run it off the event loop.
         await asyncio.to_thread(run_export_job_sync, job_id)
     finally:
+        _EXPORT_LANE.reset(lane)
         hb.cancel()
     return True
 
@@ -253,17 +288,27 @@ async def _maintenance_tick() -> None:
         logger.exception("Maintenance sweep error; will retry next loop")
 
 
-async def main_loop() -> None:
-    logger.info("Worker %s started", WORKER_ID)
+async def _lane(name: str, step, *, maintenance: bool = False) -> None:
     while True:
-        await _maintenance_tick()
+        if maintenance:
+            await _maintenance_tick()
         try:
-            handled = await run_one()
+            handled = await step()
         except Exception:
-            logger.exception("Worker loop error; backing off")
+            logger.exception("Worker %s lane error; backing off", name)
             handled = False
         if not handled:
             await asyncio.sleep(POLL_INTERVAL)
+
+
+async def main_loop() -> None:
+    logger.info("Worker %s started", WORKER_ID)
+    # Each lane is its own task, so the export lane's context var stays out of
+    # the extraction lane. Maintenance rides the extraction lane, as before.
+    await asyncio.gather(
+        _lane("extraction", run_one_extraction, maintenance=True),
+        _lane("export", run_one_export),
+    )
 
 
 if __name__ == "__main__":
