@@ -245,6 +245,18 @@ def _collapse_baseline(prior_live: int, last_ok_total: int | None) -> int:
     return min(prior_live, last_ok_total)
 
 
+def _resumed_offset(done: int, counted: int) -> int:
+    """Checkpointed pages a resumed run has *not* already counted itself.
+
+    The progress bar adds ``articles_resumed`` to the run's own extracted /
+    updated / unchanged counters. A re-triggered run inherits another run's
+    checkpoint, and all of it is new to its counters; but a run resumed after a
+    pause already counted the pages it scraped before pausing, and setting
+    ``articles_resumed`` to the whole checkpoint counted them twice (RSC SaaS
+    Docs showed 8,247 / 4,992 after two resumes)."""
+    return max(0, done - counted)
+
+
 def _toc_collapsed(scrapable_total: int, baseline: int, ratio: float, min_prior: int) -> bool:
     """True when a rebuilt TOC looks catastrophically smaller than the prior
     corpus (data-loss guard). The ratio only engages once the source had a
@@ -1771,10 +1783,15 @@ class FirecrawlService:
                 "Resuming raw-HTTP content scrape for source %s: %d done, %d pending",
                 source_id, completed, len(pending),
             )
+            counted = (await db.execute(
+                select(ExtractionRun.articles_extracted + ExtractionRun.articles_updated
+                       + ExtractionRun.articles_unchanged)
+                .where(ExtractionRun.id == run_id)
+            )).scalar_one()
             await db.execute(
                 update(ExtractionRun)
                 .where(ExtractionRun.id == run_id)
-                .values(articles_resumed=completed)
+                .values(articles_resumed=_resumed_offset(completed, counted or 0))
             )
             await db.commit()
 
@@ -3123,7 +3140,11 @@ class FirecrawlService:
                         source.base_url, resumed, len(pending),
                     )
                     # Reflect prior progress in the run's counter for an accurate bar.
-                    run.articles_resumed = resumed
+                    run.articles_resumed = _resumed_offset(
+                        resumed,
+                        (run.articles_extracted or 0) + (run.articles_updated or 0)
+                        + (run.articles_unchanged or 0),
+                    )
                     await db.commit()
                 for i in range(0, len(pending), self.MAX_BATCH_URLS):
                     # Cooperative cancel/pause: the API sets run.control; we
