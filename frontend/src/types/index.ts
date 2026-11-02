@@ -797,6 +797,25 @@ export interface ExportBatch {
   sources: BatchSourceStatus[];
 }
 
+/** A row of the Exports page's batch list (GET /export/batches). */
+export interface ExportBatchSummary {
+  batch_id: string;
+  label: string;
+  created_at: string;
+  expires_at: string | null;
+  product_count: number;
+  total: number;
+  completed: number;
+  failed: number;
+  pending: number;
+  running: number;
+  cancelled: number;
+  finished: boolean;
+  total_size_bytes: number;
+  /** At least one completed source still has its files on the server. */
+  downloadable: boolean;
+}
+
 export interface ProductExportCreated {
   batch_id: string;
   total: number;

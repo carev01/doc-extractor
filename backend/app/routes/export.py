@@ -25,7 +25,9 @@ from app.models.source import DocumentationSource
 from app.models.vendor import Vendor
 from app.schemas.export import (
     BatchSourceStatus,
+    ExportBatchListResponse,
     ExportBatchResponse,
+    ExportBatchSummary,
     ExportJobCreatedResponse,
     ExportJobStatusResponse,
     ExportRequest,
@@ -625,6 +627,96 @@ async def _load_batch(db: AsyncSession, batch_id: uuid.UUID, principal: Principa
     for pid in dict.fromkeys(r[2] for r in rows):
         await authorize_product(db, principal, pid, write=False)
     return rows
+
+
+# How many batches the Exports page lists, newest first.
+BATCH_LIST_LIMIT = 20
+
+
+@router.get("/batches", response_model=ExportBatchListResponse)
+async def list_export_batches(
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """Recent product/vendor export batches, newest first, for the Exports page.
+
+    The batch id used to live only in the dialog that queued the batch, so
+    closing it left the combined zip with no way back. A batch is listed only
+    when every vendor it touches is readable (the rule ``_load_batch`` applies),
+    and a finished batch with nothing left to download — every completed
+    source purged by retention, or none completed — is left out.
+    """
+    from datetime import timedelta
+
+    visible = principal.visible_vendor_ids()
+    if visible is not None and not visible:
+        return ExportBatchListResponse(batches=[])
+
+    recent = (
+        select(ExportJob.batch_id)
+        .join(DocumentationSource, DocumentationSource.id == ExportJob.source_id)
+        .join(Product, Product.id == DocumentationSource.product_id)
+        .where(ExportJob.batch_id.isnot(None))
+        .group_by(ExportJob.batch_id)
+        .order_by(func.max(ExportJob.created_at).desc())
+        .limit(BATCH_LIST_LIMIT * 3)
+    )
+    if visible is not None:
+        recent = recent.where(Product.vendor_id.in_(visible))
+    batch_ids = list((await db.execute(recent)).scalars())
+    if not batch_ids:
+        return ExportBatchListResponse(batches=[])
+
+    rows = (
+        await db.execute(
+            select(ExportJob, Product.id, Product.vendor_id)
+            .join(DocumentationSource, DocumentationSource.id == ExportJob.source_id)
+            .join(Product, Product.id == DocumentationSource.product_id)
+            .where(ExportJob.batch_id.in_(batch_ids))
+        )
+    ).all()
+    by_batch: dict[uuid.UUID, list] = {bid: [] for bid in batch_ids}
+    for job, product_id, vendor_id in rows:
+        by_batch[job.batch_id].append((job, product_id, vendor_id))
+
+    retention_days = settings.export_retention_days
+    batches: list[ExportBatchSummary] = []
+    for bid in batch_ids:
+        members = by_batch[bid]
+        if not members or not all(principal.can_read_vendor(v) for _j, _p, v in members):
+            continue
+        jobs = [j for j, _p, _v in members]
+        counts = {s.value: 0 for s in ExportStatus}
+        for job in jobs:
+            counts[job.status.value] += 1
+        finished = counts["pending"] + counts["running"] == 0
+        downloadable = any(
+            job.status == ExportStatus.COMPLETED and job.export_id
+            and os.path.isdir(os.path.join(export_engine.export_dir, str(job.export_id)))
+            for job in jobs
+        )
+        if finished and not downloadable:
+            continue
+        created = min(j.created_at for j in jobs)
+        batches.append(ExportBatchSummary(
+            batch_id=bid,
+            label=jobs[0].batch_label or "",
+            created_at=created,
+            # The oldest source is purged first, after which the combined zip
+            # would be missing it.
+            expires_at=created + timedelta(days=retention_days) if retention_days > 0 else None,
+            product_count=len({p for _j, p, _v in members}),
+            total=len(jobs),
+            completed=counts["completed"], failed=counts["failed"],
+            pending=counts["pending"], running=counts["running"],
+            cancelled=counts["cancelled"],
+            finished=finished,
+            total_size_bytes=sum(int((j.result or {}).get("total_size_bytes") or 0) for j in jobs),
+            downloadable=downloadable,
+        ))
+        if len(batches) == BATCH_LIST_LIMIT:
+            break
+    return ExportBatchListResponse(batches=batches)
 
 
 @router.get("/batches/{batch_id}", response_model=ExportBatchResponse)
