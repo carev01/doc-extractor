@@ -246,8 +246,14 @@ def _collapse_baseline(prior_live: int, last_ok_total: int | None) -> int:
 
 def _toc_collapsed(scrapable_total: int, baseline: int, ratio: float, min_prior: int) -> bool:
     """True when a rebuilt TOC looks catastrophically smaller than the prior
-    corpus (data-loss guard). Only engages once the source had a meaningful prior
-    corpus (``baseline >= min_prior``); tiny/new sources never trip it."""
+    corpus (data-loss guard). The ratio only engages once the source had a
+    meaningful prior corpus (``baseline >= min_prior``), so a small source may
+    shrink freely — except to a single page or none, which is the synthetic
+    "Index" fallback of a discovery that found nothing: the MyHub Administrator
+    Guide (11 articles) "completed" that way behind an expired session and had
+    its whole guide soft-removed."""
+    if scrapable_total <= 1 < baseline:
+        return True
     if baseline < min_prior:
         return False
     return scrapable_total < baseline * ratio
@@ -2036,6 +2042,19 @@ class FirecrawlService:
                 except Exception as exc:
                     logger.warning("Individual retry failed for %s: %s", url, exc)
 
+    async def _root_is_auth_wall(
+        self, url: str, auth_cookies: list, user_agent: str | None,
+    ) -> bool:
+        """Whether *url*, fetched with the session cookies, is an auth wall. A
+        fetch error says nothing about the session, so it reads as False and the
+        TOC-collapse guard decides."""
+        try:
+            raw = await self.fetch_raw(url, cookies=auth_cookies, user_agent=user_agent)
+        except Exception as exc:
+            logger.warning("Auth-wall probe of %s failed: %s", url, exc)
+            return False
+        return bool(raw) and is_auth_wall(raw, final_url=url)
+
     async def _handle_auth_wall(
         self, db: AsyncSession, source, run_pk: uuid.UUID, exc: Exception,
     ) -> ExtractionRun:
@@ -2844,6 +2863,22 @@ class FirecrawlService:
                     ),
                 ),
             )
+            # An empty TOC on an authenticated source is how an expired session
+            # looks from here (AvePoint serves a 200 SSO redirect shell, which
+            # parses as a page with no nav). Probe the root once and treat a wall
+            # as a mid-run expiry — re-login + requeue for a job run, else pause —
+            # before anything is persisted, instead of a synthetic Index page.
+            if not toc_objs and auth_cookies and await self._root_is_auth_wall(
+                source.base_url, auth_cookies, getattr(profile, "raw_user_agent", None),
+            ):
+                return await self._handle_auth_wall(
+                    db, source, run_pk,
+                    NeedsLoginError(
+                        f"Auth wall at {source.base_url} during TOC discovery; "
+                        "session may have expired"
+                    ),
+                )
+
             toc_entries = [
                 {
                     "title": e.title, "url": e.url, "level": e.level,

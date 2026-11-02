@@ -32,6 +32,12 @@ async def ensure_session(db: AsyncSession, realm: AuthRealm) -> dict:
 
 
 JIT_LOGIN_HORIZON = timedelta(hours=1)
+# Within one firing, a run may log in again only once the session the firing's
+# own (successful) login bought is dead or about to be — and not sooner than the
+# floor after that login, so a session that reads as expired right away (odd
+# cookie expiries) can't become one login per sibling run.
+FIRING_RELOGIN_MARGIN = timedelta(minutes=5)
+FIRING_RELOGIN_FLOOR = timedelta(minutes=30)
 
 
 async def session_for_run(db: AsyncSession, realm: AuthRealm, *, run: ExtractionRun,
@@ -44,15 +50,20 @@ async def session_for_run(db: AsyncSession, realm: AuthRealm, *, run: Extraction
     Bounded on purpose: only runs with a ``job_run_id`` (manual/bulk/force runs
     behave exactly as ``ensure_session``), only realms with stored credentials,
     never a LOGIN_FAILED realm (retrying bad credentials on every firing risks
-    an IdP lockout — a human must fix them), and at most once per realm per
+    an IdP lockout — a human must fix them), and normally once per realm per
     JobRun: a login stamped after the JobRun was created already serves every
-    sibling run of that firing."""
+    sibling run of that firing. The exception is a firing that outlives its own
+    session (a Tier 1 firing runs ~9h; AvePoint's session lasts 2h): once the
+    session that firing's last *successful* login bought has expired, a run
+    logs in again (``_firing_session_spent``). A failed attempt still ends it
+    for the firing."""
     if run.job_run_id is not None:
         if realm.status == RealmStatus.LOGIN_FAILED:
             raise NeedsLoginError(
                 f"Realm {realm.id} scripted login failed earlier; fix its credentials")
         if realm.username and realm.password and _session_stale(realm, horizon):
-            if await _logged_in_this_firing(db, realm, run):
+            if (await _logged_in_this_firing(db, realm, run)
+                    and not _firing_session_spent(realm)):
                 # Already spent this firing's login (or its attempt — a
                 # Browserless outage leaves the realm EXPIRED). Never defer to
                 # ensure_session here: it logs in again for any non-ACTIVE
@@ -74,6 +85,23 @@ def _session_stale(realm: AuthRealm, horizon: timedelta) -> bool:
         or not realm.state_snapshot
         or (expires is not None and expires <= datetime.now(timezone.utc) + horizon)
     )
+
+
+def _firing_session_spent(realm: AuthRealm) -> bool:
+    """Whether this firing's last login *succeeded* and the session it bought is
+    now dead (or within ``FIRING_RELOGIN_MARGIN`` of it), at least
+    ``FIRING_RELOGIN_FLOOR`` after that login. False after a failed attempt
+    (``last_login_attempt_at`` newer than ``last_login_at``)."""
+    if realm.status != RealmStatus.ACTIVE or realm.last_login_at is None:
+        return False
+    if (realm.last_login_attempt_at is not None
+            and realm.last_login_attempt_at > realm.last_login_at):
+        return False
+    now = datetime.now(timezone.utc)
+    if now - realm.last_login_at < FIRING_RELOGIN_FLOOR:
+        return False
+    expires = session_expires_at(realm)
+    return expires is not None and expires <= now + FIRING_RELOGIN_MARGIN
 
 
 async def _logged_in_this_firing(db: AsyncSession, realm: AuthRealm,

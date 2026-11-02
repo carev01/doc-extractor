@@ -30,18 +30,28 @@ def test_no_collapse_for_healthy_or_small_shrink():
     assert _toc_collapsed(10, 20, 0.5, 20) is False
 
 
-def test_small_or_new_sources_never_trip():
-    # Below min_prior: a small/new source can legitimately have few pages.
-    assert _toc_collapsed(0, 19, 0.5, 20) is False
-    assert _toc_collapsed(1, 5, 0.5, 20) is False
+def test_small_or_new_sources_tolerate_a_shrink():
+    # Below min_prior: a small/new source can legitimately lose pages.
+    assert _toc_collapsed(2, 19, 0.5, 20) is False
+    assert _toc_collapsed(3, 11, 0.5, 20) is False
     assert _toc_collapsed(0, 0, 0.5, 20) is False
+    assert _toc_collapsed(1, 1, 0.5, 20) is False
+
+
+def test_small_source_collapsing_to_one_page_trips():
+    # A TOC of one page (or none) is the synthetic-Index signature of a failed
+    # discovery, at any size: the MyHub Administrator Guide (11 articles, below
+    # min_prior) "completed" with its Index page on 2026-11-01 and lost them all.
+    assert _toc_collapsed(1, 11, 0.5, 20) is True
+    assert _toc_collapsed(0, 19, 0.5, 20) is True
+    assert _toc_collapsed(1, 2, 0.5, 20) is True
 
 
 def test_ratio_and_min_prior_are_configurable():
     # Stricter ratio (0.9) trips on a 20% shrink.
     assert _toc_collapsed(80, 100, 0.9, 20) is True
     # Higher min_prior spares a mid-size source.
-    assert _toc_collapsed(1, 50, 0.5, 100) is False
+    assert _toc_collapsed(20, 50, 0.5, 100) is False
 
 
 def test_baseline_prefers_the_last_successful_run_over_a_duplicated_corpus():
