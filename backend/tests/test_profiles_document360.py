@@ -10,6 +10,7 @@ Hermetic: a FakeScraper serves the committed fixture (a compact page mirroring
 the real serverApp-state schema); no network.
 """
 
+import json
 import os
 import sys
 
@@ -22,6 +23,7 @@ from app.services.profiles.detector import detect_platform
 from app.services.profiles.document360 import (
     Document360Profile,
     parse_document360_nav,
+    parse_document360_tree,
 )
 
 FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures", "platforms")
@@ -137,6 +139,103 @@ async def test_build_toc_via_scraper():
     # 5 scrapable articles; 2 url-less headers (a pure folder + the ct-2 index).
     assert sum(1 for e in toc if e.is_article) == 5
     assert sum(1 for e in toc if not e.is_article) == 2
+
+
+# ── Category-tree API (Document360 site build 2026-11-01 onwards) ────────────
+#
+# The new reader app no longer embeds the nav in TransferState: the sidebar is
+# fetched from /api/document/get-category-tree. The only tree left in the page
+# state is the current page's own article index (ARTICLE_BODY_TRANSFER_KEY), and
+# taking that for the nav collapsed Securiti's 2,535-page TOC to 19 entries.
+
+API = "https://helpcenter.securiti.ai/api/document/get-category-tree?x-versiontype=Knowledgebase"
+
+
+def _state_page(state: dict) -> str:
+    return ('<html><head><!-- Document360 --></head><body>'
+            '<script id="serverApp-state" type="application/json">'
+            + json.dumps(state) + '</script></body></html>')
+
+
+def _article_index_page(project: dict | None = None) -> str:
+    # A new-build root page: project info plus the landing article's index of its
+    # sibling articles, which carries categoryType like real nav nodes do.
+    return _state_page({
+        "project-primary-data-key": {"project": project or {"hostingPath": "docs"}},
+        "ARTICLE_BODY_TRANSFER_KEY": {"result": {"articleData": {"articleIndex": {
+            "children": [
+                {"title": "What's New in 1.152", "slug": "what-s-new-in-1-152",
+                 "categoryType": 0, "order": 1, "children": []},
+                {"title": "What's New in 1.151", "slug": "what-s-new-in-1-151",
+                 "categoryType": 0, "order": 2, "children": []},
+            ]}}}},
+    })
+
+
+def _tree_response() -> dict:
+    # Shape of GET /api/document/get-category-tree: documentationType 0 is a
+    # category, 1 an article.
+    return {"success": True, "result": {"order": 0, "documentationType": 0, "children": [
+        {"title": "Getting Started", "slug": "getting-started", "categoryType": 1,
+         "documentationType": 0, "order": 1, "isHidden": False, "children": [
+            {"title": "Quickstart", "slug": "quickstart", "categoryType": 0,
+             "documentationType": 1, "order": 1, "isHidden": False, "children": []},
+            {"title": "Draft", "slug": "draft", "categoryType": 0,
+             "documentationType": 1, "order": 2, "isHidden": True, "children": []},
+        ]},
+        {"title": "What's New", "slug": "whats-new", "categoryType": 2,
+         "documentationType": 0, "order": 2, "isHidden": False, "children": [
+            {"title": "What's New in 1.152", "slug": "what-s-new-in-1-152",
+             "categoryType": 0, "documentationType": 1, "order": 1,
+             "isHidden": False, "children": []},
+        ]},
+    ]}}
+
+
+def test_parse_tree_response():
+    toc = parse_document360_tree(_tree_response(), ROOT)
+    assert [(e.level, e.title, e.url) for e in toc] == [
+        (0, "Getting Started", "https://helpcenter.securiti.ai/docs/getting-started"),
+        (1, "Quickstart", "https://helpcenter.securiti.ai/docs/quickstart"),
+        (0, "What's New", None),
+        (1, "What's New in 1.152", "https://helpcenter.securiti.ai/docs/what-s-new-in-1-152"),
+    ]
+
+
+def test_embedded_article_index_is_not_the_nav():
+    # The landing article's sibling list must never pass for the site's nav.
+    assert parse_document360_nav(_article_index_page(), ROOT) == []
+
+
+@pytest.mark.asyncio
+async def test_build_toc_reads_the_category_tree_api():
+    scraper = FakeScraper(html_by_url={}, raw_by_url={
+        ROOT: _article_index_page(), API: json.dumps(_tree_response())})
+    toc = await Document360Profile().build_toc(ROOT, scraper)
+    assert [e.title for e in toc] == [
+        "Getting Started", "Quickstart", "What's New", "What's New in 1.152"]
+
+
+@pytest.mark.asyncio
+async def test_build_toc_uses_the_projects_site_api_path():
+    root_html = _article_index_page({"hostingPath": "docs", "siteApiPath": "kb-api"})
+    api = "https://helpcenter.securiti.ai/kb-api/document/get-category-tree?x-versiontype=Knowledgebase"
+    scraper = FakeScraper(html_by_url={}, raw_by_url={
+        ROOT: root_html, api: json.dumps(_tree_response())})
+    toc = await Document360Profile().build_toc(ROOT, scraper)
+    assert len(toc) == 4
+
+
+@pytest.mark.asyncio
+async def test_build_toc_falls_back_to_embedded_nav_when_api_is_unusable():
+    # Older builds still embed the nav; an API error or a non-tree answer (e.g. a
+    # login page) must not hide it.
+    for api_body in (None, "<html>Login</html>", json.dumps({"success": False})):
+        raw = {ROOT: _fixture()}
+        if api_body is not None:
+            raw[API] = api_body
+        toc = await Document360Profile().build_toc(ROOT, FakeScraper(html_by_url={}, raw_by_url=raw))
+        assert len(toc) == 7
 
 
 def test_backoff_attributes():

@@ -1,14 +1,21 @@
 """Document360 knowledge-base profile.
 
 Document360 sites (e.g. Securiti's ``helpcenter.securiti.ai/docs``) are Angular
-single-page apps, but every page is server-side rendered and embeds the whole
-navigation tree as Angular TransferState JSON in a
-``<script id="serverApp-state" type="application/json">`` tag. We build the
-ordered TOC from that tree (no per-page crawl) and fetch each article body over
-the fast raw-HTTP path, scoping to the rendered ``#articleContent`` container.
+single-page apps whose article pages are server-side rendered. We build the
+ordered TOC from the site's navigation tree (no per-page crawl) and fetch each
+article body over the fast raw-HTTP path, scoping to the rendered
+``#articleContent`` container.
 
-TransferState shape (under ``…result.categories``): a tree of nodes linked by a
-nested ``children`` array, each node carrying::
+The tree comes from the reader app's own sidebar call,
+``GET /<siteApiPath>/document/get-category-tree`` (same session cookies). Older
+reader builds instead embedded it as Angular TransferState JSON in a
+``<script id="serverApp-state" type="application/json">`` tag, which stays the
+fallback. The site build of 2026-11-01 stopped embedding it: the only tree left
+in the state was the landing article's own index of its siblings, and taking
+that for the nav collapsed Securiti's 2,535-page TOC to 19 entries.
+
+Tree shape (the API's ``result``, or ``…result.categories`` in TransferState): a
+tree of nodes linked by a nested ``children`` array, each node carrying::
 
     id, title, slug, order, categoryType, articleType, isHidden, children
 
@@ -36,6 +43,13 @@ from app.services.profiles.base import TocEntry
 # Angular serialises TransferState with a small set of short HTML entities so the
 # JSON survives inside an HTML <script>. Reverse them before json.loads.
 _ANGULAR_ENTITIES = {"&a;": "&", "&q;": '"', "&s;": "'", "&l;": "<", "&g;": ">"}
+
+# The reader app's sidebar endpoint, relative to the site API path.
+_TREE_PATH = "document/get-category-tree?x-versiontype=Knowledgebase"
+
+# State subtrees that look like nav (children carrying categoryType) but are only
+# the current article's sibling index — never the site's navigation.
+_NOT_NAV_KEYS = {"articleIndex"}
 
 _STATE_RE = re.compile(
     r'<script id="serverApp-state"[^>]*>(.*?)</script>', re.S | re.I
@@ -87,8 +101,9 @@ def _find_nav_root(state: dict) -> dict | None:
                 n = sum(_node_count(c) for c in ch if isinstance(c, dict))
                 if n > best_n:
                     best, best_n = o, n
-            for v in o.values():
-                walk(v)
+            for k, v in o.items():
+                if k not in _NOT_NAV_KEYS:
+                    walk(v)
         elif isinstance(o, list):
             for v in o:
                 walk(v)
@@ -104,7 +119,13 @@ def parse_document360_nav(html: str, root_url: str) -> list[TocEntry]:
     state = _extract_state(html)
     if not state:
         return []
-    nav = _find_nav_root(state)
+    return parse_document360_tree(state, root_url)
+
+
+def parse_document360_tree(data, root_url: str) -> list[TocEntry]:
+    """Build the ordered TOC from any JSON holding the nav tree — the
+    get-category-tree response or a page's TransferState."""
+    nav = _find_nav_root(data) if isinstance(data, (dict, list)) else None
     if not nav:
         return []
 
@@ -150,6 +171,20 @@ def parse_document360_nav(html: str, root_url: str) -> list[TocEntry]:
     return out
 
 
+def _tree_api_url(root_url: str, state: dict | None) -> str:
+    """The get-category-tree URL. The reader app rewrites ``/api`` to the
+    project's ``siteApiPath`` on a custom domain (default ``api``)."""
+    api = "api"
+    if state:
+        for key in ("project-primary-data-key", "project-info-key"):
+            project = (state.get(key) or {}).get("project") or {}
+            if project.get("siteApiPath"):
+                api = str(project["siteApiPath"]).strip("/")
+                break
+    p = urlparse(root_url)
+    return f"{p.scheme}://{p.netloc}/{api}/{_TREE_PATH}"
+
+
 class Document360Profile:
     name = "document360"
     # Article bodies are server-rendered under #articleContent; the raw-HTTP path
@@ -184,7 +219,14 @@ class Document360Profile:
             html = await scraper.get_raw(root_url)
         except Exception:
             return []
-        return parse_document360_nav(html, root_url)
+        try:
+            tree = json.loads(await scraper.get_raw(
+                _tree_api_url(root_url, _extract_state(html))))
+        except Exception:
+            tree = None
+        toc = parse_document360_tree(tree, root_url) if tree else []
+        # Older reader builds have no tree endpoint but embed the nav in the page.
+        return toc or parse_document360_nav(html, root_url)
 
     def extract_content_html(self, raw: str, url: str) -> str | None:
         """Scope a fetched article page to its rendered body (#articleContent),
