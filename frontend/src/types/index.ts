@@ -178,6 +178,8 @@ export interface ExtractionRun {
   current_phase:
     | "toc_discovery"
     | "content_scraping"
+    | "toc_rebuild"
+    | "image_enrich"
     | "pdf_acquire"
     | "pdf_convert"
     | "pdf_split"
@@ -209,6 +211,9 @@ export interface ExportJobItem {
   product_name: string;
   vendor_name: string;
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  /** Pending only because its source is being extracted right now; the export
+   *  starts when that run ends. */
+  waiting_for_extraction: boolean;
   format: "markdown" | "pdf";
   attempts: number;
   export_id: string | null;

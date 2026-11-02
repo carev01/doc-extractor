@@ -29,6 +29,7 @@ const STATUS_COLORS: Record<string, string> = {
   paused: "#5a7fa3",
   warning: "#c8923d",
   "needs attention": "#c8923d",
+  "waiting for extraction": "#6b7a90",
 };
 
 function statusBadge(status: string) {
@@ -373,7 +374,7 @@ export default function JobsView() {
                 <div className="item-info">
                   <strong>{[j.vendor_name, j.product_name, j.source_name].join(" › ")}</strong>
                   <div className="item-meta">
-                    {statusBadge(j.status)}
+                    {statusBadge(j.waiting_for_extraction ? "waiting for extraction" : j.status)}
                     <span className="sub">{j.format}</span>
                     <span className="sub">
                       {j.created_at ? new Date(j.created_at).toLocaleString() : "—"}

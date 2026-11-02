@@ -38,7 +38,7 @@ from app.schemas.export import (
 )
 from app.services.export_retention import BATCH_DIR_PREFIX
 from app.services.exporter import export_engine
-from app.services.queue import enqueue_export, enqueue_export_batch
+from app.services.queue import enqueue_export, enqueue_export_batch, sources_extracting
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
@@ -94,6 +94,11 @@ async def list_export_jobs(
     if visible is not None:
         query = query.where(Product.vendor_id.in_(visible))
     rows = (await db.execute(query.limit(limit))).all()
+    # A pending export whose source is extracting right now isn't stuck: the
+    # export lane holds it until that run ends (queue.claim_next_export).
+    extracting = await sources_extracting(
+        db, [j.source_id for j, *_ in rows if j.status == ExportStatus.PENDING]
+    )
     return {
         "jobs": [
             {
@@ -103,6 +108,9 @@ async def list_export_jobs(
                 "product_name": product_name,
                 "vendor_name": vendor_name,
                 "status": j.status.value,
+                "waiting_for_extraction": (
+                    j.status == ExportStatus.PENDING and j.source_id in extracting
+                ),
                 "format": (j.request or {}).get("format", "markdown"),
                 "attempts": j.attempts,
                 "export_id": j.export_id,

@@ -1,6 +1,7 @@
 """Firecrawl integration service — full-site extraction with TOC preservation."""
 
 import asyncio
+import time
 import hashlib
 import json
 import base64
@@ -242,6 +243,18 @@ def _collapse_baseline(prior_live: int, last_ok_total: int | None) -> int:
     if last_ok_total is None or last_ok_total <= 0:
         return prior_live
     return min(prior_live, last_ok_total)
+
+
+def _resumed_offset(done: int, counted: int) -> int:
+    """Checkpointed pages a resumed run has *not* already counted itself.
+
+    The progress bar adds ``articles_resumed`` to the run's own extracted /
+    updated / unchanged counters. A re-triggered run inherits another run's
+    checkpoint, and all of it is new to its counters; but a run resumed after a
+    pause already counted the pages it scraped before pausing, and setting
+    ``articles_resumed`` to the whole checkpoint counted them twice (RSC SaaS
+    Docs showed 8,247 / 4,992 after two resumes)."""
+    return max(0, done - counted)
 
 
 def _toc_collapsed(scrapable_total: int, baseline: int, ratio: float, min_prior: int) -> bool:
@@ -1770,10 +1783,15 @@ class FirecrawlService:
                 "Resuming raw-HTTP content scrape for source %s: %d done, %d pending",
                 source_id, completed, len(pending),
             )
+            counted = (await db.execute(
+                select(ExtractionRun.articles_extracted + ExtractionRun.articles_updated
+                       + ExtractionRun.articles_unchanged)
+                .where(ExtractionRun.id == run_id)
+            )).scalar_one()
             await db.execute(
                 update(ExtractionRun)
                 .where(ExtractionRun.id == run_id)
-                .values(articles_resumed=completed)
+                .values(articles_resumed=_resumed_offset(completed, counted or 0))
             )
             await db.commit()
 
@@ -3024,12 +3042,26 @@ class FirecrawlService:
                     )).all()
                     fragments = [(u, f) for (u, f) in rows if f]
                     if fragments:
+                        # Its own phase, committed before the thread starts: the
+                        # rebuild runs for minutes in silence (Rubrik RSC: 149 MB
+                        # of fragments) and read as a hung "content_scraping".
+                        run.current_phase = "toc_rebuild"
+                        await db.commit()
+                        logger.info(
+                            "Rebuilding TOC hierarchy for %s from %d page fragments",
+                            source.name, len(fragments),
+                        )
+                        rebuild_started = time.monotonic()
                         try:
                             # Stitching ~100s of MB of fragments is CPU-heavy;
                             # run it off the event loop so it doesn't block the
                             # worker heartbeat.
                             rebuilt = await asyncio.to_thread(
                                 profile.rebuild_toc, fragments, source.base_url
+                            )
+                            logger.info(
+                                "TOC rebuild for %s took %.0fs",
+                                source.name, time.monotonic() - rebuild_started,
                             )
                             if rebuilt:
                                 # Superset: add flat entries for scraped articles not
@@ -3108,7 +3140,11 @@ class FirecrawlService:
                         source.base_url, resumed, len(pending),
                     )
                     # Reflect prior progress in the run's counter for an accurate bar.
-                    run.articles_resumed = resumed
+                    run.articles_resumed = _resumed_offset(
+                        resumed,
+                        (run.articles_extracted or 0) + (run.articles_updated or 0)
+                        + (run.articles_unchanged or 0),
+                    )
                     await db.commit()
                 for i in range(0, len(pending), self.MAX_BATCH_URLS):
                     # Cooperative cancel/pause: the API sets run.control; we

@@ -3,11 +3,12 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.sql import any_of
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.export_job import ExportJob, ExportStatus
 from app.models.source import DocumentationSource, SourceStatus
@@ -70,6 +71,9 @@ async def claim_next_run(
 ) -> ExtractionRun | None:
     """Atomically claim the oldest *ready* pending run, or None if none is ready.
 
+    A run whose source is being exported right now is skipped (not stalled
+    behind): it is claimable again once that export ends.
+
     A run requeued with backoff (next_attempt_at in the future) is skipped until
     its delay elapses, so a transiently-failing source doesn't block the queue.
     Ready runs are ordered by coalesce(next_attempt_at, created_at): fresh runs
@@ -84,6 +88,12 @@ async def claim_next_run(
             or_(
                 ExtractionRun.next_attempt_at.is_(None),
                 ExtractionRun.next_attempt_at <= now,
+            ),
+            # Exports run in their own lane: never start rewriting a source's
+            # articles while it is being exported (see claim_next_export).
+            ~exists().where(
+                ExportJob.source_id == ExtractionRun.source_id,
+                ExportJob.status == ExportStatus.RUNNING,
             ),
         )
         .order_by(func.coalesce(ExtractionRun.next_attempt_at, ExtractionRun.created_at))
@@ -182,10 +192,24 @@ async def enqueue_export_batch(
 async def claim_next_export(
     db: AsyncSession, worker_id: str
 ) -> ExportJob | None:
-    """Atomically claim the oldest pending export job, or None if empty."""
+    """Atomically claim the oldest claimable pending export job, or None.
+
+    Exports have their own worker lane and run alongside extractions; the only
+    thing that holds one back is its own source being extracted *right now* (a
+    RUNNING run), so it never mixes pre- and post-run articles. It stays PENDING
+    and is claimed once that run ends. A PENDING run doesn't block it — a job
+    firing queues every source at once, which would hold exports for hours —
+    and claim_next_run won't start one mid-export; nor does a PAUSED run, whose
+    articles aren't changing (and which may wait days for a fresh cookie)."""
     result = await db.execute(
         select(ExportJob)
-        .where(ExportJob.status == ExportStatus.PENDING)
+        .where(
+            ExportJob.status == ExportStatus.PENDING,
+            ~exists().where(
+                ExtractionRun.source_id == ExportJob.source_id,
+                ExtractionRun.status == RunStatus.RUNNING,
+            ),
+        )
         .order_by(ExportJob.created_at)
         .with_for_update(skip_locked=True)
         .limit(1)
@@ -203,6 +227,24 @@ async def claim_next_export(
     await db.commit()
     await db.refresh(job)
     return job
+
+
+async def sources_extracting(
+    db: AsyncSession, source_ids: "list[uuid.UUID]"
+) -> set[uuid.UUID]:
+    """Which of *source_ids* have a RUNNING extraction — i.e. whose pending
+    exports are waiting on it (see claim_next_export)."""
+    if not source_ids:
+        return set()
+    rows = await db.execute(
+        select(ExtractionRun.source_id)
+        .where(
+            ExtractionRun.status == RunStatus.RUNNING,
+            any_of(ExtractionRun.source_id, set(source_ids)),
+        )
+        .distinct()
+    )
+    return set(rows.scalars().all())
 
 
 async def reap_stale_exports(
