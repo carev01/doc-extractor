@@ -107,19 +107,53 @@ _AUTH_WALL_MARKERS = (
 )
 
 
+# A client-side redirect shell: a meta refresh or a data-redirect-url attribute.
+# Only read on a short raw page (_REDIRECT_SHELL_LIMIT), where it *is* the page.
+_REDIRECT_TARGET_RE = re.compile(
+    r"""(?:http-equiv=["']?refresh["']?[^>]*?content=["'][^"']*?url=['"]?([^"'>\s]+)"""
+    r"""|data-redirect-url=["']([^"']+)["'])""",
+    re.IGNORECASE,
+)
+_REDIRECT_SHELL_LIMIT = 2000
+# Auth path fragments for a redirect *target* — too broad for an arbitrary final
+# URL (a doc page may live at /sso/...), specific enough for where a 404-byte
+# "Redirecting…" shell sends the browser.
+_SSO_PATH_RE = re.compile(r"(?:^|[/_.-])(?:sso|auth|login|signin)(?:$|[/_.?-])")
+
+
+def _is_login_url(url: str) -> bool:
+    low_url = url.lower()
+    netloc = urlparse(low_url).netloc
+    return (any(m in netloc for m in _LOGIN_HOST_MARKERS)
+            or any(m in low_url for m in _LOGIN_URL_MARKERS))
+
+
+def _redirects_to_login(text: str) -> bool:
+    """A short raw page whose only job is to send the browser to an auth endpoint.
+
+    AvePoint Learn answers a request carrying an *expired* session cookie with a
+    200, 404 bytes, and a meta refresh to ``/api/auth/aos-sso/…`` — the status,
+    the URL and the visible text all look fine, so only the target gives it away
+    (no cookie at all gets the public page, which is why it went unnoticed)."""
+    if len(text) > _REDIRECT_SHELL_LIMIT:
+        return False
+    for m in _REDIRECT_TARGET_RE.finditer(text):
+        target = m.group(1) or m.group(2)
+        if _is_login_url(target) or _SSO_PATH_RE.search(urlparse(target.lower()).path):
+            return True
+    return False
+
+
 def is_auth_wall(text: str, final_url: str | None = None,
                  login_domain: str | None = None) -> bool:
     """Return True if a scrape was bounced to a login wall / IdP rather than
     returning documentation content."""
-    if final_url:
-        low_url = final_url.lower()
-        netloc = urlparse(low_url).netloc
-        if any(m in netloc for m in _LOGIN_HOST_MARKERS):
-            return True
-        if any(m in low_url for m in _LOGIN_URL_MARKERS):
-            return True
+    if final_url and _is_login_url(final_url):
+        return True
     if text:
         low = text.lower()
         if len(text.strip()) <= _SHORT_PAGE_LIMIT and any(m in low for m in _AUTH_WALL_MARKERS):
+            return True
+        if _redirects_to_login(text):
             return True
     return False

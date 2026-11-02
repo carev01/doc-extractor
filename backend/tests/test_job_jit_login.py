@@ -682,3 +682,62 @@ async def test_raw_http_pause_does_not_hold_run_lock_while_notifying(factory, fa
             await firecrawl_mod._pause_for_expiry(db, src, realm, run.id)
         assert ei.value.action == "pause"
     assert probe.results == ["free"]
+
+
+# --- A firing outlives its own session -----------------------------------------
+
+async def test_firing_relogs_in_once_its_own_session_has_expired(factory, fake_login):
+    """A long job firing outlives the session its first login bought (AvePoint:
+    logged in 02:07, session_token gone 04:07, runs until 10:54). Handing later
+    runs the dead snapshot made every one of them read SSO redirect shells, so a
+    *successful* earlier login no longer blocks a new one once it has expired."""
+    async with factory() as db:
+        realm, src, jr = await _setup(db, expires_in=timedelta(minutes=-1))
+        jr.created_at -= timedelta(hours=3)
+        # This firing's own login, two hours ago — well past the rate limit.
+        realm.last_login_at = jr.created_at + timedelta(hours=1)
+        realm.last_login_attempt_at = realm.last_login_at
+        await db.flush()
+        run = await _run(db, src, job_run=jr)
+        state = await realm_manager.session_for_run(db, realm, run=run)
+        assert fake_login.calls == 1
+        assert state == realm.state_snapshot
+
+
+async def test_firing_does_not_relogin_while_its_session_still_works(factory, fake_login):
+    async with factory() as db:
+        realm, src, jr = await _setup(db, expires_in=timedelta(minutes=30))
+        realm.last_login_at = jr.created_at + timedelta(minutes=1)
+        await db.flush()
+        run = await _run(db, src, job_run=jr)
+        await realm_manager.session_for_run(db, realm, run=run)
+        assert fake_login.calls == 0
+
+
+async def test_firing_relogin_is_rate_limited(factory, fake_login):
+    """A session that reads as expired straight after a login (odd cookie
+    expiries) must not turn into one login per sibling run."""
+    async with factory() as db:
+        realm, src, jr = await _setup(db, expires_in=timedelta(minutes=-1))
+        realm.last_login_at = jr.created_at + timedelta(minutes=1)
+        await db.flush()
+        run = await _run(db, src, job_run=jr)
+        state = await realm_manager.session_for_run(db, realm, run=run)
+        assert fake_login.calls == 0
+        assert state == realm.state_snapshot
+
+
+async def test_firing_never_relogs_in_after_a_failed_attempt(factory, fake_login):
+    """The attempt after the last success failed (Browserless outage → EXPIRED):
+    that firing has spent its login, whatever the session's age."""
+    async with factory() as db:
+        realm, src, jr = await _setup(db, status=RealmStatus.EXPIRED,
+                                      expires_in=timedelta(minutes=-1))
+        jr.created_at -= timedelta(hours=3)
+        realm.last_login_at = jr.created_at + timedelta(minutes=1)
+        realm.last_login_attempt_at = jr.created_at + timedelta(hours=2)
+        await db.flush()
+        run = await _run(db, src, job_run=jr)
+        with pytest.raises(NeedsLoginError):
+            await realm_manager.session_for_run(db, realm, run=run)
+        assert fake_login.calls == 0

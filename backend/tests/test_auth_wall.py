@@ -30,3 +30,40 @@ def test_doc_url_with_login_in_path_not_flagged():
     assert not is_auth_wall(
         body, final_url="https://docs.cohesity.com/guides/configure-login-policy.html"
     )
+
+
+# AvePoint Learn, answering a request that carries an *expired* session cookie:
+# 200, 404 bytes, and a meta refresh to its SSO endpoint. No cookie at all gets
+# the public page, so neither the status nor the request URL gives it away.
+AVEPOINT_SSO_SHELL = """<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Redirecting…</title></head>
+<body data-redirect-url="/api/auth/aos-sso/COMMERCIAL?returnUrl=%2Ftygraph%2Fabout-avepoint-tygraph.html">
+<script src="/js/fragment-redirect.js"></script>
+<noscript><meta http-equiv="refresh" content="0;url=/api/auth/aos-sso/COMMERCIAL?returnUrl=%2Ftygraph%2Fabout-avepoint-tygraph.html"></noscript>
+</body>
+</html>"""
+
+
+def test_redirect_shell_to_an_sso_endpoint_is_an_auth_wall():
+    assert is_auth_wall(AVEPOINT_SSO_SHELL,
+                        final_url="https://learn.avepoint.com/tygraph/about-avepoint-tygraph.html")
+
+
+def test_meta_refresh_to_an_idp_host_is_an_auth_wall():
+    html = '<html><head><meta http-equiv="refresh" content="0; URL=\'https://login.example.com/start\'"></head></html>'
+    assert is_auth_wall(html)
+
+
+def test_redirect_shell_to_an_ordinary_page_is_not_an_auth_wall():
+    html = '<html><head><meta http-equiv="refresh" content="0;url=/docs/new-location.html"></head></html>'
+    assert not is_auth_wall(html)
+
+
+def test_long_page_mentioning_an_sso_redirect_is_not_an_auth_wall():
+    # A real article that documents configuring SSO (and shows a refresh tag in
+    # a code sample) is not a wall: the shell rule is short-page only.
+    body = "<p>" + "Configure single sign-on for your tenant. " * 100 + "</p>"
+    html = f'<html><body>{body}<pre>&lt;meta http-equiv="refresh" content="0;url=/api/auth/sso"&gt;</pre>' \
+           f'<div data-redirect-url="/api/auth/aos-sso/x"></div></body></html>'
+    assert not is_auth_wall(html)
