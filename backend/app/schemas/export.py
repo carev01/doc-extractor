@@ -1,6 +1,7 @@
 """Pydantic schemas for export requests."""
 
 import uuid
+from datetime import datetime
 
 from pydantic import BaseModel
 
@@ -140,6 +141,31 @@ class ExportBatchResponse(BaseModel):
     finished: bool
     total_size_bytes: int
     sources: list[BatchSourceStatus]
+
+
+class ExportBatchSummary(BaseModel):
+    """One row of the Exports page's batch list (no per-source detail)."""
+
+    batch_id: uuid.UUID
+    label: str
+    created_at: datetime
+    expires_at: datetime | None
+    product_count: int
+    total: int
+    completed: int
+    failed: int
+    pending: int
+    running: int
+    cancelled: int
+    finished: bool
+    total_size_bytes: int
+    # At least one completed source still has its files: the combined zip can be
+    # built now (from whatever has completed, if the batch is still running).
+    downloadable: bool
+
+
+class ExportBatchListResponse(BaseModel):
+    batches: list[ExportBatchSummary]
 
 
 class ProductExportCreatedResponse(BaseModel):

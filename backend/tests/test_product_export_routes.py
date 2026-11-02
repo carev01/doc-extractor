@@ -309,3 +309,87 @@ async def test_vendor_zip_nests_sources_under_their_product(client, tmp_path, mo
     zpath.write_bytes(r.content)
     names = sorted(zipfile.ZipFile(zpath).namelist())
     assert names == ["Gadget/User_Guide/guide.md", "Widget/User_Guide/guide.md"]
+
+
+# ── Batch listing (the Exports page) ─────────────────────────────────────────
+#
+# The combined zip used to be reachable only from the pop-up that queued the
+# batch: once it was closed, nothing listed the batch id again.
+
+
+async def _complete(sf, batch_id, export_dir, *, keep_files=True, only=None):
+    from app.models.export_job import ExportStatus
+    async with sf() as s:
+        jobs = (await s.execute(
+            select(ExportJob).where(ExportJob.batch_id == uuid.UUID(batch_id))
+            .order_by(ExportJob.batch_seq)
+        )).scalars().all()
+        for job in jobs[:only]:
+            job.export_id = uuid.uuid4()
+            job.status = ExportStatus.COMPLETED
+            job.result = {"total_size_bytes": 100}
+            if keep_files:
+                d = export_dir / str(job.export_id)
+                d.mkdir()
+                (d / "guide.md").write_text("# guide")
+        await s.commit()
+
+
+async def test_batches_are_listed_after_the_dialog_is_gone(client, tmp_path, monkeypatch):
+    from app.services.exporter import export_engine
+    monkeypatch.setattr(export_engine, "export_dir", str(tmp_path))
+    c, sf = client
+    vid, _ids, _f = await _seed_vendor(sf)
+    vendor_batch = (await c.post(f"/api/export/vendor/{vid}", json={})).json()["batch_id"]
+    await _complete(sf, vendor_batch, tmp_path, only=1)
+    # A single-source export is no batch and stays out of this list.
+    async with sf() as s:
+        src = (await s.execute(select(DocumentationSource))).scalars().first()
+    await c.post("/api/export", json={"source_id": str(src.id), "format": "markdown"})
+
+    r = await c.get("/api/export/batches")
+    assert r.status_code == 200, r.text
+    [b] = r.json()["batches"]
+    assert b["batch_id"] == vendor_batch and b["label"] == "Acme"
+    assert (b["total"], b["completed"], b["pending"]) == (2, 1, 1)
+    assert b["finished"] is False and b["downloadable"] is True
+    assert b["product_count"] == 2
+    # …and the listed id is the one the existing download endpoint serves.
+    assert (await c.get(f"/api/export/batches/{b['batch_id']}/download")).status_code == 200
+
+
+async def test_batch_list_is_newest_first_and_flags_undownloadable(client, tmp_path, monkeypatch):
+    from app.services.exporter import export_engine
+    monkeypatch.setattr(export_engine, "export_dir", str(tmp_path))
+    c, sf = client
+    pid = await _seed(sf)
+    older = (await c.post(f"/api/export/product/{pid}", json={})).json()["batch_id"]
+    newer = (await c.post(f"/api/export/product/{pid}", json={})).json()["batch_id"]
+    body = (await c.get("/api/export/batches")).json()["batches"]
+    assert [b["batch_id"] for b in body] == [newer, older]
+    assert all(b["downloadable"] is False for b in body)   # nothing completed yet
+
+
+async def test_a_finished_batch_whose_files_were_purged_is_not_listed(client, tmp_path, monkeypatch):
+    from app.services.exporter import export_engine
+    monkeypatch.setattr(export_engine, "export_dir", str(tmp_path))
+    c, sf = client
+    pid = await _seed(sf)
+    batch = (await c.post(f"/api/export/product/{pid}", json={})).json()["batch_id"]
+    await _complete(sf, batch, tmp_path, keep_files=False)
+    assert (await c.get("/api/export/batches")).json()["batches"] == []
+
+
+async def test_batches_of_unreadable_vendors_are_hidden(client):
+    from app.core.authz import Principal, get_principal
+    from app.models.user import UserRole
+    c, sf = client
+    vid, _ids, _f = await _seed_vendor(sf)
+    await c.post(f"/api/export/vendor/{vid}", json={})
+    app.dependency_overrides[get_principal] = lambda: Principal(
+        see_all=False, role=UserRole.READ_ONLY, vendor_levels={})
+    try:
+        r = await c.get("/api/export/batches")
+    finally:
+        del app.dependency_overrides[get_principal]
+    assert r.status_code == 200 and r.json()["batches"] == []

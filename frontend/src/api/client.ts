@@ -14,6 +14,7 @@ import type {
   ProductExportCreated,
   ProductExportOptions,
   ExportBatch,
+  ExportBatchSummary,
   VendorExportOptions,
   VendorExportPreview,
   DocumentationSource,
@@ -816,6 +817,13 @@ export async function createVendorExport(
 ): Promise<ProductExportCreated> {
   const res = await api.post(`/export/vendor/${vendorId}`, options);
   return res.data;
+}
+
+/** Recent product/vendor export batches, newest first — so a batch's combined
+ *  zip stays reachable after the dialog that queued it is closed. */
+export async function listExportBatches(): Promise<ExportBatchSummary[]> {
+  const res = await api.get<{ batches: ExportBatchSummary[] }>("/export/batches");
+  return res.data.batches;
 }
 
 export async function getExportBatch(batchId: string): Promise<ExportBatch> {
