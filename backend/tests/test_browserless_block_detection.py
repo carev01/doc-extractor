@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import app.services.browserless as browserless_mod
 from app.core.config import settings
 from app.core.database import Base
+from tests.db_reset import reset_schema
 from app.models import Article, DocumentationSource, ExtractionRun, Product, Vendor
 from app.services.firecrawl import firecrawl_service, _BLOCKED_MSG
 
@@ -31,12 +32,9 @@ async def db():
     engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(reset_schema)
     async with factory() as s:
         yield s
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
 
 

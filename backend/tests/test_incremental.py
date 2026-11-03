@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.config import settings
 from app.core.database import Base
+from tests.db_reset import reset_schema_sync
 from app.models import (
     Vendor,
     Product,
@@ -37,13 +38,11 @@ SyncSession = sessionmaker(sync_engine, class_=Session, expire_on_commit=False)
 
 @pytest.fixture(scope="function")
 def db_session():
-    Base.metadata.drop_all(sync_engine)
-    Base.metadata.create_all(sync_engine)
+    reset_schema_sync(sync_engine)
     session = SyncSession()
     yield session
     session.rollback()
     session.close()
-    Base.metadata.drop_all(sync_engine)
 
 
 def _make_source(db):

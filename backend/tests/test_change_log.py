@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.config import settings
 from app.core.database import Base
+from tests.db_reset import reset_schema, reset_schema_sync
 from app.models import (
     Vendor, Product, DocumentationSource, Article, ExtractionRun,
 )
@@ -30,8 +31,7 @@ TEST_DATABASE_URL = settings.database_url.rsplit("/", 1)[0] + "/docextractor_tes
 
 @pytest.fixture(scope="function")
 def db_session():
-    Base.metadata.drop_all(sync_engine)
-    Base.metadata.create_all(sync_engine)
+    reset_schema_sync(sync_engine)
     session = SyncSession()
     yield session
     session.rollback()
@@ -43,8 +43,7 @@ async def factory():
     engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(reset_schema)
     yield session_factory
     await engine.dispose()
 

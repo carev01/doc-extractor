@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.config import settings
 from app.core.database import Base
+from tests.db_reset import reset_schema_sync
 from app.models import Vendor, Product, DocumentationSource, Article, TOCEntry
 from app.models.image import ArticleImage
 from app.services.exporter import ExportEngine
@@ -34,16 +35,12 @@ SyncSession = sessionmaker(sync_engine, class_=Session, expire_on_commit=False)
 def db_session():
     """Function-scoped synchronous session with clean tables."""
     # Drop and recreate tables for isolation
-    Base.metadata.drop_all(sync_engine)
-    Base.metadata.create_all(sync_engine)
+    reset_schema_sync(sync_engine)
 
     session = SyncSession()
     yield session
     session.rollback()
     session.close()
-
-    # Clean up
-    Base.metadata.drop_all(sync_engine)
 
 
 # ── Export Engine Tests ──
