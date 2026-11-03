@@ -31,6 +31,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.core.config import settings
 from app.core.database import Base, get_db
+from tests.db_reset import reset_schema, schema_changed
 from app.main import app
 from app.models import (
     Article, ArticleVersion, DocumentationSource, ExtractionRun, Product, Vendor,
@@ -54,11 +55,8 @@ T0 = datetime(2026, 7, 1, tzinfo=timezone.utc)
 async def factory():
     engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(reset_schema)
     yield async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
 
 
@@ -294,6 +292,7 @@ async def test_apply_refuses_without_the_child_fk_indexes(corpus):
     # production copy the split's bulk delete ran past ten minutes.
     async with corpus.factory() as s:
         await s.execute(text("DROP INDEX ix_article_versions_article_id"))
+        schema_changed()
         await s.commit()
     with pytest.raises(SplitAborted, match="ix_article_versions_article_id"):
         await _apply(corpus)

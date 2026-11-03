@@ -22,14 +22,11 @@ from app.models.user import UserRole
 # bcrypt 5.x; calling bcrypt directly avoids the dependency conflict).
 # ---------------------------------------------------------------------------
 
-_BCRYPT_ROUNDS = 12
-
-
 def hash_password(password: str) -> str:
-    """Hash a password using bcrypt (12 rounds)."""
+    """Hash a password using bcrypt (``auth_bcrypt_rounds``, 12 by default)."""
     # bcrypt truncates at 72 bytes; we pre-hash with SHA-256 to support any length.
     pre = hashlib.sha256(password.encode()).hexdigest()
-    return bcrypt.hashpw(pre.encode(), bcrypt.gensalt(_BCRYPT_ROUNDS)).decode()
+    return bcrypt.hashpw(pre.encode(), bcrypt.gensalt(settings.auth_bcrypt_rounds)).decode()
 
 
 def verify_password(plain: str, hashed: str) -> bool:

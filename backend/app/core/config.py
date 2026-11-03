@@ -261,6 +261,9 @@ class Settings(BaseSettings):
     auth_jwt_algorithm: str = "HS256"
     auth_access_token_expire_minutes: int = 30
     auth_refresh_token_expire_days: int = 7
+    # Work factor for password hashes. Tests drop it to bcrypt's minimum (4); every
+    # user an auth test created cost ~0.25s at 12.
+    auth_bcrypt_rounds: int = 12
 
     # OAuth2 providers — set client_id/client_secret to enable each provider.
     # Redirect URL pattern: {base}/api/auth/oauth/{provider}/callback

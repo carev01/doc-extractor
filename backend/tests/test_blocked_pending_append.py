@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.config import settings
 from app.core.database import Base
+from tests.db_reset import reset_schema
 from app.models import DocumentationSource, ExtractionRun, Product, Vendor
 from app.services.firecrawl import _BLOCKED_PENDING_CAP, firecrawl_service
 
@@ -39,11 +40,8 @@ async def factory():
     engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
     f = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(reset_schema)
     yield f
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
 
 

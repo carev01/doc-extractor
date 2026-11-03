@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.config import settings
 from app.core.database import Base, get_db
+from tests.db_reset import reset_schema
 from app.core.security import (
     create_access_token,
     generate_api_key,
@@ -51,8 +52,7 @@ async def client(monkeypatch):
         engine, class_=AsyncSession, expire_on_commit=False
     )
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(reset_schema)
 
     async def override_get_db():
         async with session_factory() as session:
@@ -67,8 +67,6 @@ async def client(monkeypatch):
         yield c
     app.dependency_overrides.clear()
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
 
 

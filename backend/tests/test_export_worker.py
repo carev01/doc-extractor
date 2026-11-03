@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.core.config import settings
 from app.core.database import Base
+from tests.db_reset import reset_schema_sync
 from app.models import Vendor, Product, DocumentationSource, Article, ExportJob
 from app.models.export_job import ExportStatus
 from app.services.export_runner import run_export_job_sync
@@ -18,8 +19,8 @@ eng = create_engine(URL); SyncS = sessionmaker(eng, class_=Session, expire_on_co
 
 @pytest.fixture
 def db():
-    Base.metadata.drop_all(eng); Base.metadata.create_all(eng)
-    s = SyncS(); yield s; s.close(); Base.metadata.drop_all(eng)
+    reset_schema_sync(eng)
+    s = SyncS(); yield s; s.close()
 
 
 def test_run_export_job_completes(db):

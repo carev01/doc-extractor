@@ -18,6 +18,7 @@ from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
 from app.core.database import Base
+from tests.db_reset import reset_schema
 from app.models import Article, ArticleVersion
 from app.services.versioning import derive_topic_key
 from tests.helpers_versioning import make_service_and_source, _make_run
@@ -47,12 +48,9 @@ async def db_session():
         engine, class_=AsyncSession, expire_on_commit=False
     )
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(reset_schema)
     async with session_factory() as session:
         yield session
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
 
 

@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.core.authz import Principal, get_principal
 from app.core.config import settings
 from app.core.database import Base, get_db
+from tests.db_reset import reset_schema
 from app.main import app
 from app.models import Job, Vendor
 from app.models.user import UserRole
@@ -28,8 +29,7 @@ async def env():
     engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(reset_schema)
     state = {"principal": ADMIN}
 
     async def override_get_db():
@@ -41,8 +41,6 @@ async def env():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c, factory, state
     app.dependency_overrides.clear()
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
 
 
