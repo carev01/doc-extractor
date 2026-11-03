@@ -161,6 +161,24 @@ class ImageDescription:
     kind: str
 
 
+# OpenRouter answers a burst of concurrent describes with 429 and a slow upstream
+# with 504. Each counted toward the enrich circuit breaker, so a drain-all run
+# (thousands pending) ended after its first five-in-a-row burst while reporting
+# COMPLETED. Retry these with backoff; only a call that is still failing after
+# the retries reaches the breaker.
+_TRANSIENT_STATUS = (429, 500, 502, 503, 504)
+_BACKOFF = 2.0           # seconds; doubles each attempt (2, 4, 8, 16, ...)
+_MAX_RETRY_AFTER = 60.0  # never sleep longer than this on a provider's Retry-After
+_sleep = asyncio.sleep   # indirection so tests don't wait out the backoff
+
+
+def _retry_delay(resp: "httpx.Response | None", attempt: int) -> float:
+    try:
+        return min(float(resp.headers["Retry-After"]), _MAX_RETRY_AFTER)
+    except (AttributeError, KeyError, ValueError):
+        return _BACKOFF * 2 ** attempt
+
+
 def api_error_message(resp: "httpx.Response") -> str:
     """The provider's own error text from a failed chat-completions response."""
     try:
@@ -196,7 +214,21 @@ async def describe_image(
     own = client is None
     c = client or httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0))
     try:
-        resp = await c.post(settings.image_vlm_base_url, headers=headers, json=body)
+        for attempt in range(settings.image_vlm_retries + 1):
+            try:
+                resp = await c.post(settings.image_vlm_base_url, headers=headers, json=body)
+            except httpx.TransportError as exc:  # timeouts, dropped connections
+                if attempt >= settings.image_vlm_retries:
+                    raise
+                logger.info("describe_image: %s, retrying", exc.__class__.__name__)
+                await _sleep(_retry_delay(None, attempt))
+                continue
+            if resp.status_code not in _TRANSIENT_STATUS or attempt >= settings.image_vlm_retries:
+                break
+            delay = _retry_delay(resp, attempt)
+            logger.info("describe_image: HTTP %d from %s, retrying in %.0fs",
+                        resp.status_code, settings.image_vlm_model, delay)
+            await _sleep(delay)
         if resp.is_error:
             # The status alone hides the cause: OpenRouter answers a retired model, a
             # model the account's guardrail blocks, and a bad route all with 404.
@@ -506,6 +538,8 @@ async def enrich_run_images(db: AsyncSession, source_id: uuid.UUID, run_id: uuid
                 await change_log.record_change(db, article=article, change_type="updated", run_id=run_id)
             await db.commit()
             if consecutive_failures >= settings.image_vlm_max_consecutive_failures:
+                logger.warning("enrich: stopping after %d consecutive VLM failures; the rest stay "
+                               "pending for the next run", consecutive_failures)
                 break
         return described
     except Exception as exc:  # noqa: BLE001 — enrichment is best-effort

@@ -5,15 +5,90 @@ import os
 import sys
 
 import httpx
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.config import settings
+from app.services import image_describe
 from app.services.image_describe import describe_image
+
+_OK = {"choices": [{"message": {"content": json.dumps({"description": "A thing.", "kind": "other"})}}]}
+
+
+@pytest.fixture(autouse=True)
+def _no_backoff_sleep(monkeypatch):
+    """Record retry backoffs instead of sleeping through them."""
+    slept: list[float] = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(image_describe, "_sleep", fake_sleep)
+    return slept
 
 
 def _client(handler):
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def _flaky(*responses):
+    """A handler answering with each response in turn, then 200 OK."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return responses[calls["n"] - 1] if calls["n"] <= len(responses) else httpx.Response(200, json=_OK)
+
+    return handler, calls
+
+
+def _run(handler):
+    async def run():
+        async with _client(handler) as c:
+            return await describe_image(b"bytes", None, client=c)
+    return asyncio.run(run())
+
+
+def test_rate_limit_is_retried_until_it_succeeds(monkeypatch, _no_backoff_sleep):
+    """OpenRouter 429s bursts of a concurrent drain; one attempt per image let five
+    in a row trip the enrich circuit breaker and end the run with thousands pending."""
+    monkeypatch.setattr(settings, "image_vlm_api_key", "k")
+    handler, calls = _flaky(httpx.Response(429, json={"error": {"message": "Provider returned error"}}),
+                            httpx.Response(429, json={"error": {"message": "Provider returned error"}}))
+    res = _run(handler)
+    assert res is not None and res.text == "A thing."
+    assert calls["n"] == 3
+    assert len(_no_backoff_sleep) == 2 and _no_backoff_sleep[1] > _no_backoff_sleep[0]
+
+
+def test_retry_after_header_sets_the_wait(monkeypatch, _no_backoff_sleep):
+    monkeypatch.setattr(settings, "image_vlm_api_key", "k")
+    handler, _ = _flaky(httpx.Response(429, headers={"Retry-After": "7"}, json={}))
+    assert _run(handler) is not None
+    assert _no_backoff_sleep == [7.0]
+
+
+def test_gateway_timeout_is_retried(monkeypatch):
+    monkeypatch.setattr(settings, "image_vlm_api_key", "k")
+    handler, calls = _flaky(httpx.Response(504, json={"error": {"message": "The operation was aborted"}}))
+    assert _run(handler) is not None
+    assert calls["n"] == 2
+
+
+def test_persistent_rate_limit_gives_up(monkeypatch):
+    monkeypatch.setattr(settings, "image_vlm_api_key", "k")
+    monkeypatch.setattr(settings, "image_vlm_retries", 3, raising=False)
+    handler, calls = _flaky(*[httpx.Response(429, json={}) for _ in range(10)])
+    assert _run(handler) is None
+    assert calls["n"] == 4  # first attempt + 3 retries
+
+
+def test_client_error_is_not_retried(monkeypatch):
+    monkeypatch.setattr(settings, "image_vlm_api_key", "k")
+    handler, calls = _flaky(httpx.Response(404, json={"error": {"message": "No endpoints found"}}))
+    assert _run(handler) is None
+    assert calls["n"] == 1
 
 
 def test_happy_path_returns_text_and_kind(monkeypatch):
