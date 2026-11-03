@@ -206,7 +206,8 @@ class Settings(BaseSettings):
     image_vlm_api_key: str = ""                 # Bearer key (env only)
     image_vlm_model: str = "qwen/qwen3.8-flash"
     image_vlm_max_per_run: int = 100            # budget: max NEW descriptions per run
-    image_vlm_max_consecutive_failures: int = 5  # circuit breaker
+    image_vlm_max_consecutive_failures: int = 5  # circuit breaker (counts calls failed after retries)
+    image_vlm_retries: int = 5                   # per-call retries of 429/5xx/timeouts, with backoff
     image_vlm_max_tokens: int = 300
     # Must stay off for a hybrid-thinking model: reasoning tokens count against
     # image_vlm_max_tokens, and on qwen3.8-flash 3 of 8 real screenshots spent the
