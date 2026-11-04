@@ -40,6 +40,14 @@ class Scraper:
             url, cookies=self._auth_cookies, user_agent=self._user_agent
         )
 
+    async def get_raw_in_session(self, session_url: str, url: str) -> str:
+        """``get_raw`` of *url* inside the anonymous session that visiting
+        *session_url* establishes — for an API that 403s a cookieless call while
+        the site's pages mint a guest session via redirects (see mindtouch)."""
+        if self._auth_cookies:
+            return await self.get_raw(url)
+        return await self._fc.fetch_raw_in_session(session_url, url, user_agent=self._user_agent)
+
     async def map_urls(self, root_url: str) -> list[str]:
         return await self._fc.map_urls(root_url)
 
@@ -141,6 +149,7 @@ class FakeScraper:
         self._collapsible = collapsible_sidebar_by_url or {}
         self._warmup = warmup_render_by_url or {}
         self.checkpoint = checkpoint
+        self.sessions: list[tuple[str, str]] = []
 
     async def get_html(self, url: str, wait_ms: int = 1500) -> str:
         return self._h.get(url, "")
@@ -149,6 +158,10 @@ class FakeScraper:
         if url not in self._raw:
             raise FileNotFoundError(url)
         return self._raw[url]
+
+    async def get_raw_in_session(self, session_url: str, url: str) -> str:
+        self.sessions.append((session_url, url))
+        return await self.get_raw(url)
 
     async def map_urls(self, root_url: str) -> list[str]:
         return list(self._urls)

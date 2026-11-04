@@ -747,7 +747,8 @@ class FirecrawlService:
 
     async def fetch_raw(self, url: str, cookies: list[dict] | None = None,
                         retry_statuses: "set[int] | tuple[int, ...] | None" = None,
-                        user_agent: str | None = None) -> str:
+                        user_agent: str | None = None,
+                        session: httpx.Cookies | None = None) -> str:
         """Plain GET of a static asset, bypassing Firecrawl's HTML cleaning.
 
         Used for non-HTML resources a profile needs verbatim — e.g. MadCap Flare's
@@ -772,12 +773,17 @@ class FirecrawlService:
         re-derives it from the client cookie jar, which never stores anything —
         see ``_NoCookieJar``), so an
         authenticated page that 30x-redirects would otherwise land unauthenticated.
+
+        ``session`` (logged-out only) receives the cookies the redirect chain set,
+        so a caller can fetch the page's assets inside the anonymous session the
+        page established — a MindTouch site mints a guest session only for page
+        URLs, and its images go to the real login without one.
         """
         ck = _cookie_header(cookies)
         ua = user_agent or _BROWSER_UA
 
         if not ck:
-            return await self._fetch_raw_logged_out(url, ua, retry_statuses)
+            return await self._fetch_raw_logged_out(url, ua, retry_statuses, chain=session)
 
         # Cookies supplied — follow redirects manually, re-attaching the Cookie
         # header on each same-host hop.
@@ -825,13 +831,25 @@ class FirecrawlService:
         # Redirect cap reached — return whatever the last response held.
         return resp.text if resp is not None else ""
 
-    async def _fetch_raw_logged_out(self, url: str, ua: str, retry_statuses) -> str:
+    async def fetch_raw_in_session(self, session_url: str, url: str,
+                                   user_agent: str | None = None) -> str:
+        """Logged-out ``fetch_raw`` of *url* carrying the cookies that fetching
+        *session_url* set — for an API that 403s a cookieless call on a site
+        whose pages mint a guest session through redirects (MindTouch). The
+        session lives only for these two requests, like any logged-out chain."""
+        session = httpx.Cookies()
+        await self.fetch_raw(session_url, user_agent=user_agent, session=session)
+        return await self.fetch_raw(url, user_agent=user_agent, session=session)
+
+    async def _fetch_raw_logged_out(self, url: str, ua: str, retry_statuses,
+                                    chain: httpx.Cookies | None = None) -> str:
         """``fetch_raw`` without session cookies: follows redirects like httpx's
         automatic mode (any host, at most 20 hops), carrying only the cookies
-        *this* redirect chain sets. The client keeps no jar (``_NoCookieJar``), so
-        a site's cookie-check redirect (set a cookie, redirect, insist on it)
-        still works, while nothing it sets reaches a later call."""
-        chain = httpx.Cookies()
+        *this* redirect chain sets (plus *chain*'s, when a caller passes one). The
+        client keeps no jar (``_NoCookieJar``), so a site's cookie-check redirect
+        (set a cookie, redirect, insist on it) still works, while nothing it sets
+        reaches a later call."""
+        chain = httpx.Cookies() if chain is None else chain
         current_url = url
         for _ in range(20):
             hop_url = current_url
@@ -998,7 +1016,8 @@ class FirecrawlService:
 
     async def _download_image(self, img_url: str, article_dir: str,
                               auth_cookies: list[dict] | None = None,
-                              user_agent: str | None = None) -> str | None:
+                              user_agent: str | None = None,
+                              page_session: httpx.Cookies | None = None) -> str | None:
         try:
             # ``user_agent`` mirrors fetch_raw's override: an edge that 403s the
             # browser UA on a platform's pages does so for its images too, and a
@@ -1008,7 +1027,12 @@ class FirecrawlService:
             ck = _cookie_header(auth_cookies)
             if ck:
                 headers["Cookie"] = ck
-            resp = await self.client.get(img_url, headers=headers, follow_redirects=True)
+            req = self.client.build_request("GET", img_url, headers=headers)
+            if not ck and page_session is not None:
+                # The cookies the article page's own redirect chain set (see
+                # fetch_raw's ``session``), sent only where their domain matches.
+                page_session.set_cookie_header(req)
+            resp = await self.client.send(req, follow_redirects=True)
             resp.raise_for_status()
 
             content_type = resp.headers.get("content-type", "").lower()
@@ -1066,6 +1090,7 @@ class FirecrawlService:
         detect_blocks: bool = True,
         image_user_agent: str | None = None,
         page_html: str | None = None,
+        image_session: httpx.Cookies | None = None,
     ) -> str:
         """Store or skip a single article and atomically increment run counters.
 
@@ -1079,6 +1104,10 @@ class FirecrawlService:
         ``content_engine="raw_http"``, and ``_select_content_path`` routes that
         unconditionally, so no other path can carry such a page. A future profile
         needing a custom UA on the Browserless/batch paths must thread it there too.
+
+        ``image_session`` is the anonymous session the raw_http path's page fetch
+        established (the cookies its redirect chain set), for this article's
+        images; same raw-only reasoning. Realm ``auth_cookies`` take precedence.
 
         change_status is the Firecrawl changeTracking verdict ("same"|"new"|"changed"|
         "removed"). When "same", the DB write is skipped entirely — no hash needed.
@@ -1428,7 +1457,7 @@ class FirecrawlService:
             # (the sequential round-trips dominated per-page processing time).
             filenames = await asyncio.gather(
                 *(self._download_image(full_src, article_img_dir, auth_cookies=auth_cookies,
-                                       user_agent=image_user_agent)
+                                       user_agent=image_user_agent, page_session=image_session)
                   for (_, _, _, full_src) in to_fetch)
             )
 
@@ -1865,17 +1894,36 @@ class FirecrawlService:
         )
         consecutive_failures = 0
 
-        async def _fetch(url: str) -> str | None:
+        # A profile can ask for one anonymous session shared by the whole run,
+        # minted from the source root: MindTouch's guest-auth bridge won't mint one
+        # for a page URL carrying an escaped character (it lands on the real
+        # login), but serves that page to a session minted elsewhere. Every later
+        # redirect chain writes into the shared jar, so an expired guest token is
+        # renewed by the next page that bounces through the bridge.
+        shared_session: httpx.Cookies | None = None
+        if getattr(profile, "raw_http_shared_session", False) and not auth_cookies:
+            shared_session = httpx.Cookies()
+            if src is not None:
+                try:
+                    await self.fetch_raw(src.base_url, retry_statuses=retry_statuses,
+                                         user_agent=raw_user_agent, session=shared_session)
+                except Exception as exc:
+                    logger.warning("Could not open a session at %s: %s", src.base_url, exc)
+
+        async def _fetch(url: str) -> tuple[str | None, httpx.Cookies]:
+            # The page's anonymous session (cookies its redirect chain set) — its
+            # images are fetched inside it, as a browser would.
+            session = shared_session if shared_session is not None else httpx.Cookies()
             try:
                 if request_delay:
                     await asyncio.sleep(request_delay)
                 return await self.fetch_raw(
                     url, cookies=auth_cookies, retry_statuses=retry_statuses,
-                    user_agent=raw_user_agent,
-                )
+                    user_agent=raw_user_agent, session=session,
+                ), session
             except Exception as exc:  # network / HTTP error — skip this page
                 logger.warning("Raw fetch failed for %s: %s", url, exc)
-                return None
+                return None, session
 
         for i in range(0, len(pending), chunk_size):
             # Cooperative cancel/pause at each chunk boundary (fresh read).
@@ -1885,11 +1933,11 @@ class FirecrawlService:
             # An entry may point its body fetch at a different URL than the
             # human-facing page URL (e.g. an API endpoint returning the article
             # as JSON — see the zoomin profile); default to the page URL.
-            htmls = await asyncio.gather(
+            fetched = await asyncio.gather(
                 *(_fetch(e.get("content_url") or u) for u, e in chunk)
             )
             done_urls: list[str] = []
-            for (url, entry), raw in zip(chunk, htmls):
+            for (url, entry), (raw, page_session) in zip(chunk, fetched):
                 attempted += 1
                 ok = False
                 if not raw:
@@ -1920,6 +1968,7 @@ class FirecrawlService:
                                     toc_fragment=toc_fragment,
                                     auth_cookies=auth_cookies,
                                     image_user_agent=raw_user_agent,
+                                    image_session=page_session,
                                 )
                                 if outcome in ("empty", "blocked"):
                                     failed += 1
