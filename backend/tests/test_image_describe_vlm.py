@@ -201,3 +201,14 @@ def test_truncated_by_max_tokens_returns_none(monkeypatch, caplog):
     with caplog.at_level("WARNING", logger="app.services.image_describe"):
         assert asyncio.run(run()) is None
     assert "max_tokens" in caplog.text
+
+
+def test_empty_description_is_logged(monkeypatch, caplog):
+    # An empty answer counts toward the circuit breaker and leaves the image pending,
+    # so it must be visible in the run log like every other failure.
+    monkeypatch.setattr(settings, "image_vlm_api_key", "k")
+    empty = {"choices": [{"message": {"content": json.dumps({"description": "", "kind": "other"})}}]}
+
+    with caplog.at_level("WARNING", logger="app.services.image_describe"):
+        assert _run(lambda request: httpx.Response(200, json=empty)) is None
+    assert "describe_image failed: empty description" in caplog.text

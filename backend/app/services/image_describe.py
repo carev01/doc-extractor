@@ -243,6 +243,8 @@ async def describe_image(
         obj = json.loads(content)
         text = (obj.get("description") or "").strip()
         if not text:
+            logger.warning("describe_image failed: empty description from %s (finish_reason=%s)",
+                           settings.image_vlm_model, choice.get("finish_reason"))
             return None
         kind = obj.get("kind")
         return ImageDescription(text=text, kind=kind if kind in _KINDS else "other")
