@@ -332,3 +332,23 @@ async def test_describe_raising_does_not_poison_session(factory):
         # transaction would raise PendingRollbackError here).
         got = await db.get(Article, art_id)
         assert got is not None
+
+
+async def test_svg_diagram_is_rasterized_and_described(factory):
+    # The VLM only accepts raster images: an SVG diagram is sent as a PNG rendering.
+    from tests.test_image_evaluate import _svg
+    src_id, art_id, run_id = await _seed_article_with_image(
+        factory, img_bytes=_svg(871, 446), filename="diagram.svg")
+    seen = {}
+
+    async def fake(data, alt, *, mime="image/png", **kw):
+        seen["mime"], seen["magic"] = mime, data[:8]
+        return Desc(text="A responsibility matrix.", kind="diagram")
+
+    await enrich_run_images_via(factory, src_id, run_id, fake)
+    assert seen == {"mime": "image/png", "magic": b"\x89PNG\r\n\x1a\n"}
+    async with factory() as s:
+        img = (await s.execute(select(ArticleImage).where(ArticleImage.article_id == art_id))).scalar_one()
+        assert img.is_meaningful is True and img.description == "A responsibility matrix."
+        art = await s.get(Article, art_id)
+        assert "> **Figure:** A responsibility matrix." in art.content_markdown
