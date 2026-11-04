@@ -47,7 +47,7 @@ async def test_raw_http_passes_topic_key(monkeypatch):
         captured.append(kwargs)
         return "new"
 
-    async def fake_fetch(url, cookies=None, retry_statuses=None, user_agent=None):
+    async def fake_fetch(url, cookies=None, retry_statuses=None, user_agent=None, session=None):
         return "<html><body><p>Stable body.</p></body></html>"
 
     async def no_control(*args, **kwargs):
@@ -77,3 +77,86 @@ async def test_raw_http_passes_topic_key(monkeypatch):
     assert captured[0]["topic_key"] == templated_key, (
         "raw_http must forward the version-independent topic_key so a version "
         "bump matches the existing article instead of duplicating it")
+
+
+@pytest.mark.asyncio
+async def test_raw_http_hands_each_page_its_own_session_for_its_images(monkeypatch):
+    # A MindTouch page mints a guest session through its redirect chain, and its
+    # images 302 to the real login without that session.
+    import httpx
+
+    captured = {}
+
+    async def fake_process(**kwargs):
+        captured[kwargs["url"]] = kwargs["image_session"]
+        return "new"
+
+    async def fake_fetch(url, cookies=None, retry_statuses=None, user_agent=None, session=None):
+        session.set("authtoken", url.rsplit("/", 1)[1], domain="docs.example.com")
+        return "<html><body><p>Body.</p></body></html>"
+
+    async def no_control(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(firecrawl_service, "process_article_result", fake_process)
+    monkeypatch.setattr(firecrawl_service, "fetch_raw", fake_fetch)
+    monkeypatch.setattr(firecrawl_service, "_raise_if_controlled", no_control)
+
+    pages = ["https://docs.example.com/p/a", "https://docs.example.com/p/b"]
+    await firecrawl_service._scrape_via_raw_http(
+        db=_FakeDB(), source_id=uuid.uuid4(), run_id=uuid.uuid4(),
+        url_to_entry={u: {"title": u, "toc_entry_id": None, "sort_order": 0} for u in pages},
+        profile=_FakeProfile(), checkpoint=_FakeCheckpoint(),
+    )
+
+    assert {u: s.get("authtoken") for u, s in captured.items()} == {
+        "https://docs.example.com/p/a": "a", "https://docs.example.com/p/b": "b"}
+    assert all(isinstance(s, httpx.Cookies) for s in captured.values())
+
+
+@pytest.mark.asyncio
+async def test_raw_http_shares_one_guest_session_when_the_profile_asks(monkeypatch):
+    # MindTouch's guest-auth bridge refuses to mint a session for a page whose URL
+    # carries an escaped character (%3F, %2C, …): 18 of x360Recover's 556 pages
+    # landed on the real login. A session minted from the source root once, and
+    # shared by every page and image of the run, serves them all.
+    import httpx
+
+    class _Src:
+        base_url = "https://docs.example.com/Product"
+        auth_realm_id = None
+
+    class _DB:
+        async def get(self, *args, **kwargs):
+            return _Src()
+
+    class _SharedProfile(_FakeProfile):
+        raw_http_shared_session = True
+
+    fetched, images = [], {}
+
+    async def fake_fetch(url, cookies=None, retry_statuses=None, user_agent=None, session=None):
+        fetched.append((url, session))
+        return "<html><body><p>Body.</p></body></html>"
+
+    async def fake_process(**kwargs):
+        images[kwargs["url"]] = kwargs["image_session"]
+        return "new"
+
+    async def no_control(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(firecrawl_service, "process_article_result", fake_process)
+    monkeypatch.setattr(firecrawl_service, "fetch_raw", fake_fetch)
+    monkeypatch.setattr(firecrawl_service, "_raise_if_controlled", no_control)
+
+    pages = ["https://docs.example.com/Product/a%3F", "https://docs.example.com/Product/b"]
+    await firecrawl_service._scrape_via_raw_http(
+        db=_DB(), source_id=uuid.uuid4(), run_id=uuid.uuid4(),
+        url_to_entry={u: {"title": u, "toc_entry_id": None, "sort_order": 0} for u in pages},
+        profile=_SharedProfile(), checkpoint=_FakeCheckpoint(),
+    )
+
+    assert fetched[0][0] == "https://docs.example.com/Product"   # minted first, from the root
+    jars = {id(s) for _, s in fetched} | {id(s) for s in images.values()}
+    assert len(jars) == 1 and isinstance(fetched[0][1], httpx.Cookies)

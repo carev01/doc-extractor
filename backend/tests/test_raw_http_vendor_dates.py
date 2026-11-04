@@ -54,7 +54,7 @@ async def _run(monkeypatch, profile):
         captured.append(kwargs)
         return "new"
 
-    async def fake_fetch(url, cookies=None, retry_statuses=None, user_agent=None):
+    async def fake_fetch(url, cookies=None, retry_statuses=None, user_agent=None, session=None):
         return RAW
 
     async def no_control(*args, **kwargs):
