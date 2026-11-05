@@ -155,3 +155,46 @@ async def test_enable_skips_sources_without_version_in_url(client, seeded_produc
         unversioned = await s.get(DocumentationSource, unversioned_id)
         # url_template should remain None (untouched)
         assert unversioned.url_template is None
+
+
+async def test_enable_keeps_pdf_heading_path_keys(client, seeded_product_10):
+    """A PDF source is templatized but its articles keep their heading-path keys.
+
+    PDF articles are keyed by their section path (derive_pdf_topic_key), not by
+    URL, and the import matches on that key. Re-keying them from source_url would
+    make the next import retire and re-add every section of the PDF."""
+    c, session_factory = client
+    pdf_url = "https://docs.example.com/Available/10.0/Guide.pdf"
+    async with session_factory() as s:
+        pdf_source = DocumentationSource(
+            product_id=seeded_product_10.id,
+            name="PDF Guide",
+            base_url=pdf_url,
+            source_type="pdf",
+        )
+        s.add(pdf_source)
+        await s.flush()
+        s.add(Article(
+            source_id=pdf_source.id,
+            title="Upgrading",
+            source_url=pdf_url + "#page=17&s=3",
+            topic_key="upgrading-to-10-0",
+            content_markdown="# Upgrading",
+        ))
+        await s.commit()
+        pdf_id = pdf_source.id
+
+    r = await c.post(
+        f"/api/products/{seeded_product_10.id}/versions/enable",
+        json={"version": "10.0"},
+    )
+    assert r.status_code == 200
+    assert r.json()["templatized_sources"] == 2
+
+    async with session_factory() as s:
+        src = await s.get(DocumentationSource, pdf_id)
+        assert src.url_template == "https://docs.example.com/Available/{version}/Guide.pdf"
+        art = (
+            await s.execute(select(Article).where(Article.source_id == pdf_id))
+        ).scalar_one()
+        assert art.topic_key == "upgrading-to-10-0"
