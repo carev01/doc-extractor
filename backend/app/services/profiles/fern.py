@@ -24,6 +24,13 @@ wrong tree on docs.eon.io once Eon restructured: section headings (Cloud
 Workloads, GCP, MongoDB Atlas, Resources, ...) are link-less so they vanished,
 and every page attached to whichever shallower page preceded it — MongoDB Atlas'
 pages ended up nested under GCP's "Regions".
+
+Fern's newer Astro frontend (docs.eon.io from late 2026) ships no flight payload.
+Its sidebar island hydrates from a JSON asset named in the island's HTML-escaped
+props (``navAssetUrl``, ``/_fern-files/_nav/<hash>.json``), whose
+``sidebarChildren`` holds the same typed nodes, so the same walker reads it. A
+section there carries ``pointsTo`` — the first page under it, where clicking the
+heading navigates — not an overview page of its own, so it stays a heading.
 """
 
 import json
@@ -44,6 +51,8 @@ _FLIGHT_PUSH = re.compile(r'self\.__next_f\.push\(\[\d+,\s*("(?:[^"\\]|\\.)*")\]
 # of typed nav nodes; a section's own "children" never starts its object.
 _NAV_ROOT = re.compile(r'\{"children":\[\{"type":"(?:sidebarGroup|section|page|link)"')
 _UNDEFINED = "$undefined"
+# Astro build: the sidebar island's props name the nav asset (HTML-escaped JSON).
+_NAV_ASSET = re.compile(r'navAssetUrl(?:&quot;|")\s*:\s*\[0,\s*(?:&quot;|")(/[^&"]+)')
 
 
 def _nav_tree(html: str):
@@ -63,6 +72,19 @@ def _nav_tree(html: str):
     except ValueError:
         return None
     kids = root.get("children") if isinstance(root, dict) else None
+    return kids if isinstance(kids, list) and kids else None
+
+
+async def _nav_asset_tree(html: str, root_url: str, scraper):
+    """The sidebar tree from an Astro build's nav asset, or None."""
+    m = _NAV_ASSET.search(html or "")
+    if not m:
+        return None
+    try:
+        data = json.loads(await scraper.get_raw(urljoin(root_url, m.group(1))) or "")
+    except Exception:
+        return None
+    kids = data.get("sidebarChildren") if isinstance(data, dict) else None
     return kids if isinstance(kids, list) and kids else None
 
 
@@ -117,7 +139,7 @@ class FernProfile:
             html = await scraper.get_raw(root_url)
         except Exception:
             return []
-        tree = _nav_tree(html)
+        tree = _nav_tree(html) or await _nav_asset_tree(html, root_url, scraper)
         if tree:
             parsed = urlparse(root_url)
             entries = _toc_from_nav(tree, f"{parsed.scheme}://{parsed.netloc}")
