@@ -238,3 +238,66 @@ async def test_a_malformed_payload_falls_back_to_url_depth():
     assert first != second  # there really were two pushes to drop one of
     toc = await _toc(truncated)
     assert toc and all(e.url for e in toc)  # the flat-list fallback: no headings
+
+
+# Fern's Astro frontend (docs.eon.io since late 2026) dropped the flight payload:
+# the sidebar island hydrates from a JSON asset named in its HTML-escaped props
+# (navAssetUrl), whose sidebarChildren holds the same typed nav nodes. Sections
+# there carry `pointsTo` (their first page, for navigation) and no overview page.
+NAV_ASSET = "/_fern-files/_nav/e5447ed4265c49ce.json"
+ASTRO_SECTION = {"type": "section", "id": "section:data-protection/cloud-workloads",
+                 "title": "Cloud Workloads", "slug": "data-protection/cloud-workloads",
+                 "hidden": False, "collapsible": True,
+                 "pointsTo": "data-protection/cloud-workloads/gcp/regions",
+                 "children": [_page("data-protection/cloud-workloads/gcp/regions", "Regions")]}
+ASTRO_NAV = {"sidebarRootNodeId": "sidebar:x|||", "directParentMap": [], "sidebarChildren": [
+    {"type": "sidebarGroup", "id": "sidebar-group:1", "children": [
+        _page("data-protection/get-started", "Get Started")]},
+    ASTRO_SECTION,
+    {"type": "link", "id": "link:/whats-new/product-updates", "title": "Product Updates",
+     "url": "/whats-new/product-updates"},
+]}
+
+
+def _astro_page(asset=NAV_ASSET):
+    props = ('{&quot;navAssetUrl&quot;:[0,&quot;' + asset + '&quot;],'
+             '&quot;sidebarRootNodeId&quot;:[0,&quot;sidebar:x|||&quot;]}')
+    flat = "".join(f'<li><a href="/{p}">{p}</a></li>' for p in (
+        "data-protection/get-started", "data-protection/cloud-workloads/gcp/regions"))
+    return (f'<html><body><aside id="fern-sidebar" class="fern-sidebar-desktop">'
+            f'<astro-island component-url="/_astro/SidebarHydrateShell.js" props="{props}"></astro-island>'
+            f'<nav class="absolute h-px"><ul>{flat}</ul></nav></aside>'
+            f'<div class="fern-prose">x</div></body></html>')
+
+
+async def _astro_toc(html, nav=ASTRO_NAV):
+    raw = {NEW_ROOT: html}
+    if nav is not None:
+        raw["https://docs.eon.io" + NAV_ASSET] = nav if isinstance(nav, str) else json.dumps(nav)
+    return await FernProfile().build_toc(NEW_ROOT, FakeScraper({}, raw_by_url=raw))
+
+
+@pytest.mark.asyncio
+async def test_astro_build_reads_the_nav_asset():
+    toc = await _astro_toc(_astro_page())
+    assert [(e.level, e.title, e.url) for e in toc] == [
+        (0, "Get Started", "https://docs.eon.io/data-protection/get-started"),
+        (0, "Cloud Workloads", None),
+        (1, "Regions", "https://docs.eon.io/data-protection/cloud-workloads/gcp/regions"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_astro_section_pointing_at_its_first_page_stays_a_heading():
+    # pointsTo is where clicking the heading navigates, not a page of its own:
+    # treating it as the section's URL would store Regions twice.
+    toc = await _astro_toc(_astro_page())
+    assert [e.url for e in toc if e.url].count(
+        "https://docs.eon.io/data-protection/cloud-workloads/gcp/regions") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("nav", [None, "not json", json.dumps({"sidebarChildren": []})])
+async def test_astro_nav_asset_unusable_falls_back_to_url_depth(nav):
+    toc = await _astro_toc(_astro_page(), nav=nav)
+    assert toc and all(e.url for e in toc)
