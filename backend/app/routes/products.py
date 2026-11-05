@@ -185,6 +185,11 @@ async def enable_versioning(
             continue
         src.url_template = tmpl
         templatized += 1
+        if src.source_type == "pdf":
+            # PDF sections are keyed by heading path (derive_pdf_topic_key), not
+            # URL, and the import matches on that key — a URL-derived key would
+            # make the next import retire and re-add every section.
+            continue
         arts = (
             await db.execute(select(Article).where(Article.source_id == src.id))
         ).scalars().all()
