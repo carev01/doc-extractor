@@ -106,3 +106,52 @@ def test_an_unresolvable_token_is_reported_not_papered_over(monkeypatch):
     assert entry["status"] == "unresolved"
     # Falls back to the token the source is on now, so the URL stays well-formed.
     assert "171368441" in entry["resolved_url"]
+
+
+DELL_TMPL = (
+    "https://dl.dell.com/content/{rev}-dell-avamar-{version_dashed}-"
+    "administration-guide.pdf?language=en-us"
+)
+DELL_BASE = (
+    "https://dl.dell.com/content/manual25955871-dell-avamar-19-12-"
+    "administration-guide.pdf?language=en-us"
+)
+
+
+def _dell_plan(monkeypatch, revision):
+    from app.services.profiles.dell_manuals import PROFILE
+    seen = []
+
+    async def fake_resolve(self, template, version, scraper, source=None):
+        seen.append(source)
+        return revision
+
+    monkeypatch.setattr(
+        PROFILE, "resolve_revision", types.MethodType(fake_resolve, PROFILE)
+    )
+    src = types.SimpleNamespace(
+        id=uuid.uuid4(), name="Avamar Administration Guide", url_template=DELL_TMPL,
+        base_url=DELL_BASE, platform="dell_manuals",
+        profile_config={"dell_manual_page": "https://www.dell.com/x_{version}"},
+    )
+    entry = asyncio.run(products._plan_bump([src], "19.13", "19.12"))[0]
+    return entry, seen, src
+
+
+def test_a_resolver_that_needs_the_source_is_handed_it(monkeypatch):
+    entry, seen, src = _dell_plan(monkeypatch, "manual40000001")
+    assert seen == [src]
+    assert entry["status"] == "resolved"
+    assert entry["resolved_url"] == (
+        "https://dl.dell.com/content/manual40000001-dell-avamar-19-13-"
+        "administration-guide.pdf?language=en-us"
+    )
+
+
+def test_an_unresolved_dell_id_carries_the_current_one(monkeypatch):
+    # The template's first version placeholder is {version_dashed}, not {version},
+    # so the old version can't be read off base_url — the product's current
+    # version is what lets the carried id be found.
+    entry, _, _ = _dell_plan(monkeypatch, None)
+    assert entry["status"] == "unresolved"
+    assert entry["resolved_url"] == DELL_BASE.replace("19-12", "19-13")

@@ -1,5 +1,6 @@
 """Extraction-profile interface and the ordered TOC entry it produces."""
 
+import inspect
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -50,4 +51,15 @@ class ExtractionProfile(Protocol):
     # async def resolve_revision(self, template, version, scraper) -> str | None:
     #     """Return the live ``{rev}`` value for *version*, so a source's
     #     base_url can be rebuilt for a release it has never been crawled at.
-    #     May hit the network; returning None must stay survivable."""
+    #     May hit the network; returning None must stay survivable.
+    #     A resolver that needs per-source configuration (Dell's manual page
+    #     lives in ``profile_config``) declares a ``source=None`` keyword and is
+    #     handed the source by ``call_resolve_revision``."""
+
+
+async def call_resolve_revision(resolver, template, version, scraper, source):
+    """Call a profile's ``resolve_revision``, passing *source* only to a resolver
+    that declares it — so the URL-only resolvers (Cohesity's) keep their shape."""
+    if "source" in inspect.signature(resolver).parameters:
+        return await resolver(template, version, scraper, source=source)
+    return await resolver(template, version, scraper)

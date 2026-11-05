@@ -12,6 +12,8 @@ const TITLES: Record<string, string> = {
     "The product version with its separators removed (25-1 → 251). Derived from the version you set.",
   "{version_major}":
     "The leading component of the product version (24-1 → 24). Derived from the version you set.",
+  "{version_dashed}":
+    "The product version with its separators turned into dashes (19.12 → 19-12). Derived from the version you set.",
   "{rev}":
     "A per-release token the vendor mints (e.g. a build id). Resolved automatically from the vendor before each run — never typed, never stored resolved.",
 };
@@ -19,7 +21,7 @@ const TITLES: Record<string, string> = {
 export default function UrlTemplate({ value }: { value: string }) {
   return (
     <code className="url-template">
-      {value.split(/(\{version(?:_compact|_major)?\}|\{rev\})/g).map((part, i) =>
+      {value.split(/(\{version(?:_compact|_major|_dashed)?\}|\{rev\})/g).map((part, i) =>
         TITLES[part] ? (
           <span
             key={i}

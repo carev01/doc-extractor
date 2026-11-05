@@ -25,9 +25,11 @@ value*:
     source look brand new, retiring the old corpus and re-adding it — the
     duplication class that the CommCell incident belongs to).
 
-``{version_compact}`` / ``{version_major}``
+``{version_compact}`` / ``{version_major}`` / ``{version_dashed}``
     The same operator-typed version, spelled differently: separators stripped
-    (``25-1`` → ``251``) or only its leading component (``24-1`` → ``24``).
+    (``25-1`` → ``251``), only its leading component (``24-1`` → ``24``), or
+    every separator turned into a dash (``19.12`` → ``19-12``, how Dell's PDF
+    slugs write a release whose manual pages say ``19.12``).
     Arctera's AEM Guides portal writes one release three ways in one URL —
     ``…/arctera-system-recovery-24-readme/24-1/arcteratm-system-recovery-24-1-readme.html``,
     ``…/backup-exec-readme/25-1/backup-exec-251-readme.html`` — and a template
@@ -48,13 +50,14 @@ import re
 VERSION_PLACEHOLDER = "{version}"
 VERSION_COMPACT_PLACEHOLDER = "{version_compact}"
 VERSION_MAJOR_PLACEHOLDER = "{version_major}"
+VERSION_DASHED_PLACEHOLDER = "{version_dashed}"
 REVISION_PLACEHOLDER = "{rev}"
 
 # Every placeholder the template language knows. Used to turn a topic key into a
 # SQL LIKE pattern and to find the literal text that delimits a placeholder.
-_PLACEHOLDER_RE = re.compile(r"\{(?:version|version_compact|version_major|rev)\}")
+_PLACEHOLDER_RE = re.compile(r"\{(?:version|version_compact|version_major|version_dashed|rev)\}")
 # The placeholders whose value derives from the product version.
-_VERSION_FORM_RE = re.compile(r"\{(?:version|version_compact|version_major)\}")
+_VERSION_FORM_RE = re.compile(r"\{(?:version|version_compact|version_major|version_dashed)\}")
 
 
 def version_forms(version: str) -> dict[str, str]:
@@ -64,6 +67,7 @@ def version_forms(version: str) -> dict[str, str]:
         VERSION_PLACEHOLDER: version,
         VERSION_COMPACT_PLACEHOLDER: re.sub(r"[^0-9A-Za-z]", "", version),
         VERSION_MAJOR_PLACEHOLDER: major.group(0) if major else version,
+        VERSION_DASHED_PLACEHOLDER: re.sub(r"[^0-9A-Za-z]+", "-", version),
     }
 
 

@@ -1,6 +1,7 @@
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.services.versioning import (
+    has_version_placeholder,
     resolve_template, derive_topic_key, detect_version_token, VERSION_PLACEHOLDER,
     version_forms, like_pattern,
 )
@@ -134,6 +135,7 @@ def test_resolve_template_substitutes_derived_forms():
 def test_version_forms_strip_separators_and_take_the_major():
     assert version_forms("25-1") == {
         "{version}": "25-1", "{version_compact}": "251", "{version_major}": "25",
+        "{version_dashed}": "25-1",
     }
     assert version_forms("11.2.0.1")["{version_compact}"] == "11201"
     assert version_forms("11.2.0.1")["{version_major}"] == "11"
@@ -195,6 +197,13 @@ def test_slugs_are_left_alone_without_the_opt_in():
            "sdr-recover-this-computer-wizard-help/25-1/recover-this-computer-wizard-help/"
            "sdr-recover-this-computer-wizard-help-v251/creating-a-simple-volume.html")
     assert derive_topic_key(url, RTC, "25-1").endswith("-v251/creating-a-simple-volume.html")
+
+
+def test_version_dashed_joins_components_with_dashes():
+    # Dell's PDF slugs spell 19.12 as 19-12 (manual25955871-dell-avamar-19-12-...).
+    assert version_forms("19.12")["{version_dashed}"] == "19-12"
+    assert version_forms("19.10_sp1")["{version_dashed}"] == "19-10-sp1"
+    assert has_version_placeholder("https://x/{rev}-avamar-{version_dashed}-guide.pdf")
 
 
 def test_like_pattern_wildcards_derived_placeholders():

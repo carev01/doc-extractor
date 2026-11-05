@@ -44,6 +44,7 @@ from app.services.profiles import aem_guides  # noqa: F401,E402
 from app.services.profiles import rspress  # noqa: F401,E402
 from app.services.profiles import fern  # noqa: F401,E402
 from app.services.profiles import oxygen_webhelp  # noqa: F401,E402
+from app.services.profiles import dell_manuals  # noqa: F401,E402
 from app.services.profiles import generic  # noqa: F401,E402
 from app.services.profiles import llm  # noqa: F401,E402
 

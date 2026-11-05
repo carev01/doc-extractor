@@ -6,6 +6,7 @@ a vendor cascades to its products. Access follows the owning vendor: read needs
 a grant, mutations need a read_write grant (admins bypass).
 """
 
+import asyncio
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -16,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.authz import (
     Principal, authorize_product, get_principal, require_vendor_read, require_vendor_write,
 )
+from app.core.config import settings
 from app.core.database import get_db
 from app.models.article import Article
 from app.models.product import Product
@@ -30,6 +32,7 @@ from app.schemas.product import (
 from app.services import change_log
 from app.services.queue import ActiveRunExists, enqueue_run
 from app.services.profiles import registry as profile_registry
+from app.services.profiles.base import call_resolve_revision
 from app.services.versioning import (
     REVISION_PLACEHOLDER,
     derive_topic_key,
@@ -237,8 +240,12 @@ async def _plan_bump(
     from app.services.firecrawl import firecrawl_service
     from app.services.profiles.scraper import Scraper
 
-    plan: list[dict] = []
-    for s in sources:
+    # A {rev} lookup can be a browser render (Dell's manual pages, ~4 s each),
+    # so sources are planned concurrently — bounded like any other Browserless
+    # fan-out — instead of one after another.
+    limit = asyncio.Semaphore(max(1, settings.browserless_concurrency))
+
+    async def _plan_one(s) -> dict:
         template = s.url_template or ""
         profile = profile_registry.get(s.platform or "")
         # What the run will actually use (see docstring).
@@ -260,14 +267,15 @@ async def _plan_bump(
             template = upgraded
         if REVISION_PLACEHOLDER not in template:
             entry["resolved_url"] = resolve_template(template, version)
-            plan.append(entry)
-            continue
+            return entry
 
         resolver = getattr(profile, "resolve_revision", None) if profile else None
         revision = None
         if resolver is not None:
             try:
-                revision = await resolver(template, version, Scraper(firecrawl_service))
+                revision = await call_resolve_revision(
+                    resolver, template, version, Scraper(firecrawl_service), s
+                )
             except Exception as exc:
                 entry["detail"] = str(exc)
 
@@ -279,8 +287,12 @@ async def _plan_bump(
             # Carry the release token the source is on now, so base_url stays a
             # well-formed URL instead of one with a literal "{rev}" in it. Read
             # at the version base_url currently carries, which is the OLD one.
+            # The product's current version reads it directly; reading the
+            # version back off base_url only works when {version} itself comes
+            # first (Dell's PDFs lead with {version_dashed}).
             revision = extract_revision(
-                s.base_url, template, _version_in(s.base_url, template)
+                s.base_url, template,
+                current_version or _version_in(s.base_url, template),
             )
             entry["detail"] = entry["detail"] or (
                 f"No {REVISION_PLACEHOLDER} found for {version}"
@@ -293,8 +305,13 @@ async def _plan_bump(
         entry["resolved_url"] = (
             resolve_template(template, version, revision) if revision else s.base_url
         )
-        plan.append(entry)
-    return plan
+        return entry
+
+    async def _bounded(s) -> dict:
+        async with limit:
+            return await _plan_one(s)
+
+    return list(await asyncio.gather(*(_bounded(s) for s in sources)))
 
 
 def _version_in(url: str, template: str) -> str | None:
