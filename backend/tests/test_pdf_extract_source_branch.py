@@ -176,3 +176,78 @@ async def test_non_retryable_acquire_error_marks_failed(factory, monkeypatch):
     async with factory() as s:
         run = await s.get(ExtractionRun, rid)
         assert run.status == RunStatus.FAILED
+
+
+DELL_TMPL = (
+    "https://dl.dell.com/content/{rev}-dell-avamar-{version_dashed}-"
+    "administration-guide.pdf?language=en-us"
+)
+
+
+async def _dell_pdf_source(factory, base_url):
+    async with factory() as s:
+        v = Vendor(name="Dell"); s.add(v); await s.flush()
+        p = Product(vendor_id=v.id, name="Avamar", version="19.13"); s.add(p); await s.flush()
+        src = DocumentationSource(
+            product_id=p.id, name="Administration Guide", base_url=base_url,
+            source_type="pdf", platform="dell_manuals", url_template=DELL_TMPL,
+            profile_config={"dell_manual_page": "https://www.dell.com/support/manuals/"
+                            "en-us/avamar-server/avamar_administration_guide_{version}"},
+        )
+        s.add(src); await s.flush()
+        run = ExtractionRun(source_id=src.id); s.add(run); await s.commit()
+        return src.id, run.id
+
+
+async def test_pdf_run_resolves_the_rev_token_before_downloading(factory, monkeypatch):
+    """A bump that couldn't resolve Dell's manual id carries the old one; the next
+    PDF run must look it up before acquiring, or it re-imports the old release."""
+    from app.services.profiles.dell_manuals import PROFILE
+
+    sid, rid = await _dell_pdf_source(
+        factory, "https://dl.dell.com/content/manual25955871-dell-avamar-19-13-"
+                  "administration-guide.pdf?language=en-us")
+    asked, fetched = [], []
+
+    async def fake_resolve(self, template, version, scraper, source=None):
+        asked.append((version, source.profile_config["dell_manual_page"]))
+        return "manual99999999"
+
+    async def fake_run(service, db, source, run, run_pk, auth_state=None):
+        fetched.append(source.base_url)
+        return run
+
+    monkeypatch.setattr(PROFILE, "resolve_revision", fake_resolve.__get__(PROFILE))
+    monkeypatch.setattr(_pdf_import_mod, "run_pdf_extraction", fake_run)
+
+    async with factory() as s:
+        await FirecrawlService().extract_source(s, sid, run_id=rid)
+        await s.commit()
+
+    assert asked and asked[0][0] == "19.13"
+    assert fetched == ["https://dl.dell.com/content/manual99999999-dell-avamar-19-13-"
+                       "administration-guide.pdf?language=en-us"]
+
+
+async def test_pdf_run_keeps_base_url_when_the_lookup_fails(factory, monkeypatch):
+    from app.services.profiles.dell_manuals import PROFILE
+
+    base = ("https://dl.dell.com/content/manual25955871-dell-avamar-19-13-"
+            "administration-guide.pdf?language=en-us")
+    sid, rid = await _dell_pdf_source(factory, base)
+    fetched = []
+
+    async def fake_resolve(self, template, version, scraper, source=None):
+        return None
+
+    async def fake_run(service, db, source, run, run_pk, auth_state=None):
+        fetched.append(source.base_url)
+        return run
+
+    monkeypatch.setattr(PROFILE, "resolve_revision", fake_resolve.__get__(PROFILE))
+    monkeypatch.setattr(_pdf_import_mod, "run_pdf_extraction", fake_run)
+
+    async with factory() as s:
+        await FirecrawlService().extract_source(s, sid, run_id=rid)
+        await s.commit()
+    assert fetched == [base]

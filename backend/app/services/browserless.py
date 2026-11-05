@@ -500,6 +500,20 @@ export default async function ({ page, context }) {
 """
 
 
+# Browserless /function returning a page's server-rendered HTML as soon as the
+# document is parsed — no network-idle or settle wait. For pages whose answer is
+# in the HTML the server sends (Dell's manual pages carry their PDF link there),
+# where the default render's waits cost ~14 s against ~4 s for this.
+_DOM_HTML_CODE = r"""
+export default async function ({ page, context }) {
+  const { url } = context;
+  const resp = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  return { data: { status: resp ? resp.status() : null, html: await page.content() },
+           type: 'application/json' };
+}
+"""
+
+
 # Browserless /function that performs a **warm-up navigation** before fetching
 # the target, defeating WAFs that reject a cold hit (e.g. a support site behind
 # Akamai returns "Access Denied" on a direct scrape). It sets a realistic desktop UA,
@@ -826,6 +840,16 @@ class BrowserlessClient:
             logger.info("Salesforce tree walk for %s needed %s expand click(s)",
                         target_url, data.get("clicks"))
         return toc
+
+    async def dom_html(self, target_url: str,
+                       client: httpx.AsyncClient | None = None) -> str:
+        """Return *target_url*'s HTML as parsed, without waiting for scripts or
+        network idle (see ``_DOM_HTML_CODE``). Raises BrowserlessError."""
+        data = await self._post(
+            _DOM_HTML_CODE, {"url": target_url}, target_url, client,
+            session_timeout_ms=90000, http_timeout_s=120,
+        )
+        return data.get("html", "")
 
     async def warmup_render(self, target_url: str, selector: str | None = None,
                             warmup_url: str | None = None, wait_ms: int | None = None,

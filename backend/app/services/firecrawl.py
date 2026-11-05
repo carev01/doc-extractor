@@ -43,6 +43,7 @@ from app.services import image_describe
 from app.services import webhook_dispatcher
 from app.services.profiles import registry as profile_registry
 from app.services.profiles.base import TocEntry as ProfileTocEntry
+from app.services.profiles.base import call_resolve_revision
 from app.services.profiles.content_scope import scope_content_html, strip_selectors
 from app.services.profiles.detector import detect_platform
 import app.services.profiles.llm as llm_mod
@@ -569,12 +570,13 @@ class FirecrawlService:
             )
             return None
         try:
-            revision = await resolver(
-                source.url_template, version,
+            revision = await call_resolve_revision(
+                resolver, source.url_template, version,
                 Scraper(
                     self, checkpoint=checkpoint, auth_cookies=auth_cookies,
                     user_agent=getattr(profile, "raw_user_agent", None),
                 ),
+                source,
             )
         except Exception as exc:  # never let a token lookup fail the run
             logger.warning(
@@ -2817,6 +2819,26 @@ class FirecrawlService:
 
         if source.source_type == "pdf":
             from app.services import pdf_import
+            # A PDF URL can carry a vendor-minted id too (Dell's manual<id>). A
+            # bump that couldn't resolve it carried the old one, which still
+            # serves the previous release's PDF — so look it up before acquiring.
+            # Best-effort, as on the web path: a failed lookup keeps base_url.
+            pdf_profile = profile_registry.get(source.platform or "")
+            if (
+                pdf_profile is not None
+                and source.url_template
+                and REVISION_PLACEHOLDER in source.url_template
+            ):
+                pdf_version = (
+                    await db.execute(
+                        select(Product.version).where(Product.id == source.product_id)
+                    )
+                ).scalar_one_or_none()
+                if pdf_version:
+                    await self._refresh_revision_token(
+                        db, source, pdf_profile, pdf_version,
+                        auth_cookies=(auth_state or {}).get("cookies"),
+                    )
             try:
                 return await pdf_import.run_pdf_extraction(
                     self, db, source, run, run_pk, auth_state=auth_state
