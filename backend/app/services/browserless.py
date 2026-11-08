@@ -528,8 +528,6 @@ export default async function ({ page, context }) {
 _WARMUP_RENDER_CODE = r"""
 export default async function ({ page, context }) {
   const { url, warmupUrl, selector, waitMs } = context;
-  const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-  await page.setUserAgent(ua);
   await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
   const authState = context.authState;
   if (authState) {
@@ -574,7 +572,7 @@ export default async function ({ page, context }) {
 
 
 # Browserless /function that downloads a binary asset (e.g. a PDF) in real Chrome:
-# spoof a real Chrome UA (Browserless's default UA contains "HeadlessChrome",
+# navigate as non-headless Chrome (the _post prelude sets it; Browserless's default UA contains "HeadlessChrome",
 # which Akamai's bot manager hard-403s — verified on www.rubrik.com, where both
 # the origin warm-up and the asset return 403 with the headless UA but 200 with a
 # normal one), inject the realm cookies, navigate to the asset's origin, then do
@@ -584,8 +582,6 @@ export default async function ({ page, context }) {
 _DOWNLOAD_BYTES_CODE = r"""
 export default async function ({ page, context }) {
   const { url, authState } = context;
-  const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-  await page.setUserAgent(ua);
   await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
   if (authState && authState.cookies && authState.cookies.length) await page.setCookie(...authState.cookies);
   const origin = new URL(url).origin;
@@ -640,23 +636,28 @@ class BrowserlessClient:
         same URL: default UA -> 403 and 0 sidebar nodes; this UA -> 200, 1
         sidebar and 1,297 expand triggers.
 
+        The agent is the browser's *own* with ``HeadlessChrome`` -> ``Chrome``,
+        never a fixed string: the browser reports its real version and platform
+        separately (``navigator.platform``), and from 2026-11-07 Akamai on
+        docs.redhat.com 403'd every page while we claimed Chrome 125 on a Mac
+        from Browserless' Chrome 156 on Linux. A configured
+        ``browserless_user_agent`` still overrides it, for a site that needs one.
+
         Done here, in the one funnel every script goes through, rather than in
         each of the nine script constants — a script that silently missed it
         would fail only on the sites that check, months later. Injecting at the
         signature guarantees it precedes every ``page.goto`` in the body, and an
         unrecognised signature raises rather than shipping an unpatched script.
         """
-        if not self.user_agent:
-            return code
         if _FUNCTION_SIGNATURE not in code:
             raise BrowserlessError(
                 "Browserless script has an unrecognised signature, so the "
                 "user-agent could not be applied; expected "
                 f"{_FUNCTION_SIGNATURE!r}"
             )
-        prelude = (
-            f"\n  await page.setUserAgent({json.dumps(self.user_agent)});\n"
-        )
+        agent = (json.dumps(self.user_agent) if self.user_agent else
+                 "(await page.browser().userAgent()).replace('HeadlessChrome', 'Chrome')")
+        prelude = f"\n  await page.setUserAgent({agent});\n"
         return code.replace(_FUNCTION_SIGNATURE, _FUNCTION_SIGNATURE + prelude, 1)
 
     async def _post(self, code: str, context: dict, target_url: str,
