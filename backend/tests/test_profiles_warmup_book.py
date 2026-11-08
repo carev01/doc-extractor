@@ -118,5 +118,30 @@ def test_content_spec_targets_article_with_warmup_and_strips_chrome():
     spec = WarmupBookProfile().browserless_content_spec()
     assert spec["selector"] == "article"
     assert spec["warmup_url"] == "https://docs.redhat.com/en"
-    # PreviousNext footer + per-heading copy-link widgets are dropped.
-    assert spec["excludeTags"] == ["nav.pagination", ".copy-link-tooltip"]
+    # PreviousNext footer + per-heading copy-link widgets + the site banner are dropped.
+    assert spec["excludeTags"] == [
+        "nav.pagination", ".copy-link-tooltip", "rh-alert.banner-wrapper"]
+
+
+# Rendered <article> as served from 2026-11-04: a site-wide promo banner is the
+# article's first child, ahead of the chapter <h1>, so it led every page's text.
+# Red Hat's real admonitions are <rh-alert> too, so only the banner may go.
+BANNER_ARTICLE = (
+    '<rh-alert class="html-container banner-wrapper" role="region" aria-label="info banner" '
+    'state="info" dismissable=""><span slot="header">Streamline your workflow with the new '
+    'MCP server for Red Hat product documentation.</span><span>Connect your AI tools and LLMs '
+    'directly to live Red Hat product documentation. <a href="https://docs.redhat.com/en/'
+    'documentation/mcp_server_for_red_hat_documentation/current ">Connect now</a>.</span>'
+    '</rh-alert><div class="docs-content-container"><h1 class="chapter-title">Chapter 4. '
+    'Hibernating a cluster</h1><section class="rhdocs"><rh-alert state="warning">'
+    '<p>Back up etcd before hibernating.</p></rh-alert><p>Body.</p></section></div>'
+)
+
+
+def test_the_site_banner_is_stripped_but_real_admonitions_stay():
+    from app.services.profiles.content_scope import strip_selectors
+    spec = WarmupBookProfile().browserless_content_spec()
+    out = strip_selectors(BANNER_ARTICLE, spec["excludeTags"])
+    assert "MCP server" not in out and "Connect now" not in out
+    assert "Back up etcd before hibernating." in out
+    assert out.index("Chapter 4.") < out.index("Body.")

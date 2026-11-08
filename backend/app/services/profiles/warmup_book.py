@@ -119,12 +119,16 @@ class WarmupBookProfile:
     def browserless_content_spec(self) -> dict:
         """Content path: warm up past the WAF, then take the innerHTML of the
         chapter ``<article>``, dropping page chrome — the ``nav.pagination``
-        PreviousNext footer and the per-heading ``.copy-link-tooltip`` copy
-        widgets ("Copy link / Link copied to clipboard!")."""
+        PreviousNext footer, the per-heading ``.copy-link-tooltip`` copy
+        widgets ("Copy link / Link copied to clipboard!"), and the site-wide
+        announcement banner (``rh-alert.banner-wrapper``) — from 2026-11-04 an
+        MCP-server promo rendered as the article's first child and led every
+        page. Only the banner class: real admonitions are ``<rh-alert>`` too."""
         return {
             "selector": _CONTENT_SELECTOR,
             "warmup_url": _WARMUP_URL,
-            "excludeTags": ["nav.pagination", ".copy-link-tooltip"],
+            "excludeTags": ["nav.pagination", ".copy-link-tooltip",
+                            "rh-alert.banner-wrapper"],
         }
 
     def content_config(self) -> dict:
