@@ -67,12 +67,11 @@ class Settings(BaseSettings):
     # Browserless' Chromium advertises "HeadlessChrome/<ver>" by default, which
     # docs.cohesity.com (and likely other edges) hard-403 — a 49-byte error page
     # with no DOM, so a profile waiting on its selector just times out. Every
-    # page is navigated with this UA instead. Overridable so the Chrome version
-    # can be bumped without a code change.
-    browserless_user_agent: str = (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-    )
+    # page is navigated as non-headless Chrome instead. Empty (the default) =
+    # the browser's own UA with HeadlessChrome -> Chrome (see
+    # BrowserlessClient._with_user_agent): a fixed one drifts from the real
+    # Chrome and Akamai blocks the mismatch. Set only to force a specific UA.
+    browserless_user_agent: str = ""
     # Per-article render budget (ms) and concurrency for browserless content scraping.
     browserless_wait_ms: int = 9000
     browserless_concurrency: int = 4

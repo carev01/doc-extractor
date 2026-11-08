@@ -226,13 +226,17 @@ async def test_non_transient_404_raises_without_retry(fast_client):
 def test_download_and_warmup_snippets_spoof_a_real_ua():
     # Browserless's default Chrome UA contains "HeadlessChrome", which Akamai's
     # bot manager hard-403s (verified on www.rubrik.com). Both the binary-download
-    # and warm-up-render functions must set a real Chrome UA before navigating.
-    from app.services.browserless import _DOWNLOAD_BYTES_CODE, _WARMUP_RENDER_CODE
+    # and warm-up-render functions get the browser's own UA minus "Headless" from
+    # the central prelude, before navigating — never a pinned version of their own.
+    from app.services.browserless import (
+        BrowserlessClient, _DOWNLOAD_BYTES_CODE, _WARMUP_RENDER_CODE)
 
+    client = BrowserlessClient(url="http://x", token="")
     for code in (_DOWNLOAD_BYTES_CODE, _WARMUP_RENDER_CODE):
-        assert "page.setUserAgent(" in code
-        assert "HeadlessChrome" not in code
-        assert "Chrome/" in code  # a normal desktop Chrome token
+        patched = client._with_user_agent(code)
+        assert patched.count("page.setUserAgent(") == 1
+        assert patched.index("setUserAgent") < patched.index("page.goto")
+        assert "Chrome/" not in code
 
 
 def test_collapsible_expand_tolerates_a_navigation_that_never_goes_idle():
