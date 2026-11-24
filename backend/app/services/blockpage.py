@@ -104,6 +104,8 @@ _AUTH_WALL_MARKERS = (
     "please sign in to continue",
     "you must be logged in to view",
     "session has expired",
+    # docs.rubrik.com: a logged-out topic is a 200 page whose body is only this.
+    "available only after you log in",
 )
 
 

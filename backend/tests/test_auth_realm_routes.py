@@ -110,3 +110,44 @@ async def test_session_upload_rejects_empty(client):
         "cookies": [], "origins": []
     })
     assert resp.status_code == 400
+
+
+async def test_session_upload_missing_the_login_cookie_is_refused(client):
+    """A browser drops an expired login cookie, so an export taken after the
+    session lapsed carries only the long-lived bystanders. Rubrik on 2026-11-24:
+    the upload lost SAML_TOKEN, kept __Host-RSC_HOME (7 days), went ACTIVE, the UI
+    reported the session valid for 165h, and a whole run scraped logged out."""
+    realm_id = (await client.post("/api/auth-realms", json={
+        "name": "Rubrik", "login_domain": "docs.rubrik.test", "auth_type": "form",
+    })).json()["id"]
+    good = {"cookies": [
+        {"name": "SAML_TOKEN", "value": "jwt", "domain": "docs.rubrik.test", "path": "/",
+         "expirationDate": 4102444800},
+        {"name": "__Host-RSC_HOME", "value": "home", "domain": "docs.rubrik.test", "path": "/",
+         "expirationDate": 4102444800},
+    ]}
+    assert (await client.post(f"/api/auth-realms/{realm_id}/session", json=good)).status_code == 200
+
+    stale = {"cookies": [good["cookies"][1]]}
+    resp = await client.post(f"/api/auth-realms/{realm_id}/session", json=stale)
+    assert resp.status_code == 400
+    assert "SAML_TOKEN" in resp.json()["detail"]
+
+    # The working session is kept, not replaced by the broken one.
+    body = (await client.get(f"/api/auth-realms/{realm_id}")).json()
+    assert body["status"] == "active"
+
+
+async def test_session_upload_without_login_cookies_is_refused_once_one_was_seen(client):
+    # Even after a broken upload slipped in earlier, the realm remembers which
+    # cookie names carried its login.
+    realm_id = (await client.post("/api/auth-realms", json={
+        "name": "R2", "login_domain": "docs.r2.test", "auth_type": "form",
+    })).json()["id"]
+    first = {"cookies": [{"name": "session_token", "value": "a", "domain": "docs.r2.test",
+                          "path": "/"}]}
+    assert (await client.post(f"/api/auth-realms/{realm_id}/session", json=first)).status_code == 200
+    refresh = {"cookies": [{"name": "session_token", "value": "b", "domain": "docs.r2.test",
+                            "path": "/"}, {"name": "theme", "value": "dark",
+                                           "domain": "docs.r2.test", "path": "/"}]}
+    assert (await client.post(f"/api/auth-realms/{realm_id}/session", json=refresh)).status_code == 200

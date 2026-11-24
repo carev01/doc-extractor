@@ -24,7 +24,7 @@ from app.schemas.auth_realm import (
 )
 from app.services.auth import realm_manager
 from app.services.auth.realm_manager import NeedsLoginError
-from app.services.auth.session import session_expired, session_expires_at
+from app.services.auth.session import is_credential_cookie, session_expired, session_expires_at
 from app.services.browserless import browserless_client
 
 
@@ -229,6 +229,32 @@ async def scripted_login(realm_id: uuid.UUID, db: AsyncSession = Depends(get_db)
     return _response(realm)
 
 
+def _refuse_upload_without_login_cookie(realm: AuthRealm, cookies: list[dict]) -> None:
+    """400 when the realm's current session carries login cookies and the upload
+    carries none.
+
+    A browser deletes an expired login cookie, so a cookie export taken after the
+    session lapsed holds only the long-lived bystanders. Accepting one marked the
+    realm ACTIVE with an expiry read off those bystanders (Rubrik, 2026-11-24:
+    SAML_TOKEN gone, __Host-RSC_HOME's week left → "valid for 165h"), and every run
+    then scraped logged out. The working session is kept."""
+    previous = (realm.state_snapshot or {}).get("cookies") or []
+    had = sorted({str(c.get("name", "")) for c in previous
+                  if isinstance(c, dict) and is_credential_cookie(str(c.get("name", "")))})
+    if not had:
+        return
+    if any(is_credential_cookie(str(c.get("name", ""))) for c in cookies if isinstance(c, dict)):
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"The uploaded cookies contain no login cookie (the current session has "
+            f"{', '.join(had)}). The browser drops a login cookie once it expires — "
+            "log in again, then export the cookies."
+        ),
+    )
+
+
 @router.post("/{realm_id}/session", response_model=AuthRealmResponse)
 async def upload_session(
     realm_id: uuid.UUID,
@@ -251,6 +277,7 @@ async def upload_session(
             detail="At least one of 'cookies' or 'origins' must be non-empty",
         )
     realm = await _get_realm(db, realm_id)
+    _refuse_upload_without_login_cookie(realm, payload.cookies)
     normalized_origins = _normalize_origins(payload.origins)
     realm.state_snapshot = {
         "cookies": _normalize_cookies(payload.cookies),

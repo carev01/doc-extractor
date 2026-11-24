@@ -161,3 +161,45 @@ async def test_empty_toc_without_a_wall_still_hits_the_guard(factory, monkeypatc
         with pytest.raises(TocCollapseError):
             await svc.extract_source(s, src_id, run_id=run_id)
     assert len(fetched) == 1
+
+
+def _status_error(status: int, url: str = ROOT):
+    import httpx
+    req = httpx.Request("GET", url)
+    return httpx.HTTPStatusError(f"{status}", request=req, response=httpx.Response(status, request=req))
+
+
+async def test_empty_toc_behind_a_403_pauses_instead_of_failing(factory, monkeypatch):
+    # docs.rubrik.com's on-prem guide answers a request without a valid SAML_TOKEN
+    # with a flat 403. The probe read that as "fetch failed, says nothing about the
+    # session", so a resume with a broken cookie hit the collapse guard and FAILED
+    # (2026-11-24, runs 55162dbd and c8b21fd6) instead of pausing for a new cookie.
+    src_id, realm_id, run_id = await _source(factory, live=11)
+    svc, fetched = _service(monkeypatch, factory, "")
+
+    async def forbidden(url, cookies=None, **kw):
+        fetched.append((url, bool(cookies)))
+        raise _status_error(403)
+
+    monkeypatch.setattr(svc, "fetch_raw", forbidden)
+    async with factory() as s:
+        run = await svc.extract_source(s, src_id, run_id=run_id)
+
+    assert fetched == [(ROOT, True)]
+    assert run.status == RunStatus.PAUSED
+    async with factory() as s:
+        assert (await s.get(AuthRealm, realm_id)).status == RealmStatus.EXPIRED
+
+
+async def test_empty_toc_behind_a_server_error_still_hits_the_guard(factory, monkeypatch):
+    # A 5xx says nothing about the session: the guard decides, as before.
+    src_id, _, run_id = await _source(factory, live=11)
+    svc, _ = _service(monkeypatch, factory, "")
+
+    async def broken(url, cookies=None, **kw):
+        raise _status_error(503)
+
+    monkeypatch.setattr(svc, "fetch_raw", broken)
+    async with factory() as s:
+        with pytest.raises(TocCollapseError):
+            await svc.extract_source(s, src_id, run_id=run_id)

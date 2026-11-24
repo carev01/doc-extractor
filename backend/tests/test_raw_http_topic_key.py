@@ -160,3 +160,65 @@ async def test_raw_http_shares_one_guest_session_when_the_profile_asks(monkeypat
     assert fetched[0][0] == "https://docs.example.com/Product"   # minted first, from the root
     jars = {id(s) for _, s in fetched} | {id(s) for s in images.values()}
     assert len(jars) == 1 and isinstance(fetched[0][1], httpx.Cookies)
+
+
+@pytest.mark.asyncio
+async def test_raw_http_never_stores_a_login_teaser_and_pauses_on_a_streak(monkeypatch):
+    # docs.rubrik.com serves a logged-out request a 200 page whose body is only
+    # "This topic is available only after you log in." Stored as content, it
+    # overwrote 2,568 RSC SaaS articles on 2026-11-24 while the run "completed".
+    # On an authenticated source it must count as a failed page, so the expiry
+    # streak pauses the run for a fresh cookie.
+    import types
+    import app.services.firecrawl as fc
+
+    realm = types.SimpleNamespace(name="Rubrik Docs")
+    src = types.SimpleNamespace(base_url="https://docs.rubrik.com/en-us/saas/x.html",
+                                auth_realm_id=uuid.uuid4(), name="RSC SaaS Docs")
+
+    class _DB:
+        async def get(self, model, pk):
+            return realm if model is fc.AuthRealm else src
+
+    class _TeaserProfile:
+        def extract_content_html(self, raw, url):
+            return ("<h1>Azure tags</h1><p>This topic is available only after you log in. "
+                    '<a href="https://support.rubrik.com">Log in</a></p>')
+
+    stored, paused, done = [], [], []
+
+    async def fake_process(**kwargs):
+        stored.append(kwargs["url"])
+        return "updated"
+
+    async def fake_fetch(url, cookies=None, retry_statuses=None, user_agent=None, session=None):
+        return "<html><body>teaser</body></html>"
+
+    async def no_control(*args, **kwargs):
+        return None
+
+    async def fake_pause(db, s, r, run_id):
+        paused.append(r.name)
+        raise fc.RunControlSignal("pause")
+
+    class _Checkpoint(_FakeCheckpoint):
+        async def add_content_done(self, urls):
+            done.extend(urls)
+
+    monkeypatch.setattr(firecrawl_service, "process_article_result", fake_process)
+    monkeypatch.setattr(firecrawl_service, "fetch_raw", fake_fetch)
+    monkeypatch.setattr(firecrawl_service, "_raise_if_controlled", no_control)
+    monkeypatch.setattr(fc, "_pause_for_expiry", fake_pause)
+
+    pages = [f"https://docs.rubrik.com/en-us/saas/p{i}.html" for i in range(40)]
+    with pytest.raises(fc.RunControlSignal):
+        await firecrawl_service._scrape_via_raw_http(
+            db=_DB(), source_id=uuid.uuid4(), run_id=uuid.uuid4(),
+            url_to_entry={u: {"title": u, "toc_entry_id": None, "sort_order": 0} for u in pages},
+            profile=_TeaserProfile(), checkpoint=_Checkpoint(),
+            auth_cookies=[{"name": "SAML_TOKEN", "value": "x"}],
+        )
+
+    assert stored == []          # no teaser ever reached the article table
+    assert done == []            # nor the checkpoint, so a resume retries them
+    assert paused == ["Rubrik Docs"]
