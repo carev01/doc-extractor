@@ -67,3 +67,21 @@ def test_long_page_mentioning_an_sso_redirect_is_not_an_auth_wall():
     html = f'<html><body>{body}<pre>&lt;meta http-equiv="refresh" content="0;url=/api/auth/sso"&gt;</pre>' \
            f'<div data-redirect-url="/api/auth/aos-sso/x"></div></body></html>'
     assert not is_auth_wall(html)
+
+
+# docs.rubrik.com answering a request with no (or an expired) SAML_TOKEN: a
+# normal 200 page, full site chrome, whose topic body is only this teaser. On
+# 2026-11-24 a whole RSC SaaS run stored it over 2,568 real articles.
+RUBRIK_TEASER_MD = (
+    "Azure tags\n==========\n\n"
+    "This topic is available only after you log in. [Log in](https://support.rubrik.com)\n"
+)
+
+
+def test_rubrik_login_teaser_is_an_auth_wall():
+    assert is_auth_wall(RUBRIK_TEASER_MD)
+
+
+def test_long_page_quoting_the_teaser_is_not_an_auth_wall():
+    body = ("Some topics are available only after you log in to the portal. " * 40)
+    assert not is_auth_wall(body)

@@ -1955,6 +1955,13 @@ class FirecrawlService:
                         if not md:
                             logger.warning("Empty content from %s — skipping", url)
                             failed += 1
+                        elif realm is not None and is_auth_wall(md):
+                            # A logged-out teaser served as a 200 (docs.rubrik.com:
+                            # "This topic is available only after you log in.").
+                            # Storing it overwrote 2,568 articles on 2026-11-24; as a
+                            # failure it feeds the expiry streak and pauses instead.
+                            logger.warning("Login wall in content at %s — skipping", url)
+                            failed += 1
                         else:
                             try:
                                 outcome = await self.process_article_result(
@@ -2162,11 +2169,23 @@ class FirecrawlService:
     async def _root_is_auth_wall(
         self, url: str, auth_cookies: list, user_agent: str | None,
     ) -> bool:
-        """Whether *url*, fetched with the session cookies, is an auth wall. A
-        fetch error says nothing about the session, so it reads as False and the
+        """Whether *url*, fetched with the session cookies, is an auth wall.
+
+        A 401/403 on the root of an authenticated source *is* one: docs.rubrik.com's
+        on-prem guide refuses a request without a valid SAML_TOKEN with a flat 403,
+        and reading that as "fetch failed" made a resume with a broken cookie FAIL
+        on the collapse guard instead of pausing for a new one. Any other fetch
+        error says nothing about the session, so it reads as False and the
         TOC-collapse guard decides."""
         try:
             raw = await self.fetch_raw(url, cookies=auth_cookies, user_agent=user_agent)
+        except httpx.HTTPStatusError as exc:
+            if exc.response is not None and exc.response.status_code in (401, 403):
+                logger.warning("Auth-wall probe of %s: HTTP %d — treating as a login wall",
+                               url, exc.response.status_code)
+                return True
+            logger.warning("Auth-wall probe of %s failed: %s", url, exc)
+            return False
         except Exception as exc:
             logger.warning("Auth-wall probe of %s failed: %s", url, exc)
             return False
