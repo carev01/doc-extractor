@@ -36,6 +36,7 @@ from app.schemas.delta import encode_delta_cursor
 from app.services.auth import realm_manager
 from app.services.auth.realm_manager import NeedsLoginError
 from app.services.auth.session import session_expired
+from app.core.sql import any_of
 from app.services.blockpage import is_auth_wall, is_block_page
 from app.services.notify import notify
 from app.services import change_log, page_dates
@@ -3170,12 +3171,20 @@ class FirecrawlService:
                 # authored hierarchy from those fragments, replacing the flat
                 # inventory TOC produced by phase 1.
                 if getattr(profile, "rebuild_toc", None):
+                    # Only pages in this run's inventory. A page the vendor deleted
+                    # keeps its live article (and its stored fragment) until this
+                    # run's reconcile removes it, so reading every live article let
+                    # it put itself back into the tree — and the superset below
+                    # give it a flat entry — on every run: Rubrik RSC SaaS carried
+                    # 323 such articles on 2026-11-24, ~76% of them deleted pages.
+                    inventory = list(url_to_entry)
                     rows = (await db.execute(
                         select(Article.source_url, Article.toc_fragment)
                         .where(
                             Article.source_id == source_id,
                             Article.removed_at.is_(None),
                             Article.toc_fragment.is_not(None),
+                            any_of(Article.source_url, inventory),
                         )
                     )).all()
                     fragments = [(u, f) for (u, f) in rows if f]
@@ -3210,6 +3219,7 @@ class FirecrawlService:
                                     .where(
                                         Article.source_id == source_id,
                                         Article.removed_at.is_(None),
+                                        any_of(Article.source_url, inventory),
                                     )
                                 )).all()
                                 all_entries = _toc_superset(rebuilt, list(scraped_pairs))
